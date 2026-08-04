@@ -43,6 +43,15 @@ export default tseslint.config(
     },
   },
   {
+    // NestJS reads constructor parameter types at runtime via
+    // emitDecoratorMetadata. Rewriting an injected class to `import type` erases
+    // the runtime binding and the container fails with "can't resolve
+    // dependencies" — at boot, in production, not in the type checker. The rule
+    // is off for the API and worker so --fix cannot reintroduce it.
+    files: ['apps/api/src/**/*.ts', 'apps/worker/src/**/*.ts'],
+    rules: { '@typescript-eslint/consistent-type-imports': 'off' },
+  },
+  {
     // Tests may reach for `any` and console output.
     files: ['**/*.spec.ts', '**/*.test.ts', '**/test/**/*.ts'],
     rules: {
