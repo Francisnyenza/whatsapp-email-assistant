@@ -58,19 +58,19 @@ infra/
 
 Built in phases; each lands complete, documented and tested.
 
-| Phase |                              | Status |
-| ----- | ---------------------------- | ------ |
-| 1     | Architecture & ADRs          | ✅     |
-| 2     | Monorepo structure & tooling | ✅     |
-| 3     | Database schema              | ✅     |
-| 4     | Backend core                 | —      |
-| 5     | WhatsApp integration         | —      |
-| 6     | Gmail integration            | —      |
-| 7     | Outlook / Microsoft 365      | —      |
-| 8     | AI layer                     | —      |
-| 9     | Frontend dashboard           | —      |
-| 10    | Testing                      | —      |
-| 11    | Deployment & ops             | —      |
+| Phase |                              | Status                         |
+| ----- | ---------------------------- | ------------------------------ |
+| 1     | Architecture & ADRs          | ✅                             |
+| 2     | Monorepo structure & tooling | ✅                             |
+| 3     | Database schema              | ✅                             |
+| 4     | Backend core                 | 🔨 crypto done                 |
+| 5     | WhatsApp integration         | ✅                             |
+| 6     | Gmail integration            | 🔨 threading, MIME, normalizer |
+| 7     | Outlook / Microsoft 365      | —                              |
+| 8     | AI layer                     | —                              |
+| 9     | Frontend dashboard           | —                              |
+| 10    | Testing                      | —                              |
+| 11    | Deployment & ops             | —                              |
 
 ## Requirements
 
