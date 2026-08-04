@@ -8,8 +8,8 @@ Last updated: 2026-08-04.
 
 ## Verified working
 
-Everything below has tests that run and pass. **376 tests** (368 unit + 8 integration),
-lint and typecheck clean across every package and app.
+Everything below has tests that run and pass. **393 tests** (368 unit + 25 integration against
+real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
 | --------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -19,7 +19,7 @@ lint and typecheck clean across every package and app.
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
 | `@wea/mail`     | 99              | Threading headers, MIME composition, Gmail message normalizer, provider port                                    |
 | `apps/api`      | 17              | Webhook ingress with signature verification, health, config, error handling, DI metadata                        |
-| `apps/worker`   | 23              | Thread-resolution ladder, queue consumer wiring                                                                 |
+| `apps/worker`   | 23 + 17 (int.)  | Thread-resolution ladder, inbox repository, queue consumer wiring                                               |
 
 ```bash
 pnpm -r test          # 328 unit tests
@@ -43,9 +43,9 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Repositories behind the resolver.** `CommandsProcessor` resolves intent and thread
-   correctly but its `deliveryLookup` and `recent` lookups return empty — they need wiring
-   to `whatsapp_deliveries` and `email_messages` through `withTenant`.
+1. **Outbound side of the command loop.** The processor resolves intent and thread against
+   real data, but nothing is sent back yet — the disambiguation list, the confirmation
+   prompt and the reply itself all need the notify path.
 2. **Auth module** — JWT with refresh rotation and theft detection, TOTP 2FA, RBAC. The
    schema and crypto for all of it exist; the endpoints do not.
 3. **Gmail API client** — OAuth flow, `users.watch` + Pub/Sub, history sync, threaded send.
@@ -98,6 +98,13 @@ passed, and it would have failed at boot in production. The rule is off for the 
 and `apps/api/test/di.spec.ts` asserts `design:paramtypes` survives — running against
 `dist/`, because vitest transpiles with esbuild, which does not implement
 `emitDecoratorMetadata` at all.
+
+**Prisma's `upsert` cannot write an ownerless row under RLS.** It emits
+`INSERT ... ON CONFLICT DO UPDATE`, and Postgres evaluates the policy's `USING` clause on
+that path — which is NULL for a row with no owner, so the write is refused even though the
+`WITH CHECK` permits it. A plain insert passes. `createMany({ skipDuplicates: true })`
+compiles to `ON CONFLICT DO NOTHING`, which is both the working form and the correct
+intent: record the message once, and let a redelivered webhook be a no-op.
 
 **Sanitizing a MIME type is not enough.** Stripping the dangerous characters from
 `text/plain";\r\nX-Evil: 1` leaves `text/plainX-Evil: 1`: no longer an injection, but a
