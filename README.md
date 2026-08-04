@@ -30,6 +30,7 @@ gives it away.
 | [`docs/architecture.md`](docs/architecture.md) | System design, data flows, scale and security posture |
 | [`docs/adr/`](docs/adr/)                       | Architecture decision records                         |
 | [`docs/development.md`](docs/development.md)   | Local setup, credentials, conventions                 |
+| [`docs/status.md`](docs/status.md)             | What is built and verified, and what is not           |
 | [`docs/data-model.md`](docs/data-model.md)     | Schema design, tenant isolation, retention            |
 | `docs/security.md`                             | Threat model and controls (Phase 10)                  |
 | `docs/runbook.md`                              | Operations (Phase 11)                                 |
@@ -57,6 +58,8 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
+**336 tests passing** (328 unit + 8 integration against real Postgres). See
+[`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built.
 
 | Phase |                              | Status                         |
 | ----- | ---------------------------- | ------------------------------ |
