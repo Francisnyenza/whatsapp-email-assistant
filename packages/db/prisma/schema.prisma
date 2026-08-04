@@ -1,0 +1,1143 @@
+// Inbox on WhatsApp — database schema
+//
+// Conventions used throughout:
+//
+//  * Every tenant-scoped table carries `userId`, indexed first in every composite
+//    index. There are no cross-user joins anywhere in the application, which is
+//    what makes sharding by userId possible later without a rewrite (architecture §9).
+//  * Encrypted columns are `Bytes` and always appear as a trio: the ciphertext,
+//    the wrapped data key, and the key version (ADR 0002). They are never indexed;
+//    where lookup is needed, an adjacent `*BlindIndex` holds an HMAC.
+//  * Provider identifiers are stored verbatim and always constrained unique
+//    together with their account — providers reuse ids across mailboxes.
+//  * Deletes of user data cascade. GDPR erasure is a single `DELETE FROM users`
+//    plus the object-storage sweep; nothing is left orphaned by design.
+
+generator client {
+  provider        = "prisma-client-js"
+  output          = "../generated/client"
+  previewFeatures = ["postgresqlExtensions", "relationJoins"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, vector, pg_trgm, btree_gin]
+}
+
+// ============================================================================
+// Tenancy: organizations, users, membership
+// ============================================================================
+
+enum PlanTier {
+  free
+  starter
+  pro
+  business
+  enterprise
+}
+
+enum OrgRole {
+  owner
+  admin
+  member
+  billing
+}
+
+model Organization {
+  id   String @id @default(uuid()) @db.Uuid
+  name String
+  slug String @unique
+
+  planTier PlanTier @default(free) @map("plan_tier")
+
+  /// Org-wide ceiling; the per-user limit on Subscription applies underneath it.
+  aiTokenBudgetDaily Int @default(5000000) @map("ai_token_budget_daily")
+
+  /// Org admins may force settings that members cannot override.
+  enforceTwoFactor    Boolean  @default(false) @map("enforce_two_factor")
+  allowedEmailDomains String[] @map("allowed_email_domains")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  members      OrgMembership[]
+  teams        Team[]
+  subscription Subscription?
+  auditLogs    AuditLog[]
+  apiKeys      ApiKey[]
+
+  @@index([slug])
+  @@index([deletedAt])
+  @@map("organizations")
+}
+
+model OrgMembership {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  userId         String @map("user_id") @db.Uuid
+
+  role     OrgRole  @default(member)
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teams        TeamMember[]
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("org_memberships")
+}
+
+model Team {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+  name           String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members      TeamMember[]
+
+  @@unique([organizationId, name])
+  @@map("teams")
+}
+
+model TeamMember {
+  id           String @id @default(uuid()) @db.Uuid
+  teamId       String @map("team_id") @db.Uuid
+  membershipId String @map("membership_id") @db.Uuid
+
+  team       Team          @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  membership OrgMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, membershipId])
+  @@map("team_members")
+}
+
+enum InviteStatus {
+  pending
+  accepted
+  revoked
+  expired
+}
+
+model Invitation {
+  id             String @id @default(uuid()) @db.Uuid
+  organizationId String @map("organization_id") @db.Uuid
+
+  email String
+  role  OrgRole @default(member)
+
+  /// SHA-256 of the invite token. The token itself is shown once and never stored.
+  tokenHash String       @unique @map("token_hash")
+  status    InviteStatus @default(pending)
+  expiresAt DateTime     @map("expires_at")
+  invitedBy String       @map("invited_by") @db.Uuid
+
+  createdAt  DateTime  @default(now()) @map("created_at")
+  acceptedAt DateTime? @map("accepted_at")
+
+  @@index([organizationId, status])
+  @@index([email])
+  @@map("invitations")
+}
+
+// ============================================================================
+// Users, authentication, sessions
+// ============================================================================
+
+enum UserStatus {
+  pending_verification
+  active
+  suspended
+  deleted
+}
+
+model User {
+  id    String @id @default(uuid()) @db.Uuid
+  email String @unique
+
+  /// Argon2id. Null for accounts that only ever signed in via OAuth.
+  passwordHash String? @map("password_hash")
+
+  fullName String? @map("full_name")
+  locale   String  @default("en")
+  timezone String  @default("UTC")
+
+  /// E.164, with '+'. The user's identity on the messaging side, so it is unique
+  /// across the whole system: two accounts cannot share a WhatsApp number.
+  phoneNumber   String?    @unique @map("phone_number")
+  phoneVerified Boolean    @default(false) @map("phone_verified")
+  status        UserStatus @default(pending_verification)
+  emailVerified Boolean    @default(false) @map("email_verified")
+
+  /// TOTP secret, encrypted (ADR 0002).
+  twoFactorEnabled       Boolean  @default(false) @map("two_factor_enabled")
+  twoFactorSecretCipher  Bytes?   @map("two_factor_secret_cipher")
+  twoFactorSecretDek     Bytes?   @map("two_factor_secret_dek")
+  twoFactorSecretKeyVer  Int?     @map("two_factor_secret_key_ver")
+  /// SHA-256 of each single-use recovery code; entries are removed as they're used.
+  twoFactorRecoveryCodes String[] @map("two_factor_recovery_codes")
+
+  /// Set on password change and forced logout; tokens issued before it are refused.
+  tokensValidFrom DateTime @default(now()) @map("tokens_valid_from")
+
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until")
+  lastLoginAt         DateTime? @map("last_login_at")
+  lastSeenAt          DateTime? @map("last_seen_at")
+
+  isPlatformAdmin Boolean @default(false) @map("is_platform_admin")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  memberships       OrgMembership[]
+  emailAccounts     EmailAccount[]
+  threads           EmailThread[]
+  messages          EmailMessage[]
+  drafts            Draft[]
+  sessions          Session[]
+  apiKeys           ApiKey[]
+  auditLogs         AuditLog[]
+  preferences       UserPreference?
+  aiMemory          AiMemory?
+  contacts          Contact[]
+  automationRules   AutomationRule[]
+  reminders         Reminder[]
+  waDeliveries      WhatsAppDelivery[]
+  waInbound         WhatsAppInboundMessage[]
+  conversationState ConversationState?
+  aiUsage           AiUsageRecord[]
+  subscription      Subscription?
+
+  @@index([status])
+  @@index([deletedAt])
+  @@index([phoneNumber])
+  @@map("users")
+}
+
+model Session {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// SHA-256 of the refresh token. Rotated on every use; a reused token means
+  /// theft, and the whole session family is revoked.
+  refreshTokenHash String  @unique @map("refresh_token_hash")
+  familyId         String  @map("family_id") @db.Uuid
+  replacedById     String? @map("replaced_by_id") @db.Uuid
+
+  userAgent String? @map("user_agent")
+  ipAddress String? @map("ip_address")
+  /// Coarse location for the "active sessions" list. Never used for access control.
+  location  String?
+
+  expiresAt  DateTime  @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  lastUsedAt DateTime  @default(now()) @map("last_used_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model ApiKey {
+  id             String  @id @default(uuid()) @db.Uuid
+  userId         String  @map("user_id") @db.Uuid
+  organizationId String? @map("organization_id") @db.Uuid
+
+  name      String
+  /// SHA-256 of the key. The plaintext is shown once at creation.
+  keyHash   String @unique @map("key_hash")
+  /// First 8 characters, so the dashboard can show `wea_live_a1b2c3d4…`.
+  keyPrefix String @map("key_prefix")
+
+  scopes          String[]
+  rateLimitPerMin Int      @default(120) @map("rate_limit_per_min")
+
+  lastUsedAt DateTime? @map("last_used_at")
+  expiresAt  DateTime? @map("expires_at")
+  revokedAt  DateTime? @map("revoked_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([keyPrefix])
+  @@map("api_keys")
+}
+
+// ============================================================================
+// Connected mailboxes
+// ============================================================================
+
+enum MailProvider {
+  gmail
+  outlook
+  microsoft365
+  imap
+}
+
+enum AccountStatus {
+  connecting
+  active
+  /// OAuth grant revoked or expired — the user must reconnect.
+  reauth_required
+  /// Repeated provider failures; the sync loop backs off.
+  degraded
+  paused
+  disconnected
+}
+
+model EmailAccount {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  provider     MailProvider
+  emailAddress String       @map("email_address")
+  displayName  String?      @map("display_name")
+
+  status AccountStatus @default(connecting)
+
+  // --- OAuth grant, envelope-encrypted (ADR 0002). No password is ever stored.
+  accessTokenCipher  Bytes     @map("access_token_cipher")
+  accessTokenDek     Bytes     @map("access_token_dek")
+  refreshTokenCipher Bytes?    @map("refresh_token_cipher")
+  refreshTokenDek    Bytes?    @map("refresh_token_dek")
+  tokenKeyVersion    Int       @map("token_key_version")
+  tokenExpiresAt     DateTime? @map("token_expires_at")
+  scopes             String[]
+
+  /// The provider's own account identifier, so a re-connect updates rather than
+  /// duplicates even if the address changed case or alias.
+  providerAccountId String @map("provider_account_id")
+
+  // --- Push subscription state
+  /// Gmail historyId / Graph deltaLink / IMAP UIDNEXT. Opaque to everything but
+  /// the adapter that wrote it.
+  syncCursor          String?   @map("sync_cursor")
+  watchSubscriptionId String?   @map("watch_subscription_id")
+  watchExpiresAt      DateTime? @map("watch_expires_at")
+  lastSyncedAt        DateTime? @map("last_synced_at")
+  /// Set when push is unavailable and we are falling back to polling.
+  pollingSince        DateTime? @map("polling_since")
+
+  consecutiveFailures Int       @default(0) @map("consecutive_failures")
+  lastErrorCode       String?   @map("last_error_code")
+  lastErrorAt         DateTime? @map("last_error_at")
+
+  /// User-controlled: which folders/labels feed WhatsApp. Empty means inbox only.
+  watchedLabels  String[] @map("watched_labels")
+  ignoredSenders String[] @map("ignored_senders")
+
+  isPrimary Boolean @default(false) @map("is_primary")
+
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+  disconnectedAt DateTime? @map("disconnected_at")
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  threads  EmailThread[]
+  messages EmailMessage[]
+  drafts   Draft[]
+
+  /// One connection per mailbox per user; reconnecting updates in place.
+  @@unique([userId, provider, providerAccountId])
+  @@index([userId, status])
+  /// Drives the watch-renewal sweep.
+  @@index([status, watchExpiresAt])
+  @@index([status, lastSyncedAt])
+  @@map("email_accounts")
+}
+
+// ============================================================================
+// Mail: threads, messages, attachments
+// ============================================================================
+
+model EmailThread {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  accountId String @map("account_id") @db.Uuid
+
+  providerThreadId String @map("provider_thread_id")
+  subject          String
+
+  messageCount  Int      @default(1) @map("message_count")
+  lastMessageAt DateTime @map("last_message_at")
+  hasUnread     Boolean  @default(true) @map("has_unread")
+  isStarred     Boolean  @default(false) @map("is_starred")
+  isArchived    Boolean  @default(false) @map("is_archived")
+  isMuted       Boolean  @default(false) @map("is_muted")
+
+  /// Denormalized for the inbox list, which would otherwise join every thread.
+  participantAddresses String[] @map("participant_addresses")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account  EmailAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  messages EmailMessage[]
+
+  @@unique([accountId, providerThreadId])
+  /// The inbox query: one user's threads, newest first.
+  @@index([userId, lastMessageAt(sort: Desc)])
+  @@index([userId, isArchived, lastMessageAt(sort: Desc)])
+  @@map("email_threads")
+}
+
+enum MessageDirection {
+  inbound
+  outbound
+}
+
+model EmailMessage {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  accountId String @map("account_id") @db.Uuid
+  threadId  String @map("thread_id") @db.Uuid
+
+  providerMessageId String   @map("provider_message_id")
+  /// RFC 5322 Message-ID including angle brackets. The threading anchor — every
+  /// reply we send copies this into In-Reply-To (ADR 0003).
+  messageIdHeader   String   @map("message_id_header")
+  inReplyTo         String?  @map("in_reply_to")
+  /// Oldest ancestor first, exactly as it appeared on the wire.
+  references        String[]
+
+  direction MessageDirection @default(inbound)
+
+  subject      String
+  fromAddress  String   @map("from_address")
+  fromName     String?  @map("from_name")
+  replyTo      String?  @map("reply_to")
+  toAddresses  String[] @map("to_addresses")
+  ccAddresses  String[] @map("cc_addresses")
+  bccAddresses String[] @map("bcc_addresses")
+
+  sentAt     DateTime @map("sent_at")
+  receivedAt DateTime @map("received_at")
+
+  /// Bodies are envelope-encrypted at rest and purged on the retention schedule;
+  /// `bodyPurgedAt` records that so the UI can explain the gap rather than 404.
+  bodyTextCipher Bytes?    @map("body_text_cipher")
+  bodyHtmlCipher Bytes?    @map("body_html_cipher")
+  bodyDek        Bytes?    @map("body_dek")
+  bodyKeyVersion Int?      @map("body_key_version")
+  bodyPurgedAt   DateTime? @map("body_purged_at")
+
+  /// Short preview, stored in clear: it is already shown in a WhatsApp
+  /// notification, so encrypting it would protect nothing while costing a
+  /// decrypt on every list query.
+  snippet String @db.VarChar(300)
+
+  isUnread       Boolean @default(true) @map("is_unread")
+  isStarred      Boolean @default(false) @map("is_starred")
+  isImportant    Boolean @default(false) @map("is_important")
+  isArchived     Boolean @default(false) @map("is_archived")
+  isSpam         Boolean @default(false) @map("is_spam")
+  isDraft        Boolean @default(false) @map("is_draft")
+  hasAttachments Boolean @default(false) @map("has_attachments")
+
+  labels    String[]
+  sizeBytes Int      @default(0) @map("size_bytes")
+
+  /// SHA-256 of normalized body + subject. Identical newsletters across users
+  /// hit the same AI cache entry instead of paying for analysis 10 000 times.
+  contentHash String @map("content_hash")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account     EmailAccount       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  thread      EmailThread        @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
+  analysis    MessageAnalysis?
+  embedding   MessageEmbedding?
+  deliveries  WhatsAppDelivery[]
+  drafts      Draft[]
+  reminders   Reminder[]
+
+  /// The idempotency guarantee for ingest: a provider replaying a webhook three
+  /// times produces one row.
+  @@unique([accountId, providerMessageId])
+  @@index([userId, receivedAt(sort: Desc)])
+  @@index([threadId, sentAt])
+  @@index([userId, isUnread, receivedAt(sort: Desc)])
+  @@index([userId, fromAddress])
+  @@index([contentHash])
+  @@index([messageIdHeader])
+  @@map("email_messages")
+}
+
+model Attachment {
+  id             String @id @default(uuid()) @db.Uuid
+  userId         String @map("user_id") @db.Uuid
+  emailMessageId String @map("email_message_id") @db.Uuid
+
+  providerAttachmentId String  @map("provider_attachment_id")
+  filename             String
+  mimeType             String  @map("mime_type")
+  sizeBytes            Int     @map("size_bytes")
+  disposition          String  @default("attachment")
+  contentId            String? @map("content_id")
+
+  /// Object-storage key, always prefixed with the user id so a misconfigured
+  /// policy cannot expose another tenant's files.
+  storageKey String?   @map("storage_key")
+  /// Bytes are fetched lazily; large files are never pulled during ingest.
+  isStored   Boolean   @default(false) @map("is_stored")
+  storedAt   DateTime? @map("stored_at")
+  purgedAt   DateTime? @map("purged_at")
+
+  /// SHA-256 of the content, for deduplication and integrity checks.
+  contentHash String? @map("content_hash")
+
+  /// Extracted by OCR or document parsing, when the user asked for it.
+  extractedText String?   @map("extracted_text")
+  scannedAt     DateTime? @map("scanned_at")
+  /// Result of malware scanning: null = not scanned, true = flagged.
+  isMalicious   Boolean?  @map("is_malicious")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  message EmailMessage @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+
+  @@index([emailMessageId])
+  @@index([userId, createdAt])
+  @@index([contentHash])
+  @@map("attachments")
+}
+
+// ============================================================================
+// AI output
+// ============================================================================
+
+enum EmailCategory {
+  primary
+  work
+  personal
+  finance
+  invoice
+  travel
+  shopping
+  social
+  newsletter
+  promotion
+  notification
+  support
+  recruitment
+  legal
+  spam
+  other
+}
+
+enum EmailPriority {
+  urgent
+  high
+  normal
+  low
+}
+
+model MessageAnalysis {
+  id             String @id @default(uuid()) @db.Uuid
+  userId         String @map("user_id") @db.Uuid
+  emailMessageId String @unique @map("email_message_id") @db.Uuid
+
+  summary       String
+  bulletSummary String[] @map("bullet_summary")
+
+  category EmailCategory @default(other)
+  priority EmailPriority @default(normal)
+
+  urgencyScore Float @default(0) @map("urgency_score")
+  spamScore    Float @default(0) @map("spam_score")
+
+  language      String  @default("en")
+  sentiment     String  @default("neutral")
+  requiresReply Boolean @default(false) @map("requires_reply")
+
+  /// Arrays of ExtractedEntity / ActionItem, shapes defined by the Zod schemas in
+  /// @wea/shared. Stored as JSON because they are read whole and never queried
+  /// by inner field.
+  entities    Json @default("[]")
+  actionItems Json @default("[]") @map("action_items")
+
+  /// Offered as WhatsApp quick-reply buttons.
+  suggestedReplies String[] @map("suggested_replies")
+
+  /// True when the body contains text aimed at instructing an automated
+  /// assistant. Shown to the user as a warning and never acted on (ADR 0004).
+  containsInstructionLikeText Boolean @default(false) @map("contains_instruction_like_text")
+
+  modelProvider String  @map("model_provider")
+  model         String
+  tokensUsed    Int     @default(0) @map("tokens_used")
+  /// True when this was reused from another user's identical message.
+  fromCache     Boolean @default(false) @map("from_cache")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  message EmailMessage @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+
+  @@index([userId, priority, createdAt(sort: Desc)])
+  @@index([userId, category])
+  @@map("message_analyses")
+}
+
+model MessageEmbedding {
+  id             String @id @default(uuid()) @db.Uuid
+  userId         String @map("user_id") @db.Uuid
+  emailMessageId String @unique @map("email_message_id") @db.Uuid
+
+  /// text-embedding-3-small. The dimension is fixed by the model; changing model
+  /// requires a migration and a re-embed, so it is recorded alongside.
+  embedding Unsupported("vector(1536)")
+  model     String
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  message EmailMessage @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+
+  /// The HNSW index for semantic search is created in a raw migration — Prisma
+  /// cannot express vector index parameters.
+  @@index([userId])
+  @@map("message_embeddings")
+}
+
+// ============================================================================
+// WhatsApp
+// ============================================================================
+
+enum WhatsAppDeliveryStatus {
+  queued
+  accepted
+  sent
+  delivered
+  read
+  failed
+}
+
+enum WhatsAppMessageKind {
+  notification
+  digest
+  reply_confirmation
+  command_response
+  template
+  media
+  error
+}
+
+model WhatsAppDelivery {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// Null for messages not tied to one email (digests, help text).
+  emailMessageId String? @map("email_message_id") @db.Uuid
+
+  /// Meta's wamid. The link back from a user's native reply to the email it
+  /// concerns — rank 1 on the thread-resolution ladder (ADR 0003).
+  whatsappMessageId String? @unique @map("whatsapp_message_id")
+  phoneNumber       String  @map("phone_number")
+
+  kind   WhatsAppMessageKind    @default(notification)
+  status WhatsAppDeliveryStatus @default(queued)
+
+  /// True when sent as an approved template because the 24-hour customer service
+  /// window had closed. Templates are billable, so this drives cost reporting.
+  wasTemplate  Boolean @default(false) @map("was_template")
+  templateName String? @map("template_name")
+
+  errorCode    Int?    @map("error_code")
+  errorMessage String? @map("error_message")
+  attempts     Int     @default(0)
+
+  sentAt      DateTime? @map("sent_at")
+  deliveredAt DateTime? @map("delivered_at")
+  readAt      DateTime? @map("read_at")
+  failedAt    DateTime? @map("failed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message EmailMessage? @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([emailMessageId])
+  @@index([status, createdAt])
+  @@index([phoneNumber, createdAt(sort: Desc)])
+  @@map("whatsapp_deliveries")
+}
+
+model WhatsAppInboundMessage {
+  id     String  @id @default(uuid()) @db.Uuid
+  userId String? @map("user_id") @db.Uuid
+
+  /// Meta's wamid, unique — the de-duplication key for webhook replays.
+  whatsappMessageId String @unique @map("whatsapp_message_id")
+  phoneNumber       String @map("phone_number")
+
+  messageType      String  @map("message_type")
+  /// Text is kept in clear only long enough to process the command, then purged
+  /// by the retention sweep; it is the user's own message, not correspondence.
+  body             String?
+  /// wamid of the message the user replied to, when they used native reply.
+  contextMessageId String? @map("context_message_id")
+
+  mediaId       String? @map("media_id")
+  mediaMimeType String? @map("media_mime_type")
+  /// Filled in by the ASR job for voice notes.
+  transcription String?
+
+  /// What we decided the user meant, and how confident the parser was.
+  resolvedIntent String?   @map("resolved_intent")
+  intentSource   String?   @map("intent_source")
+  handledAt      DateTime? @map("handled_at")
+  handlerError   String?   @map("handler_error")
+
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([phoneNumber, receivedAt(sort: Desc)])
+  @@index([userId, receivedAt(sort: Desc)])
+  @@map("whatsapp_inbound_messages")
+}
+
+/// Short-lived per-user chat state: which email we are talking about, and what
+/// we are waiting for. Redis holds the hot copy; this is the durable fallback so
+/// a Redis flush does not strand a user mid-conversation.
+model ConversationState {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+
+  /// Rank 3 on the thread-resolution ladder (ADR 0003).
+  activeEmailMessageId String? @map("active_email_message_id") @db.Uuid
+  activeThreadId       String? @map("active_thread_id") @db.Uuid
+  activeDraftId        String? @map("active_draft_id") @db.Uuid
+
+  /// e.g. awaiting_reply_body, awaiting_send_confirmation, awaiting_disambiguation
+  pendingAction  String? @map("pending_action")
+  /// Options presented in a numbered list, so "2" resolves without another query.
+  pendingOptions Json?   @map("pending_options")
+
+  /// Last inbound message from the user. Everything about whether we may send a
+  /// free-form message hangs off this (architecture §6.3).
+  lastInboundAt  DateTime? @map("last_inbound_at")
+  lastOutboundAt DateTime? @map("last_outbound_at")
+
+  expiresAt DateTime @map("expires_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("conversation_states")
+}
+
+// ============================================================================
+// Composing and sending
+// ============================================================================
+
+enum DraftStatus {
+  composing
+  awaiting_confirmation
+  queued
+  sending
+  sent
+  failed
+  cancelled
+}
+
+model Draft {
+  id        String @id @default(uuid()) @db.Uuid
+  userId    String @map("user_id") @db.Uuid
+  accountId String @map("account_id") @db.Uuid
+
+  /// The message being replied to or forwarded. Null for a fresh compose.
+  inReplyToMessageId String? @map("in_reply_to_message_id") @db.Uuid
+
+  kind String @default("reply") // reply | reply_all | forward | new
+
+  toAddresses  String[] @map("to_addresses")
+  ccAddresses  String[] @map("cc_addresses")
+  bccAddresses String[] @map("bcc_addresses")
+  subject      String
+
+  /// Encrypted at rest like any other body.
+  bodyTextCipher Bytes  @map("body_text_cipher")
+  bodyHtmlCipher Bytes? @map("body_html_cipher")
+  bodyDek        Bytes  @map("body_dek")
+  bodyKeyVersion Int    @map("body_key_version")
+
+  /// Threading headers, resolved at compose time and frozen — recomputing them
+  /// at send time risks drift if the thread changed underneath (ADR 0003).
+  inReplyToHeader  String?  @map("in_reply_to_header")
+  referencesHeader String[] @map("references_header")
+  providerThreadId String?  @map("provider_thread_id")
+
+  attachmentKeys String[] @map("attachment_keys")
+
+  status DraftStatus @default(composing)
+
+  /// Guarantees at-most-once send across retries.
+  idempotencyKey String @unique @map("idempotency_key")
+
+  /// Set when the AI drafted it, so analytics can separate assisted from typed.
+  wasAiDrafted Boolean @default(false) @map("was_ai_drafted")
+  aiModel      String? @map("ai_model")
+
+  sentAt                DateTime? @map("sent_at")
+  sentProviderMessageId String?   @map("sent_provider_message_id")
+  failureReason         String?   @map("failure_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account          EmailAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  inReplyToMessage EmailMessage? @relation(fields: [inReplyToMessageId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+  @@map("drafts")
+}
+
+// ============================================================================
+// Preferences, memory, contacts
+// ============================================================================
+
+enum NotificationMode {
+  instant
+  digest
+  priority_only
+  off
+}
+
+model UserPreference {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+
+  notificationMode NotificationMode @default(instant) @map("notification_mode")
+  /// Only notify at or above this priority when mode is priority_only.
+  minimumPriority  EmailPriority    @default(normal) @map("minimum_priority")
+
+  digestTimes String[] @default(["08:00", "18:00"]) @map("digest_times")
+
+  quietHoursEnabled Boolean @default(false) @map("quiet_hours_enabled")
+  quietHoursStart   String  @default("22:00") @map("quiet_hours_start")
+  quietHoursEnd     String  @default("07:00") @map("quiet_hours_end")
+
+  /// Categories that never generate a WhatsApp message.
+  mutedCategories EmailCategory[] @map("muted_categories")
+  mutedSenders    String[]        @map("muted_senders")
+
+  language           String  @default("en")
+  autoTranslate      Boolean @default(false) @map("auto_translate")
+  translateTo        String? @map("translate_to")
+  includeSummary     Boolean @default(true) @map("include_summary")
+  includeAttachments Boolean @default(true) @map("include_attachments")
+
+  /// Read emails aloud automatically rather than sending text.
+  voiceRepliesEnabled Boolean @default(false) @map("voice_replies_enabled")
+
+  /// Appended to every outbound reply composed from WhatsApp.
+  signature String?
+
+  retentionBodyDays Int @default(30) @map("retention_body_days")
+
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+/// What the assistant has learned about how this person writes. Kept separate
+/// from preferences because it is derived, not declared — and because a user
+/// clearing their AI memory must not reset their settings.
+model AiMemory {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @unique @map("user_id") @db.Uuid
+
+  /// Distilled description of tone, greeting and sign-off habits, built from the
+  /// user's own sent replies.
+  writingStyleSummary String? @map("writing_style_summary")
+  preferredGreeting   String? @map("preferred_greeting")
+  preferredSignoff    String? @map("preferred_signoff")
+  averageReplyLength  Int?    @map("average_reply_length")
+  formalityScore      Float?  @map("formality_score")
+
+  /// Rolling facts the assistant may use to answer "what did John ask me?".
+  /// Bounded and user-clearable.
+  facts Json @default("[]")
+
+  samplesAnalyzed Int      @default(0) @map("samples_analyzed")
+  lastUpdatedAt   DateTime @default(now()) @map("last_updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("ai_memory")
+}
+
+/// Derived address book — who this user actually corresponds with. Powers
+/// "reply to Sarah" resolution and the most-contacted analytics.
+model Contact {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  emailAddress String   @map("email_address")
+  displayName  String?  @map("display_name")
+  /// Names the user has used for this person in WhatsApp ("Sarah", "my boss").
+  aliases      String[]
+
+  messagesReceived    Int  @default(0) @map("messages_received")
+  messagesSent        Int  @default(0) @map("messages_sent")
+  /// Seconds. Used for the response-time analytics.
+  averageResponseTime Int? @map("average_response_time")
+
+  isVip        Boolean @default(false) @map("is_vip")
+  isBlocked    Boolean @default(false) @map("is_blocked")
+  organization String?
+
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, emailAddress])
+  @@index([userId, lastSeenAt(sort: Desc)])
+  @@index([userId, isVip])
+  @@map("contacts")
+}
+
+// ============================================================================
+// Automations
+// ============================================================================
+
+enum AutomationTrigger {
+  email_received
+  no_reply_after
+  invoice_detected
+  vip_sender
+  keyword_match
+  amount_threshold
+  schedule
+}
+
+model AutomationRule {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  name      String
+  isEnabled Boolean @default(true) @map("is_enabled")
+
+  trigger AutomationTrigger
+
+  /// Rule DSL: an all/any tree of field/operator/value conditions, validated by a
+  /// Zod schema before it is ever stored. Never eval'd.
+  conditions Json @default("{}")
+  /// Ordered list of actions. Actions that send mail are restricted to the
+  /// original sender and require a user-authored template (ADR 0004).
+  actions    Json @default("[]")
+
+  priority Int @default(0)
+
+  timesTriggered  Int       @default(0) @map("times_triggered")
+  lastTriggeredAt DateTime? @map("last_triggered_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  runs AutomationRun[]
+
+  @@index([userId, isEnabled, priority])
+  @@map("automation_rules")
+}
+
+model AutomationRun {
+  id     String @id @default(uuid()) @db.Uuid
+  ruleId String @map("rule_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  emailMessageId String? @map("email_message_id") @db.Uuid
+  matched        Boolean
+  actionsRun     Json    @default("[]") @map("actions_run")
+  error          String?
+  durationMs     Int?    @map("duration_ms")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  rule AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@index([ruleId, createdAt(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("automation_runs")
+}
+
+model Reminder {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  emailMessageId String?  @map("email_message_id") @db.Uuid
+  reason         String
+  remindAt       DateTime @map("remind_at")
+
+  /// Cleared automatically when the user replies before the reminder fires.
+  cancelledAt DateTime? @map("cancelled_at")
+  sentAt      DateTime? @map("sent_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message EmailMessage? @relation(fields: [emailMessageId], references: [id], onDelete: Cascade)
+
+  /// Drives the due-reminder sweep.
+  @@index([remindAt, sentAt, cancelledAt])
+  @@index([userId, remindAt])
+  @@map("reminders")
+}
+
+// ============================================================================
+// Billing and metering
+// ============================================================================
+
+enum SubscriptionStatus {
+  trialing
+  active
+  past_due
+  cancelled
+  paused
+}
+
+model Subscription {
+  id             String  @id @default(uuid()) @db.Uuid
+  userId         String? @unique @map("user_id") @db.Uuid
+  organizationId String? @unique @map("organization_id") @db.Uuid
+
+  planTier PlanTier           @default(free) @map("plan_tier")
+  status   SubscriptionStatus @default(trialing)
+
+  stripeCustomerId     String? @unique @map("stripe_customer_id")
+  stripeSubscriptionId String? @unique @map("stripe_subscription_id")
+  stripePriceId        String? @map("stripe_price_id")
+
+  currentPeriodStart DateTime? @map("current_period_start")
+  currentPeriodEnd   DateTime? @map("current_period_end")
+  cancelAtPeriodEnd  Boolean   @default(false) @map("cancel_at_period_end")
+  trialEndsAt        DateTime? @map("trial_ends_at")
+
+  // --- Plan limits, denormalized so enforcement never joins to a plans table
+  maxEmailAccounts      Int @default(1) @map("max_email_accounts")
+  maxWhatsAppPerDay     Int @default(50) @map("max_whats_app_per_day")
+  maxAiTokensPerDay     Int @default(20000) @map("max_ai_tokens_per_day")
+  maxAutomationRules    Int @default(3) @map("max_automation_rules")
+  attachmentSizeLimitMb Int @default(10) @map("attachment_size_limit_mb")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([stripeCustomerId])
+  @@map("subscriptions")
+}
+
+/// Per-day AI spend, written by the worker and read by the pre-call budget check.
+/// Aggregated by day rather than per call: at 50 M emails/day a row per call is
+/// a write amplification problem for no analytical gain.
+model AiUsageRecord {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// Midnight UTC of the day being counted.
+  day  DateTime @db.Date
+  task String
+
+  provider String
+  model    String
+
+  requests         Int @default(0)
+  promptTokens     Int @default(0) @map("prompt_tokens")
+  completionTokens Int @default(0) @map("completion_tokens")
+  totalTokens      Int @default(0) @map("total_tokens")
+  costMicros       Int @default(0) @map("cost_micros")
+  cacheHits        Int @default(0) @map("cache_hits")
+  failures         Int @default(0)
+
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, day, task, provider, model])
+  @@index([day])
+  @@index([userId, day])
+  @@map("ai_usage_records")
+}
+
+// ============================================================================
+// Audit
+// ============================================================================
+
+/// Append-only. No update or delete path exists in the application, and the
+/// database role used by the app is granted INSERT and SELECT only.
+model AuditLog {
+  id             String  @id @default(uuid()) @db.Uuid
+  userId         String? @map("user_id") @db.Uuid
+  organizationId String? @map("organization_id") @db.Uuid
+
+  /// e.g. auth.login, account.connected, message.deleted, admin.user_suspended
+  action     String
+  resource   String?
+  resourceId String? @map("resource_id")
+
+  /// Redacted before write — never contains bodies, tokens or full addresses.
+  metadata Json @default("{}")
+
+  ipAddress String? @map("ip_address")
+  userAgent String? @map("user_agent")
+  /// Correlates an audit entry with the request trace that produced it.
+  requestId String? @map("request_id")
+
+  success       Boolean @default(true)
+  failureReason String? @map("failure_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([organizationId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// Idempotency ledger for webhooks. A row here means "already processed"; the
+/// unique constraint is what makes a provider's third retry a no-op.
+model ProcessedWebhook {
+  id String @id @default(uuid()) @db.Uuid
+
+  source      String
+  /// Provider event id, or a SHA-256 of the payload when the provider sends none.
+  externalId  String   @map("external_id")
+  processedAt DateTime @default(now()) @map("processed_at")
+  /// Rows older than this are swept; providers do not retry indefinitely.
+  expiresAt   DateTime @map("expires_at")
+
+  @@unique([source, externalId])
+  @@index([expiresAt])
+  @@map("processed_webhooks")
+}

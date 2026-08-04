@@ -30,7 +30,7 @@ gives it away.
 | [`docs/architecture.md`](docs/architecture.md) | System design, data flows, scale and security posture |
 | [`docs/adr/`](docs/adr/)                       | Architecture decision records                         |
 | [`docs/development.md`](docs/development.md)   | Local setup, credentials, conventions                 |
-| `docs/data-model.md`                           | Database schema (Phase 3)                             |
+| [`docs/data-model.md`](docs/data-model.md)     | Schema design, tenant isolation, retention            |
 | `docs/security.md`                             | Threat model and controls (Phase 10)                  |
 | `docs/runbook.md`                              | Operations (Phase 11)                                 |
 
@@ -62,7 +62,7 @@ Built in phases; each lands complete, documented and tested.
 | ----- | ---------------------------- | ------ |
 | 1     | Architecture & ADRs          | ✅     |
 | 2     | Monorepo structure & tooling | ✅     |
-| 3     | Database schema              | —      |
+| 3     | Database schema              | ✅     |
 | 4     | Backend core                 | —      |
 | 5     | WhatsApp integration         | —      |
 | 6     | Gmail integration            | —      |
