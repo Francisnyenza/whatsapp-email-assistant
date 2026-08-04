@@ -13,15 +13,15 @@
 
 ### Goals
 
-| Goal | Target |
-| --- | --- |
-| Email → WhatsApp latency (p95) | < 5 s from provider push to WhatsApp delivery receipt |
-| WhatsApp reply → SMTP send (p95) | < 3 s |
-| Availability | 99.9 % on the ingest + reply path |
-| Scale | 10 M connected mailboxes, ~50 M inbound emails/day at peak |
-| Thread fidelity | 100 % of replies carry correct `Message-ID` / `In-Reply-To` / `References` |
-| Tenancy | Hard per-user data isolation; per-organization roles |
-| Secrets | No password ever stored; OAuth refresh tokens encrypted with envelope encryption |
+| Goal                             | Target                                                                           |
+| -------------------------------- | -------------------------------------------------------------------------------- |
+| Email → WhatsApp latency (p95)   | < 5 s from provider push to WhatsApp delivery receipt                            |
+| WhatsApp reply → SMTP send (p95) | < 3 s                                                                            |
+| Availability                     | 99.9 % on the ingest + reply path                                                |
+| Scale                            | 10 M connected mailboxes, ~50 M inbound emails/day at peak                       |
+| Thread fidelity                  | 100 % of replies carry correct `Message-ID` / `In-Reply-To` / `References`       |
+| Tenancy                          | Hard per-user data isolation; per-organization roles                             |
+| Secrets                          | No password ever stored; OAuth refresh tokens encrypted with envelope encryption |
 
 ### Non-goals (deliberately out of scope for v1)
 
@@ -35,7 +35,7 @@
 ### The one hard constraint that shapes everything
 
 **WhatsApp's 24-hour customer service window.** A business may only send free-form messages
-within 24 h of the user's last inbound message. Outside it, only pre-approved *template*
+within 24 h of the user's last inbound message. Outside it, only pre-approved _template_
 messages are allowed. This is not a detail — it dictates the entire notification design
 (§6.3). Every outbound path must decide, at send time, whether it is in-session or must
 degrade to a template.
@@ -92,21 +92,21 @@ no cross-module repository imports) so any module can be extracted into its own 
 specific scaling or ownership pressure justifies it — but on day one, two deployables mean one
 schema migration path, one trace, one deploy.
 
-| Module | Runtime | Responsibility |
-| --- | --- | --- |
-| `auth` | api | Signup/login, JWT access+refresh, TOTP 2FA, sessions, RBAC |
-| `accounts` | api + worker | OAuth connect flows, token refresh, mailbox watch renewal |
-| `webhooks` | api | Meta + Gmail Pub/Sub + Graph endpoints; verify → enqueue → 200 |
-| `ingest` | worker | Fetch message, normalize MIME, dedupe, persist, fan out |
-| `ai` | worker | Summarize, classify, extract, translate, draft, embed |
-| `notify` | worker | Render WhatsApp payload, session-window logic, send, track |
-| `commands` | worker | Parse WhatsApp inbound → intent → action, conversation state |
-| `send` | worker | Compose RFC 5322, thread headers, send via provider |
-| `automations` | worker | Rule engine, reminders, escalations |
-| `search` | api | Keyword + semantic (pgvector) search |
-| `billing` | api | Stripe subscriptions, plan limits, metering |
-| `analytics` | api | Aggregates, exports |
-| `admin` | api | Operator surface: users, queues, health, revenue |
+| Module        | Runtime      | Responsibility                                                 |
+| ------------- | ------------ | -------------------------------------------------------------- |
+| `auth`        | api          | Signup/login, JWT access+refresh, TOTP 2FA, sessions, RBAC     |
+| `accounts`    | api + worker | OAuth connect flows, token refresh, mailbox watch renewal      |
+| `webhooks`    | api          | Meta + Gmail Pub/Sub + Graph endpoints; verify → enqueue → 200 |
+| `ingest`      | worker       | Fetch message, normalize MIME, dedupe, persist, fan out        |
+| `ai`          | worker       | Summarize, classify, extract, translate, draft, embed          |
+| `notify`      | worker       | Render WhatsApp payload, session-window logic, send, track     |
+| `commands`    | worker       | Parse WhatsApp inbound → intent → action, conversation state   |
+| `send`        | worker       | Compose RFC 5322, thread headers, send via provider            |
+| `automations` | worker       | Rule engine, reminders, escalations                            |
+| `search`      | api          | Keyword + semantic (pgvector) search                           |
+| `billing`     | api          | Stripe subscriptions, plan limits, metering                    |
+| `analytics`   | api          | Aggregates, exports                                            |
+| `admin`       | api          | Operator surface: users, queues, health, revenue               |
 
 ---
 
@@ -151,7 +151,7 @@ the same hash. Providers retry aggressively; we assume every webhook arrives at 
 
 ## 5. Data flow: WhatsApp reply → threaded email
 
-This is the feature. Getting it wrong is visible to the *recipient*, so it gets the most care.
+This is the feature. Getting it wrong is visible to the _recipient_, so it gets the most care.
 
 ```
 1. POST /webhooks/whatsapp  → verify X-Hub-Signature-256 (HMAC-SHA256, timing-safe)
@@ -211,8 +211,8 @@ A single `MailProvider` port with adapters, so IMAP is a drop-in later:
 
 ```ts
 interface MailProvider {
-  watch(account): Promise<WatchHandle>;          // push subscription
-  renewWatch(account): Promise<WatchHandle>;     // Gmail 7d, Graph 3d max
+  watch(account): Promise<WatchHandle>; // push subscription
+  renewWatch(account): Promise<WatchHandle>; // Gmail 7d, Graph 3d max
   fetchChanges(account, cursor): AsyncIterable<ChangeEvent>;
   getMessage(account, id): Promise<NormalizedMessage>;
   getAttachment(account, msgId, attId): Promise<Readable>;
@@ -221,11 +221,11 @@ interface MailProvider {
 }
 ```
 
-| Provider | Push mechanism | Cursor | Watch lifetime |
-| --- | --- | --- | --- |
-| Gmail | Pub/Sub `users.watch` | `historyId` | 7 days → renew daily |
-| Outlook / M365 | Graph subscription webhook | `deltaLink` | ~3 days → renew every 24 h |
-| IMAP (future) | IDLE, long-lived conn | `UIDNEXT`/`MODSEQ` | n/a — connection pool service |
+| Provider       | Push mechanism             | Cursor             | Watch lifetime                |
+| -------------- | -------------------------- | ------------------ | ----------------------------- |
+| Gmail          | Pub/Sub `users.watch`      | `historyId`        | 7 days → renew daily          |
+| Outlook / M365 | Graph subscription webhook | `deltaLink`        | ~3 days → renew every 24 h    |
+| IMAP (future)  | IDLE, long-lived conn      | `UIDNEXT`/`MODSEQ` | n/a — connection pool service |
 
 Watch renewal is a scheduled job with jitter; a missed renewal degrades to delta polling
 rather than silently dropping mail. **Polling is always the safety net** — a reconcile job
@@ -241,7 +241,7 @@ class, with automatic failover:
 - **Classification of commands** → fast model with function calling, deterministic fallback.
 
 Controls that matter at scale: content-hash response cache (newsletters are identical across
-users), per-user + per-org token budgets enforced *before* the call, strict JSON schema output,
+users), per-user + per-org token budgets enforced _before_ the call, strict JSON schema output,
 and a hard timeout with graceful degradation — **a failed AI call must never block delivery**.
 If summarization fails, the user still gets the email on WhatsApp, just without the summary.
 
@@ -261,20 +261,20 @@ lastInboundAt within 24h ?
 ```
 
 Templates are versioned in `packages/whatsapp/templates/` and submitted to Meta for approval
-via CI. Template *sends* are billable — the digest strategy is a cost control, not just UX.
+via CI. Template _sends_ are billable — the digest strategy is a cost control, not just UX.
 
 ### 6.4 Queues
 
 BullMQ on Redis, one queue per stage with independent concurrency, retry and DLQ:
 
-| Queue | Concurrency | Retry | Notes |
-| --- | --- | --- | --- |
-| `ingest` | high | 5×, exp backoff | Per-account lock serializes cursors |
-| `ai` | medium | 3× | Rate-limited per LLM provider |
-| `notify` | high | 5× | Rate-limited per WABA phone number |
-| `send` | medium | 3× | Idempotency key; never double-send |
-| `sync` | low | 3× | Reconcile sweep, watch renewal |
-| `automation` | low | 3× | Rule evaluation, reminders |
+| Queue        | Concurrency | Retry           | Notes                               |
+| ------------ | ----------- | --------------- | ----------------------------------- |
+| `ingest`     | high        | 5×, exp backoff | Per-account lock serializes cursors |
+| `ai`         | medium      | 3×              | Rate-limited per LLM provider       |
+| `notify`     | high        | 5×              | Rate-limited per WABA phone number  |
+| `send`       | medium      | 3×              | Idempotency key; never double-send  |
+| `sync`       | low         | 3×              | Reconcile sweep, watch renewal      |
+| `automation` | low         | 3×              | Rule evaluation, reminders          |
 
 Everything exhausted lands in a DLQ with the full job payload, visible and replayable from the
 admin panel. A dropped email is a product failure — we surface it rather than lose it.
@@ -298,19 +298,19 @@ Full schema in `docs/data-model.md` (Phase 3).
 
 ## 8. Security posture
 
-| Concern | Control |
-| --- | --- |
-| OAuth tokens | AES-256-GCM envelope encryption; DEK per record, KEK in KMS; rotatable |
-| Passwords | Argon2id; never stored for mail providers (OAuth only, by design) |
-| Transport | TLS 1.2+ everywhere; HSTS preload |
-| Webhook auth | Meta `X-Hub-Signature-256` HMAC (timing-safe), Google JWT verification, Graph `clientState` |
-| Tenant isolation | Repository-enforced tenant scoping + Postgres RLS |
-| Injection | Parameterized queries only (Prisma); no raw SQL with interpolation |
-| XSS | Email HTML sanitized (DOMPurify server-side) before any rendering; CSP with nonces |
-| CSRF | SameSite=strict cookies + double-submit token on cookie-auth routes |
-| Rate limiting | Per-IP, per-user, per-phone-number; token bucket in Redis |
-| 2FA | TOTP, encrypted secret, single-use recovery codes |
-| Audit | Append-only `audit_logs` for every auth event, account link, destructive mail op |
+| Concern              | Control                                                                                                                                                                                                                                                                           |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OAuth tokens         | AES-256-GCM envelope encryption; DEK per record, KEK in KMS; rotatable                                                                                                                                                                                                            |
+| Passwords            | Argon2id; never stored for mail providers (OAuth only, by design)                                                                                                                                                                                                                 |
+| Transport            | TLS 1.2+ everywhere; HSTS preload                                                                                                                                                                                                                                                 |
+| Webhook auth         | Meta `X-Hub-Signature-256` HMAC (timing-safe), Google JWT verification, Graph `clientState`                                                                                                                                                                                       |
+| Tenant isolation     | Repository-enforced tenant scoping + Postgres RLS                                                                                                                                                                                                                                 |
+| Injection            | Parameterized queries only (Prisma); no raw SQL with interpolation                                                                                                                                                                                                                |
+| XSS                  | Email HTML sanitized (DOMPurify server-side) before any rendering; CSP with nonces                                                                                                                                                                                                |
+| CSRF                 | SameSite=strict cookies + double-submit token on cookie-auth routes                                                                                                                                                                                                               |
+| Rate limiting        | Per-IP, per-user, per-phone-number; token bucket in Redis                                                                                                                                                                                                                         |
+| 2FA                  | TOTP, encrypted secret, single-use recovery codes                                                                                                                                                                                                                                 |
+| Audit                | Append-only `audit_logs` for every auth event, account link, destructive mail op                                                                                                                                                                                                  |
 | **Prompt injection** | Email content is delimited and labeled untrusted; the model classifies and drafts but **never authorizes an action** — every destructive verb (delete, forward, send) requires either an explicit user command or a confirmation tap. The LLM cannot call a tool that sends mail. |
 
 Threat model and full control list in `docs/security.md` (Phase 9).
@@ -319,14 +319,14 @@ Threat model and full control list in `docs/security.md` (Phase 9).
 
 ## 9. Scale plan
 
-| Layer | Scaling approach |
-| --- | --- |
-| API | Stateless pods behind an ALB; HPA on RPS + p95 latency |
-| Workers | HPA on queue depth per queue; independent scaling per stage |
-| Postgres | Primary + read replicas; PgBouncer; monthly partitions; shard by `user_id` when a single primary is exhausted (schema is shard-ready — no cross-user joins) |
-| Redis | Cluster mode; queues and cache on separate clusters |
-| WhatsApp | Multiple WABA phone numbers, users pinned by hash; per-number rate limits respected |
-| Gmail/Graph | Per-user quotas dominate; global quota tracked with a distributed limiter and backpressure into the queue |
+| Layer       | Scaling approach                                                                                                                                            |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API         | Stateless pods behind an ALB; HPA on RPS + p95 latency                                                                                                      |
+| Workers     | HPA on queue depth per queue; independent scaling per stage                                                                                                 |
+| Postgres    | Primary + read replicas; PgBouncer; monthly partitions; shard by `user_id` when a single primary is exhausted (schema is shard-ready — no cross-user joins) |
+| Redis       | Cluster mode; queues and cache on separate clusters                                                                                                         |
+| WhatsApp    | Multiple WABA phone numbers, users pinned by hash; per-number rate limits respected                                                                         |
+| Gmail/Graph | Per-user quotas dominate; global quota tracked with a distributed limiter and backpressure into the queue                                                   |
 
 The one genuine bottleneck at 10 M mailboxes is provider API quota, not our compute — hence
 push-first, poll-as-fallback, and aggressive caching of unchanged threads.
@@ -347,15 +347,15 @@ push-first, poll-as-fallback, and aggressive caching of unchanged threads.
 
 ## 11. Technology choices
 
-| Layer | Choice | Why |
-| --- | --- | --- |
-| Backend | TypeScript · NestJS | DI and module boundaries that survive a large team; one language across the stack |
-| ORM | Prisma | Type-safe, parameterized by construction, first-class migrations |
-| Queue | BullMQ | Mature Redis-backed queues with DLQ, rate limits, repeatable jobs |
-| Frontend | Next.js 15 · React 19 · Tailwind | App Router, RSC, fast |
-| Mobile | React Native (Expo) | Shared TS types with the API |
-| DB | PostgreSQL 16 + pgvector | Relational integrity + semantic search in one system |
-| Infra | Docker · Kubernetes · Terraform | Portable across AWS/Azure/GCP as required |
+| Layer    | Choice                           | Why                                                                               |
+| -------- | -------------------------------- | --------------------------------------------------------------------------------- |
+| Backend  | TypeScript · NestJS              | DI and module boundaries that survive a large team; one language across the stack |
+| ORM      | Prisma                           | Type-safe, parameterized by construction, first-class migrations                  |
+| Queue    | BullMQ                           | Mature Redis-backed queues with DLQ, rate limits, repeatable jobs                 |
+| Frontend | Next.js 15 · React 19 · Tailwind | App Router, RSC, fast                                                             |
+| Mobile   | React Native (Expo)              | Shared TS types with the API                                                      |
+| DB       | PostgreSQL 16 + pgvector         | Relational integrity + semantic search in one system                              |
+| Infra    | Docker · Kubernetes · Terraform  | Portable across AWS/Azure/GCP as required                                         |
 
 Rejected: microservices-from-day-one (operational cost without the ownership pressure that
 justifies it); Kafka (BullMQ is sufficient to ~100k jobs/s and far simpler; revisit when we
@@ -366,18 +366,18 @@ additive for the dashboard).
 
 ## 12. Delivery phases
 
-| Phase | Contents | State |
-| --- | --- | --- |
-| 1 | Architecture, ADRs, repo scaffolding | this document |
-| 2 | Monorepo structure, tooling, CI skeleton | |
-| 3 | Database schema + migrations | |
-| 4 | Backend core: auth, crypto, tenancy, queues | |
-| 5 | WhatsApp integration | |
-| 6 | Gmail integration | |
-| 7 | Outlook / M365 integration | |
-| 8 | AI layer | |
-| 9 | Frontend dashboard | |
-| 10 | Testing: unit, integration, E2E, load, security | |
-| 11 | Deployment: Docker, CI/CD, Terraform, observability | |
+| Phase | Contents                                            | State         |
+| ----- | --------------------------------------------------- | ------------- |
+| 1     | Architecture, ADRs, repo scaffolding                | this document |
+| 2     | Monorepo structure, tooling, CI skeleton            |               |
+| 3     | Database schema + migrations                        |               |
+| 4     | Backend core: auth, crypto, tenancy, queues         |               |
+| 5     | WhatsApp integration                                |               |
+| 6     | Gmail integration                                   |               |
+| 7     | Outlook / M365 integration                          |               |
+| 8     | AI layer                                            |               |
+| 9     | Frontend dashboard                                  |               |
+| 10    | Testing: unit, integration, E2E, load, security     |               |
+| 11    | Deployment: Docker, CI/CD, Terraform, observability |               |
 
 Each phase lands complete, documented and tested before the next begins.

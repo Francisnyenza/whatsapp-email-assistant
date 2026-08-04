@@ -17,13 +17,13 @@ from one typed in Gmail. Two problems sit underneath it:
 
 ### Thread resolution — a confidence ladder, never a guess
 
-| Rank | Signal | Confidence |
-| --- | --- | --- |
-| 1 | `context.id` on the inbound WhatsApp message (native reply) → our delivery record | Certain |
-| 2 | `interactive.button_reply.id`, which we mint as `act:reply:<emailMessageId>` | Certain |
-| 3 | Active `ConversationState` for the phone number (TTL 30 min) | High |
-| 4 | NLU match ("reply to Sarah") against the last 20 notified emails | Medium |
-| 5 | Nothing matched | **Ask** — numbered list, no guessing |
+| Rank | Signal                                                                            | Confidence                           |
+| ---- | --------------------------------------------------------------------------------- | ------------------------------------ |
+| 1    | `context.id` on the inbound WhatsApp message (native reply) → our delivery record | Certain                              |
+| 2    | `interactive.button_reply.id`, which we mint as `act:reply:<emailMessageId>`      | Certain                              |
+| 3    | Active `ConversationState` for the phone number (TTL 30 min)                      | High                                 |
+| 4    | NLU match ("reply to Sarah") against the last 20 notified emails                  | Medium                               |
+| 5    | Nothing matched                                                                   | **Ask** — numbered list, no guessing |
 
 Rank 5 is the important one. A misrouted reply sends a user's words to the wrong person; that
 is unrecoverable and far worse than one extra round trip.
@@ -35,7 +35,7 @@ is unrecoverable and far worse than one extra round trip.
   domain, and the message lands in their own Sent folder.
 - `In-Reply-To` = the original `Message-ID`.
 - `References` = original `References` (if any) + original `Message-ID`, in order, deduplicated,
-  and truncated from the *middle* if it exceeds practical header length — keeping the root and
+  and truncated from the _middle_ if it exceeds practical header length — keeping the root and
   the most recent ancestors, which is what clients thread on.
 - `Subject` = `Re: ` + original subject, without stacking `Re: Re:`.
 - Emit `multipart/alternative` (plain + HTML) with the quoted original in both, matching the

@@ -6,7 +6,7 @@
 
 The brief calls for "microservice architecture". At target scale (10 M mailboxes) the workload
 splits cleanly into fast webhook acknowledgement and slow fallible processing. That is a real
-boundary. The boundaries *between* ingest, AI, notify and send are less real: they share the
+boundary. The boundaries _between_ ingest, AI, notify and send are less real: they share the
 same data model, ship together, and are owned by one team.
 
 ## Decision

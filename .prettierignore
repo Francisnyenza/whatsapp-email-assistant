@@ -1,0 +1,7 @@
+node_modules
+dist
+.next
+coverage
+generated
+pnpm-lock.yaml
+*.md.tpl

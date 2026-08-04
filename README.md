@@ -25,13 +25,14 @@ gives it away.
 
 ## Documentation
 
-| Document | Contents |
-| --- | --- |
+| Document                                       | Contents                                              |
+| ---------------------------------------------- | ----------------------------------------------------- |
 | [`docs/architecture.md`](docs/architecture.md) | System design, data flows, scale and security posture |
-| [`docs/adr/`](docs/adr/) | Architecture decision records |
-| `docs/data-model.md` | Database schema (Phase 3) |
-| `docs/security.md` | Threat model and controls (Phase 10) |
-| `docs/runbook.md` | Operations (Phase 11) |
+| [`docs/adr/`](docs/adr/)                       | Architecture decision records                         |
+| [`docs/development.md`](docs/development.md)   | Local setup, credentials, conventions                 |
+| `docs/data-model.md`                           | Database schema (Phase 3)                             |
+| `docs/security.md`                             | Threat model and controls (Phase 10)                  |
+| `docs/runbook.md`                              | Operations (Phase 11)                                 |
 
 ## Repository layout
 
@@ -57,22 +58,22 @@ infra/
 
 Built in phases; each lands complete, documented and tested.
 
-| Phase | | Status |
-| --- | --- | --- |
-| 1 | Architecture & ADRs | ✅ |
-| 2 | Monorepo structure & tooling | — |
-| 3 | Database schema | — |
-| 4 | Backend core | — |
-| 5 | WhatsApp integration | — |
-| 6 | Gmail integration | — |
-| 7 | Outlook / Microsoft 365 | — |
-| 8 | AI layer | — |
-| 9 | Frontend dashboard | — |
-| 10 | Testing | — |
-| 11 | Deployment & ops | — |
+| Phase |                              | Status |
+| ----- | ---------------------------- | ------ |
+| 1     | Architecture & ADRs          | ✅     |
+| 2     | Monorepo structure & tooling | ✅     |
+| 3     | Database schema              | —      |
+| 4     | Backend core                 | —      |
+| 5     | WhatsApp integration         | —      |
+| 6     | Gmail integration            | —      |
+| 7     | Outlook / Microsoft 365      | —      |
+| 8     | AI layer                     | —      |
+| 9     | Frontend dashboard           | —      |
+| 10    | Testing                      | —      |
+| 11    | Deployment & ops             | —      |
 
 ## Requirements
 
 Node 20+, pnpm 9+, Docker, PostgreSQL 16 (with `pgvector`), Redis 7.
 
-Setup instructions land with Phase 2.
+See [`docs/development.md`](docs/development.md) to get running locally.

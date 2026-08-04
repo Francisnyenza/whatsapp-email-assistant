@@ -1,0 +1,47 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+.next/
+out/
+generated/
+*.tsbuildinfo
+
+# env & secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+!infra/**/*.key.example
+
+# test & coverage
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+*.lcov
+
+# tooling caches
+.turbo/
+.eslintcache
+.vitest/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# local data
+tmp/
+uploads/
