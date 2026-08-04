@@ -8,8 +8,8 @@ Last updated: 2026-08-04.
 
 ## Verified working
 
-Everything below has tests that run and pass. **336 tests** (328 unit + 8 integration),
-lint and typecheck clean across every package.
+Everything below has tests that run and pass. **376 tests** (368 unit + 8 integration),
+lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
 | --------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
@@ -18,6 +18,8 @@ lint and typecheck clean across every package.
 | `@wea/db`       | 8 (integration) | Prisma schema, two migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
 | `@wea/mail`     | 99              | Threading headers, MIME composition, Gmail message normalizer, provider port                                    |
+| `apps/api`      | 17              | Webhook ingress with signature verification, health, config, error handling, DI metadata                        |
+| `apps/worker`   | 23              | Thread-resolution ladder, queue consumer wiring                                                                 |
 
 ```bash
 pnpm -r test          # 328 unit tests
@@ -41,18 +43,17 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **`apps/api`** — NestJS: config bootstrap, structured logging with redaction, health
-   checks, error filter, rate limiting, auth module (JWT with refresh rotation, TOTP 2FA,
-   RBAC), webhook controllers that verify and enqueue.
-2. **`apps/worker`** — BullMQ processors wiring the pipeline the architecture describes:
-   ingest → analyze → notify, plus send, sync and automations.
+1. **Repositories behind the resolver.** `CommandsProcessor` resolves intent and thread
+   correctly but its `deliveryLookup` and `recent` lookups return empty — they need wiring
+   to `whatsapp_deliveries` and `email_messages` through `withTenant`.
+2. **Auth module** — JWT with refresh rotation and theft detection, TOTP 2FA, RBAC. The
+   schema and crypto for all of it exist; the endpoints do not.
 3. **Gmail API client** — OAuth flow, `users.watch` + Pub/Sub, history sync, threaded send.
    The normalizer and MIME composer it depends on are done and tested.
-4. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+4. **The remaining processors** — ingest, notify and send. `base.processor.ts` has the
+   retry and dead-letter behaviour; the handlers are what's missing.
+5. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
-5. **Thread resolution service** — the confidence ladder from ADR 0003. Ranks 1 and 2 (the
-   `context.id` and button-payload signals) are already parsed and tested; ranks 3–5 need
-   the conversation-state store and the disambiguation flow wired.
 
 ### After that
 
@@ -90,6 +91,14 @@ Base64 syntax now gets validated before decoding.
 **An empty plaintext seals to exactly IV + tag.** A `<=` length guard rejected it as
 truncated — and an email can legitimately have an empty body.
 
+**`eslint --fix` can break NestJS dependency injection.** The
+`consistent-type-imports` rule rewrote all six injected classes to `import type`, which
+erases the runtime binding `emitDecoratorMetadata` needs. Typecheck passed, unit tests
+passed, and it would have failed at boot in production. The rule is off for the DI layers,
+and `apps/api/test/di.spec.ts` asserts `design:paramtypes` survives — running against
+`dist/`, because vitest transpiles with esbuild, which does not implement
+`emitDecoratorMetadata` at all.
+
 **Sanitizing a MIME type is not enough.** Stripping the dangerous characters from
 `text/plain";\r\nX-Evil: 1` leaves `text/plainX-Evil: 1`: no longer an injection, but a
 malformed `Content-Type` a lenient parser may misread. MIME types are now validated against
@@ -112,3 +121,8 @@ Each of these has a test. They are the load-bearing ones.
    mismatched AAD all raise one identical error.
 5. **Tenant context is transaction-scoped.** `SET LOCAL`, never `SET`, so a pooled
    connection cannot carry one user's context into the next request.
+6. **Under genuine ambiguity the resolver never picks an email.** It asks. A misrouted
+   reply sends someone's words to the wrong person and cannot be undone.
+7. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
+   fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
+   endless redelivery.

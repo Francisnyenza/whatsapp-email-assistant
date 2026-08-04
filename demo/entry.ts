@@ -11,13 +11,22 @@ export {
   buildDisambiguation,
   clamp,
 } from '../packages/whatsapp/dist/builders.js';
-export { evaluateWindow, decideDelivery, inQuietHours } from '../packages/whatsapp/dist/session-window.js';
+export {
+  evaluateWindow,
+  decideDelivery,
+  inQuietHours,
+} from '../packages/whatsapp/dist/session-window.js';
 export {
   buildReplyHeaders,
   resolveReplyRecipients,
   trimReferences,
   buildReplySubject,
 } from '../packages/mail/dist/threading.js';
-export { composeMime, quoteOriginal, extractHeaderNames, ALLOWED_HEADERS } from '../packages/mail/dist/mime-builder.js';
+export {
+  composeMime,
+  quoteOriginal,
+  extractHeaderNames,
+  ALLOWED_HEADERS,
+} from '../packages/mail/dist/mime-builder.js';
 export { decodeActionPayload } from '../packages/shared/dist/utils/action-payload.js';
 export { resolveLanguage } from '../packages/shared/dist/constants/languages.js';

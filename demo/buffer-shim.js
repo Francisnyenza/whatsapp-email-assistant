@@ -26,14 +26,21 @@ class BufferShim extends Uint8Array {
     }
   }
 
-  static alloc(size) { return new BufferShim(size); }
-  static isBuffer(v) { return v instanceof BufferShim; }
+  static alloc(size) {
+    return new BufferShim(size);
+  }
+  static isBuffer(v) {
+    return v instanceof BufferShim;
+  }
 
   static concat(list) {
     const total = list.reduce((n, b) => n + b.length, 0);
     const out = new BufferShim(total);
     let offset = 0;
-    for (const b of list) { out.set(b, offset); offset += b.length; }
+    for (const b of list) {
+      out.set(b, offset);
+      offset += b.length;
+    }
     return out;
   }
 

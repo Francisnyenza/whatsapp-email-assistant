@@ -13,10 +13,10 @@ package's compiled `dist/`, so a change to the real logic changes the page.
 
 Two Node built-ins need substitutes in a browser, both narrow and both verified:
 
-| Shim | Why | Verification |
-| --- | --- | --- |
+| Shim             | Why                                                                                                        | Verification                                          |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
 | `crypto-shim.js` | `randomBytes` for MIME boundaries; `createHash` is synchronous by design and WebCrypto's `digest` is async | SHA-256 checked against the FIPS 180-4 `"abc"` vector |
-| `buffer-shim.js` | `Buffer` for utf8/base64 conversion in bodies and encoded-words | Round-trips through the composer in the browser test |
+| `buffer-shim.js` | `Buffer` for utf8/base64 conversion in bodies and encoded-words                                            | Round-trips through the composer in the browser test  |
 
 ## Building
 

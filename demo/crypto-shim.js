@@ -58,11 +58,23 @@ function sha256(bytes) {
       const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
       const maj = (a & b) ^ (a & c) ^ (b & c);
       const t2 = (S0 + maj) | 0;
-      hh = g; g = f; f = e; e = (d + t1) | 0;
-      d = c; c = b; b = a; a = (t1 + t2) | 0;
+      hh = g;
+      g = f;
+      f = e;
+      e = (d + t1) | 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (t1 + t2) | 0;
     }
-    h[0] = (h[0] + a) | 0; h[1] = (h[1] + b) | 0; h[2] = (h[2] + c) | 0; h[3] = (h[3] + d) | 0;
-    h[4] = (h[4] + e) | 0; h[5] = (h[5] + f) | 0; h[6] = (h[6] + g) | 0; h[7] = (h[7] + hh) | 0;
+    h[0] = (h[0] + a) | 0;
+    h[1] = (h[1] + b) | 0;
+    h[2] = (h[2] + c) | 0;
+    h[3] = (h[3] + d) | 0;
+    h[4] = (h[4] + e) | 0;
+    h[5] = (h[5] + f) | 0;
+    h[6] = (h[6] + g) | 0;
+    h[7] = (h[7] + hh) | 0;
   }
   return h.map((x) => (x >>> 0).toString(16).padStart(8, '0')).join('');
 }
@@ -70,7 +82,12 @@ function sha256(bytes) {
 export function createHash() {
   let data = '';
   return {
-    update(chunk) { data += chunk; return this; },
-    digest() { return sha256(new TextEncoder().encode(data)); },
+    update(chunk) {
+      data += chunk;
+      return this;
+    },
+    digest() {
+      return sha256(new TextEncoder().encode(data));
+    },
   };
 }
