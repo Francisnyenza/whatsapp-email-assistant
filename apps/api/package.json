@@ -26,7 +26,8 @@
     "helmet": "^8.0.0",
     "pino": "^9.5.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "@wea/mail": "workspace:*"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

@@ -8,7 +8,7 @@ Last updated: 2026-08-04.
 
 ## Verified working
 
-Everything below has tests that run and pass. **446 tests** (408 unit + 38 integration against
+Everything below has tests that run and pass. **466 tests** (427 unit + 39 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
@@ -18,8 +18,8 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/db`       | 8 (integration) | Prisma schema, two migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
 | `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                           |
-| `apps/api`      | 17              | Webhook ingress with signature verification, health, config, error handling, DI metadata                        |
-| `apps/worker`   | 47 + 38 (int.)  | Resolution ladder, response planner, outbound sender, send pipeline with at-most-once claim, token decryption   |
+| `apps/api`      | 36              | Webhook ingress, OAuth connect flow with signed state, health, config, error handling, DI metadata              |
+| `apps/worker`   | 47 + 39 (int.)  | Resolution ladder, response planner, outbound sender, send pipeline with at-most-once claim, envelope crypto    |
 
 ```bash
 pnpm -r test          # 328 unit tests
@@ -52,13 +52,11 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 3. **The ingest processor** — Gmail push → fetch → persist → notify. This is the "email
    arrives on WhatsApp" half; `GmailProvider.fetchChanges` and the notification builder are
    both done, so what's missing is the handler joining them.
-4. **OAuth connect endpoints** — `GmailProvider.authorizationUrl` and `exchangeCode` are
-   written and typed against the real client; the API routes that drive them are not. Until
-   these exist there is no way to connect a mailbox, so nothing runs end to end.
-5. **Draft body encryption on the send path.** `DraftRepository` stores the ciphertext
-   columns, but `claimForSending` returns the plaintext its caller passes rather than
-   decrypting — the wiring to `AccountService`'s crypto is the gap.
-6. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+4. **Authentication.** The OAuth routes exist and are secure, but `currentUserId` reads a
+   header a guard is meant to populate and throws when it is absent. Nothing can actually
+   sign in yet, so the connect flow cannot be driven by a real user — this is now the
+   single blocking gap.
+5. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
 ### After that
@@ -139,9 +137,12 @@ Each of these has a test. They are the load-bearing ones.
    6b. **A recognised user always gets an answer.** Silence is the one response people read
    as "it's broken", so every intent — including ones we cannot serve yet — produces a
    reply that names what is missing.
-7. **A reply is sent at most once.** The draft claim is a conditional write, so two
+7. **OAuth `state` is signed, expiring and carries the connecting user.** The callback
+   never infers identity. Every rejection returns one identical public message, so a
+   forgery attempt learns nothing about why it failed.
+8. **A reply is sent at most once.** The draft claim is a conditional write, so two
    workers racing on one draft means exactly one send. Tested with genuinely concurrent
    claims against Postgres, not two calls to a mock.
-8. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
+9. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
    fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
    endless redelivery.

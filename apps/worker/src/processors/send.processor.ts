@@ -55,7 +55,9 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
     // Claim the draft. The transition from queued to sending is atomic, so a
     // duplicated job finds nothing to claim and stops here rather than sending
     // a second copy.
-    const draft = await this.drafts.claimForSending(userId, draftId);
+    const draft = await this.drafts.claimForSending(userId, draftId, (sealed) =>
+      this.accounts.decryptBody(userId, sealed),
+    );
 
     if (!draft) {
       this.logger.info(

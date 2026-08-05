@@ -96,7 +96,16 @@ export class DraftRepository {
   async claimForSending(
     userId: string,
     draftId: string,
-    bodyText?: string,
+    /**
+     * Decrypts the stored body. Injected rather than done here so this
+     * repository never holds key material — decryption lives in exactly one
+     * place (ADR 0002).
+     */
+    decryptBody: (sealed: {
+      ciphertext: Buffer;
+      wrappedKey: Buffer;
+      keyVersion: number;
+    }) => Promise<string>,
   ): Promise<ClaimedDraft | null> {
     return this.prisma.forUser(userId, async (tx) => {
       const claimed = await tx.draft.updateMany({
@@ -119,15 +128,19 @@ export class DraftRepository {
         select: { phoneNumber: true },
       });
 
+      const bodyText = await decryptBody({
+        ciphertext: Buffer.from(draft.bodyTextCipher),
+        wrappedKey: Buffer.from(draft.bodyDek),
+        keyVersion: draft.bodyKeyVersion,
+      });
+
       return {
         id: draft.id,
         accountId: draft.accountId,
         to: draft.toAddresses.map((address) => ({ address })),
         cc: draft.ccAddresses.map((address) => ({ address })),
         subject: draft.subject,
-        // The caller supplies plaintext; the stored body is encrypted and is
-        // decrypted by whoever holds the crypto service, not here.
-        bodyText: bodyText ?? '',
+        bodyText,
         ...(draft.inReplyToHeader ? { inReplyTo: draft.inReplyToHeader } : {}),
         references: draft.referencesHeader,
         ...(draft.providerThreadId ? { providerThreadId: draft.providerThreadId } : {}),

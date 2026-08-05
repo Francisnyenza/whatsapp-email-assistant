@@ -170,6 +170,29 @@ export class AccountService {
     }
   }
 
+  /**
+   * Decrypts a draft body.
+   *
+   * Exposed here rather than in the draft repository so key material stays in
+   * one service. The AAD binds the ciphertext to this user, so a body lifted
+   * from another user's draft fails to decrypt rather than being sent from the
+   * wrong mailbox.
+   */
+  decryptBody(
+    userId: string,
+    sealed: { ciphertext: Buffer; wrappedKey: Buffer; keyVersion: number },
+  ): Promise<string> {
+    return this.crypto.decryptString(sealed, { userId, field: 'draftBody' });
+  }
+
+  /** Encrypts a draft body for storage. */
+  async encryptBody(
+    userId: string,
+    bodyText: string,
+  ): Promise<{ ciphertext: Buffer; wrappedKey: Buffer; keyVersion: number }> {
+    return this.crypto.encryptString(bodyText, { userId, field: 'draftBody' });
+  }
+
   /** Marks an account as needing the user to reconnect. */
   async markReauthRequired(userId: string, accountId: string, reason: string): Promise<void> {
     await this.prisma.forUser(userId, async (tx) => {

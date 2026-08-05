@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { DraftRepository } from '../src/repositories/draft.repository.js';
 import { composeReplyFrom } from '../src/processors/send.processor.js';
+import { EnvelopeEncryption, LocalKmsProvider } from '@wea/crypto';
+import { randomBytes } from 'node:crypto';
 
 /**
  * The at-most-once guarantee, against a real database.
@@ -30,21 +32,30 @@ describeIfDb('draft sending (real database)', () => {
 
   const cipher = () => new Uint8Array([1, 2, 3, 4]);
 
-  const newDraft = () =>
-    drafts.createForSend({
+  // Real envelope encryption, so the body genuinely round-trips through the
+  // same code path production uses — including the AAD binding to this user.
+  const crypto = new EnvelopeEncryption(new LocalKmsProvider(randomBytes(32)));
+  const BODY = 'On it — sending this afternoon.';
+  const decryptBody = (sealed: { ciphertext: Buffer; wrappedKey: Buffer; keyVersion: number }) =>
+    crypto.decryptString(sealed, { userId, field: 'draftBody' });
+
+  const newDraft = async () => {
+    const sealed = await crypto.encryptString(BODY, { userId, field: 'draftBody' });
+    return drafts.createForSend({
       userId,
       accountId,
       inReplyToMessageId: originalId,
       to: [{ address: 'sarah.chen@acme.com' }],
       subject: 'Re: Q3 report',
-      bodyText: 'On it.',
-      bodyCipher: cipher() as never,
-      bodyDek: cipher() as never,
-      bodyKeyVersion: 1,
+      bodyText: BODY,
+      bodyCipher: sealed.ciphertext,
+      bodyDek: sealed.wrappedKey,
+      bodyKeyVersion: sealed.keyVersion,
       inReplyTo: '<parent@acme.com>',
       references: ['<root@acme.com>', '<parent@acme.com>'],
       providerThreadId: 'thread-abc',
     });
+  };
 
   beforeAll(async () => {
     prisma = new PrismaClient({ datasources: { db: { url } } });
@@ -134,7 +145,7 @@ describeIfDb('draft sending (real database)', () => {
 
   it('claims a queued draft and hands back everything the send needs', async () => {
     const { id } = await newDraft();
-    const claimed = await drafts.claimForSending(userId, id);
+    const claimed = await drafts.claimForSending(userId, id, decryptBody);
 
     expect(claimed).not.toBeNull();
     expect(claimed!.to).toEqual([{ address: 'sarah.chen@acme.com' }]);
@@ -142,6 +153,16 @@ describeIfDb('draft sending (real database)', () => {
     expect(claimed!.providerThreadId).toBe('thread-abc');
     expect(claimed!.phoneNumber).toBe(phone);
     expect(claimed!.lastInboundAt).not.toBeNull();
+    // The stored body is encrypted; what the sender receives is plaintext.
+    expect(claimed!.bodyText).toBe(BODY);
+  });
+
+  it('stores the body encrypted, not in the clear', async () => {
+    const { id } = await newDraft();
+    const stored = await withTenant(userId, (tx) => tx.draft.findUnique({ where: { id } }));
+
+    const raw = Buffer.from(stored!.bodyTextCipher).toString('utf8');
+    expect(raw).not.toContain('sending this afternoon');
   });
 
   it('lets exactly one of two concurrent claims win', async () => {
@@ -149,8 +170,8 @@ describeIfDb('draft sending (real database)', () => {
     const { id } = await newDraft();
 
     const [a, b] = await Promise.all([
-      drafts.claimForSending(userId, id),
-      drafts.claimForSending(userId, id),
+      drafts.claimForSending(userId, id, decryptBody),
+      drafts.claimForSending(userId, id, decryptBody),
     ]);
 
     expect([a, b].filter(Boolean)).toHaveLength(1);
@@ -158,28 +179,28 @@ describeIfDb('draft sending (real database)', () => {
 
   it('refuses to re-claim a draft already sent', async () => {
     const { id } = await newDraft();
-    await drafts.claimForSending(userId, id);
+    await drafts.claimForSending(userId, id, decryptBody);
     await drafts.markSent(userId, id, 'gmail-msg-1');
 
-    expect(await drafts.claimForSending(userId, id)).toBeNull();
+    expect(await drafts.claimForSending(userId, id, decryptBody)).toBeNull();
   });
 
   it('returns a retryable failure to the queue so the next attempt can claim it', async () => {
     const { id } = await newDraft();
-    await drafts.claimForSending(userId, id);
+    await drafts.claimForSending(userId, id, decryptBody);
     await drafts.markFailed(userId, id, 'Gmail was unreachable', true);
 
-    expect(await drafts.claimForSending(userId, id)).not.toBeNull();
+    expect(await drafts.claimForSending(userId, id, decryptBody)).not.toBeNull();
   });
 
   it('leaves a permanent failure unclaimable', async () => {
     // Returning it to the queue would have it retried forever against an error
     // that will not change.
     const { id } = await newDraft();
-    await drafts.claimForSending(userId, id);
+    await drafts.claimForSending(userId, id, decryptBody);
     await drafts.markFailed(userId, id, 'Mailbox disconnected', false);
 
-    expect(await drafts.claimForSending(userId, id)).toBeNull();
+    expect(await drafts.claimForSending(userId, id, decryptBody)).toBeNull();
 
     const stored = await withTenant(userId, (tx) => tx.draft.findUnique({ where: { id } }));
     expect(stored?.status).toBe('failed');
@@ -193,7 +214,7 @@ describeIfDb('draft sending (real database)', () => {
 
   it('records the provider id on a successful send, for the audit trail', async () => {
     const { id } = await newDraft();
-    await drafts.claimForSending(userId, id);
+    await drafts.claimForSending(userId, id, decryptBody);
     await drafts.markSent(userId, id, 'gmail-msg-99');
 
     const stored = await withTenant(userId, (tx) => tx.draft.findUnique({ where: { id } }));

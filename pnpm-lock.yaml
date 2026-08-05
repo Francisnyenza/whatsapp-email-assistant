@@ -59,6 +59,9 @@ importers:
       '@wea/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@wea/mail':
+        specifier: workspace:*
+        version: link:../../packages/mail
       '@wea/shared':
         specifier: workspace:*
         version: link:../../packages/shared
