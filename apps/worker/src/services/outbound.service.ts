@@ -44,7 +44,7 @@ export class OutboundService {
     userId: string;
     phoneNumber: string;
     payload: WhatsAppOutboundPayload;
-    kind: 'command_response' | 'reply_confirmation' | 'error';
+    kind: 'command_response' | 'reply_confirmation' | 'error' | 'notification' | 'digest';
     emailMessageId?: string;
     lastInboundAt: Date | null;
   }): Promise<void> {

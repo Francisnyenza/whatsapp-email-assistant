@@ -8,6 +8,10 @@ import { OutboundService } from './services/outbound.service.js';
 import { AccountService } from './services/account.service.js';
 import { DraftRepository } from './repositories/draft.repository.js';
 import { SendProcessor } from './processors/send.processor.js';
+import { IngestProcessor } from './processors/ingest.processor.js';
+import { NotifyProcessor } from './processors/notify.processor.js';
+import { MessageRepository } from './repositories/message.repository.js';
+import { QueueProducer } from './queue/queue.producer.js';
 import { CommandsProcessor } from './processors/commands.processor.js';
 
 @Module({
@@ -20,8 +24,12 @@ import { CommandsProcessor } from './processors/commands.processor.js';
     OutboundService,
     AccountService,
     DraftRepository,
+    MessageRepository,
+    QueueProducer,
     CommandsProcessor,
     SendProcessor,
+    IngestProcessor,
+    NotifyProcessor,
   ],
 })
 export class WorkerModule {}

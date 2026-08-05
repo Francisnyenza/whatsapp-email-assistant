@@ -8,7 +8,7 @@ Last updated: 2026-08-04.
 
 ## Verified working
 
-Everything below has tests that run and pass. **478 tests** (427 unit + 51 integration against
+Everything below has tests that run and pass. **497 tests** (427 unit + 70 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
@@ -19,7 +19,7 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
 | `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                           |
 | `apps/api`      | 36 + 12 (int.)  | Auth with refresh rotation and theft detection, webhook ingress, OAuth connect flow, health, error handling     |
-| `apps/worker`   | 47 + 39 (int.)  | Resolution ladder, response planner, outbound sender, send pipeline with at-most-once claim, envelope crypto    |
+| `apps/worker`   | 47 + 58 (int.)  | Ingest pipeline, notify with delivery policy, resolution ladder, response planner, at-most-once send            |
 
 ```bash
 pnpm -r test          # 328 unit tests
@@ -49,15 +49,19 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
    below to have anywhere to send.
 2. **Auth module** — JWT with refresh rotation and theft detection, TOTP 2FA, RBAC. The
    schema and crypto for all of it exist; the endpoints do not.
-3. **The ingest processor** — Gmail push → fetch → persist → notify. This is the "email
-   arrives on WhatsApp" half; `GmailProvider.fetchChanges` and the notification builder are
-   both done, so what's missing is the handler joining them.
+3. **The Gmail Pub/Sub webhook.** The ingest processor exists and is tested, but nothing
+   enqueues it: `POST /webhooks/gmail` — verifying Google's JWT and extracting the historyId
+   — is not written. Until it is, ingest only runs if something else schedules it.
 4. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
    and a 2FA-enabled account correctly receives a token with `mfa: false` — but there is no
    endpoint to verify a code and upgrade it, and no guard that requires `mfa: true`. So
    enabling 2FA today would lock an account out rather than protect it.
-5. **The ingest processor.** Still the largest missing piece — see item 3.
-6. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+5. **Template sending.** Outside the 24-hour window the notify processor logs and stops,
+   because the approved-template catalogue does not exist. So mail arriving when a user has
+   not messaged recently is currently dropped rather than delivered.
+6. **The AI layer.** Notifications deliver without a summary today, which is by design —
+   but the card is noticeably thinner than the product intends.
+7. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
 ### After that
@@ -147,15 +151,18 @@ Each of these has a test. They are the load-bearing ones.
    6b. **A recognised user always gets an answer.** Silence is the one response people read
    as "it's broken", so every intent — including ones we cannot serve yet — produces a
    reply that names what is missing.
-7. **A reused refresh token revokes its whole family.** Presenting an already-rotated token
+7. **An email is stored once and notified once, however often it is redelivered.** Gmail
+   redelivers history freely and the reconcile sweep re-walks it on purpose; persistence
+   reports whether it created the row, and only the creator notifies.
+8. **A reused refresh token revokes its whole family.** Presenting an already-rotated token
    is impossible for a legitimate client, so it means two parties hold it. The response
    logs out both — the user re-authenticates once; the attacker is out.
-8. **OAuth `state` is signed, expiring and carries the connecting user.** The callback
+9. **OAuth `state` is signed, expiring and carries the connecting user.** The callback
    never infers identity. Every rejection returns one identical public message, so a
    forgery attempt learns nothing about why it failed.
-9. **A reply is sent at most once.** The draft claim is a conditional write, so two
-   workers racing on one draft means exactly one send. Tested with genuinely concurrent
-   claims against Postgres, not two calls to a mock.
-10. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
+10. **A reply is sent at most once.** The draft claim is a conditional write, so two
+    workers racing on one draft means exactly one send. Tested with genuinely concurrent
+    claims against Postgres, not two calls to a mock.
+11. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
     fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
     endless redelivery.
