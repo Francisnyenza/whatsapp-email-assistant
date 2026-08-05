@@ -1,0 +1,287 @@
+import { Injectable } from '@nestjs/common';
+import { encodeActionPayload, type CommandIntent, type WhatsAppOutboundPayload } from '@wea/shared';
+import { buildDisambiguation, buildDeleteConfirmation, buildText, clamp } from '@wea/whatsapp';
+import type { Resolution, ResolutionCandidate } from './thread-resolver.js';
+
+/**
+ * Deciding what to say back.
+ *
+ * Pure by design — it takes an intent and a resolution and returns a payload,
+ * touching no database and no network. That makes the whole decision table
+ * testable, which matters because this is where the product's manners live: the
+ * difference between an assistant that feels considered and one that feels
+ * like a command line is almost entirely in these strings.
+ *
+ * Two rules it enforces structurally:
+ *
+ *  1. **A destructive verb always produces a confirmation, never an action.**
+ *     There is no branch here that returns "done" for a delete (ADR 0004).
+ *  2. **An unresolved target always produces a question**, never a silent
+ *     no-op. Saying nothing is the one response users read as "it's broken".
+ */
+
+export interface PlanContext {
+  intent: CommandIntent;
+  resolution: Resolution;
+  /** The subject of the resolved email, when we have one, for confirmations. */
+  subject?: string;
+  /** True when the parser thought the message was dictated reply text. */
+  looksLikeReplyBody: boolean;
+  /** The raw message, used when it is being treated as a reply body. */
+  rawText: string;
+}
+
+export interface PlannedResponse {
+  payload: WhatsAppOutboundPayload;
+  /** What the worker should do after sending, if anything. */
+  followUp: 'none' | 'await_confirmation' | 'await_reply_text' | 'queue_send' | 'queue_action';
+  /** The email this response concerns, for the delivery record. */
+  emailMessageId?: string;
+}
+
+@Injectable()
+export class ResponsePlanner {
+  plan(context: PlanContext): PlannedResponse {
+    const { intent, resolution } = context;
+
+    // Commands that need no target at all are answered first, so a user with an
+    // empty mailbox can still ask for help or cancel something.
+    const untargeted = this.planUntargeted(intent);
+    if (untargeted) return untargeted;
+
+    // Everything below concerns a specific email. If we could not identify one,
+    // we ask — and we ask in the shape that gives the user a one-tap answer.
+    if (resolution.outcome === 'ambiguous') {
+      return {
+        payload: buildDisambiguation(resolution.options.map(toOption)),
+        followUp: 'await_confirmation',
+      };
+    }
+
+    if (resolution.outcome === 'none') {
+      return {
+        payload: buildText(this.explainNothingFound(intent, resolution.basis)),
+        followUp: 'none',
+      };
+    }
+
+    return this.planForEmail(context, resolution.emailMessageId);
+  }
+
+  /** Commands that stand alone, independent of any email. */
+  private planUntargeted(intent: CommandIntent): PlannedResponse | null {
+    switch (intent.intent) {
+      case 'help':
+        return { payload: buildText(HELP_TEXT), followUp: 'none' };
+
+      case 'cancel':
+        return {
+          payload: buildText('Cancelled. Nothing was sent.'),
+          followUp: 'none',
+        };
+
+      case 'list_today':
+      case 'list_unread':
+      case 'list_urgent':
+      case 'list_deadlines':
+      case 'search':
+      case 'question':
+        // These are reads over the mailbox rather than actions on one email.
+        // The handlers are not built yet; saying so plainly beats silence.
+        return {
+          payload: buildText(
+            "I can't search your mail yet — that part isn't finished. " +
+              'Reply to a specific email and I will handle it.',
+          ),
+          followUp: 'none',
+        };
+
+      default:
+        return null;
+    }
+  }
+
+  private planForEmail(context: PlanContext, emailMessageId: string): PlannedResponse {
+    const { intent, subject } = context;
+
+    switch (intent.intent) {
+      // --- destructive: confirmation only, never the action ----------------
+      case 'delete':
+        return {
+          payload: buildDeleteConfirmation(emailMessageId, subject ?? 'this email'),
+          followUp: 'await_confirmation',
+          emailMessageId,
+        };
+
+      case 'forward':
+        return {
+          payload: {
+            kind: 'buttons',
+            header: 'Forward this email?',
+            body: clamp(`*${subject ?? 'This email'}*\n\nForward to ${intent.recipient}?`, 1024),
+            footer: 'It will be sent from your own address',
+            buttons: [
+              {
+                id: encodeActionPayload({ action: 'confirm_send', targetId: emailMessageId }),
+                title: '➡️ Forward',
+              },
+              {
+                id: encodeActionPayload({ action: 'cancel', targetId: emailMessageId }),
+                title: 'Cancel',
+              },
+            ],
+          },
+          followUp: 'await_confirmation',
+          emailMessageId,
+        };
+
+      // --- replying --------------------------------------------------------
+      case 'reply':
+        if (intent.body) {
+          return {
+            payload: buildText(`Sending your reply to *${subject ?? 'this email'}*…`),
+            followUp: 'queue_send',
+            emailMessageId,
+          };
+        }
+        return {
+          payload: buildText(
+            `What would you like to say to *${subject ?? 'this email'}*? Just type it here.`,
+          ),
+          followUp: 'await_reply_text',
+          emailMessageId,
+        };
+
+      case 'reply_affirmative':
+      case 'reply_negative':
+        return {
+          payload: buildText(`Replying to *${subject ?? 'this email'}*…`),
+          followUp: 'queue_send',
+          emailMessageId,
+        };
+
+      // --- reversible actions: just do them ---------------------------------
+      case 'archive':
+        return {
+          payload: buildText(`Archived *${subject ?? 'that email'}*.`),
+          followUp: 'queue_action',
+          emailMessageId,
+        };
+
+      case 'mark_read':
+        return {
+          payload: buildText(intent.read ? 'Marked as read.' : 'Marked as unread.'),
+          followUp: 'queue_action',
+          emailMessageId,
+        };
+
+      case 'mark_important':
+        return { payload: buildText('Starred.'), followUp: 'queue_action', emailMessageId };
+
+      case 'summarize':
+      case 'translate':
+      case 'read_aloud':
+      case 'draft':
+        // The AI layer isn't built. Naming the specific missing capability is
+        // more useful than a generic apology.
+        return {
+          payload: buildText(
+            `I can't ${describeAiVerb(intent)} yet — the assistant features aren't finished.`,
+          ),
+          followUp: 'none',
+          emailMessageId,
+        };
+
+      case 'send':
+        return {
+          payload: buildText("There's no draft waiting to send."),
+          followUp: 'none',
+        };
+
+      case 'undo':
+        return {
+          payload: buildText("There's nothing to undo right now."),
+          followUp: 'none',
+        };
+
+      // --- prose with a thread in context is reply text ----------------------
+      case 'unknown':
+        if (context.looksLikeReplyBody) {
+          return {
+            payload: buildText(`Sending that as your reply to *${subject ?? 'this email'}*…`),
+            followUp: 'queue_send',
+            emailMessageId,
+          };
+        }
+        return {
+          payload: buildText(
+            "I didn't catch that. Try *reply*, *archive*, *delete*, or just type your reply.",
+          ),
+          followUp: 'none',
+          emailMessageId,
+        };
+
+      default:
+        return {
+          payload: buildText("I didn't catch that. Send *help* to see what I understand."),
+          followUp: 'none',
+        };
+    }
+  }
+
+  /**
+   * Why nothing was found, in the user's terms.
+   *
+   * The resolver's `basis` is written for logs; this turns it into something
+   * worth reading on a phone.
+   */
+  private explainNothingFound(intent: CommandIntent, basis: string): string {
+    if (basis.startsWith('no recent email from')) {
+      const name = basis.slice('no recent email from '.length);
+      return `I couldn't find a recent email from ${name}.`;
+    }
+    if (intent.intent === 'reply' || intent.intent === 'reply_affirmative') {
+      return "I'm not sure which email you're replying to. Reply directly to one of my messages and I'll pick it up.";
+    }
+    return "There's no recent email for me to act on.";
+  }
+}
+
+function toOption(candidate: ResolutionCandidate) {
+  return {
+    emailMessageId: candidate.emailMessageId,
+    ...(candidate.fromName ? { fromName: candidate.fromName } : {}),
+    fromAddress: candidate.fromAddress,
+    subject: candidate.subject,
+  };
+}
+
+function describeAiVerb(intent: CommandIntent): string {
+  switch (intent.intent) {
+    case 'summarize':
+      return 'summarise emails';
+    case 'translate':
+      return 'translate emails';
+    case 'read_aloud':
+      return 'read emails aloud';
+    default:
+      return 'draft replies';
+  }
+}
+
+const HELP_TEXT = [
+  "Here's what I understand:",
+  '',
+  '*Replying*',
+  '• Reply directly to any email I send you',
+  '• _reply with I will send it Friday_',
+  '• _yes_ / _no_ for a quick answer',
+  '',
+  '*Managing*',
+  '• _archive_ — file it away',
+  '• _delete_ — asks you to confirm first',
+  '• _mark unread_ · _important_',
+  '',
+  'Your replies go out from your own email address, threaded normally. ' +
+    'Nobody can tell you answered from WhatsApp.',
+].join('\n');

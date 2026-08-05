@@ -247,4 +247,47 @@ export class InboxRepository {
       });
     });
   }
+
+  /**
+   * Records an outbound message.
+   *
+   * `whatsappMessageId` is what a future native reply resolves through — rank 1
+   * of the ladder — so a response sent without recording it is a reply the user
+   * can never answer by replying to.
+   */
+  async recordDelivery(input: {
+    userId: string;
+    phoneNumber: string;
+    kind: 'notification' | 'digest' | 'reply_confirmation' | 'command_response' | 'error';
+    whatsappMessageId?: string;
+    emailMessageId?: string;
+    status?: 'sent' | 'failed';
+    errorMessage?: string;
+  }): Promise<void> {
+    await this.prisma.forUser(input.userId, async (tx) => {
+      await tx.whatsAppDelivery.create({
+        data: {
+          userId: input.userId,
+          phoneNumber: input.phoneNumber,
+          kind: input.kind,
+          status: input.status ?? 'sent',
+          whatsappMessageId: input.whatsappMessageId ?? null,
+          emailMessageId: input.emailMessageId ?? null,
+          errorMessage: input.errorMessage ?? null,
+          ...(input.status === 'failed' ? { failedAt: new Date() } : { sentAt: new Date() }),
+        },
+      });
+    });
+  }
+
+  /** The subject of a resolved email, for confirmation prompts. */
+  async findSubject(userId: string, emailMessageId: string): Promise<string | null> {
+    return this.prisma.forUser(userId, async (tx) => {
+      const message = await tx.emailMessage.findUnique({
+        where: { id: emailMessageId },
+        select: { subject: true },
+      });
+      return message?.subject ?? null;
+    });
+  }
 }

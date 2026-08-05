@@ -1,0 +1,250 @@
+import { describe, it, expect } from 'vitest';
+import { ResponsePlanner, type PlanContext } from '../src/services/response-planner.js';
+import type { Resolution } from '../src/services/thread-resolver.js';
+import { decodeActionPayload, type CommandIntent } from '@wea/shared';
+
+/**
+ * What the assistant says back.
+ *
+ * Two invariants carry real weight here, and both are structural rather than
+ * stylistic: a destructive verb must never produce a "done", and an unresolved
+ * target must never produce silence. Everything else is manners — but manners
+ * are most of what makes this feel like an assistant rather than a CLI.
+ */
+
+const planner = new ResponsePlanner();
+
+const resolved = (id = 'email-1'): Resolution => ({
+  outcome: 'resolved',
+  emailMessageId: id,
+  rank: 1,
+  basis: 'replied directly to our notification',
+});
+
+const ambiguous = (n = 3): Resolution => ({
+  outcome: 'ambiguous',
+  options: Array.from({ length: n }, (_, i) => ({
+    emailMessageId: `email-${i}`,
+    fromAddress: `person${i}@acme.com`,
+    fromName: `Person ${i}`,
+    subject: `Subject ${i}`,
+    receivedAt: new Date(),
+  })),
+  basis: 'nothing identified which email was meant',
+});
+
+const plan = (intent: CommandIntent, resolution: Resolution, over: Partial<PlanContext> = {}) =>
+  planner.plan({
+    intent,
+    resolution,
+    subject: 'Q3 sales report',
+    looksLikeReplyBody: false,
+    rawText: '',
+    ...over,
+  });
+
+/**
+ * Every payload kind exposes its text somewhere; this gathers all of it.
+ * Accepts either a PlannedResponse or a bare payload.
+ */
+function textOf(input: any): string {
+  const payload = input?.payload ?? input;
+  return [payload.body, payload.header, payload.footer].filter(Boolean).join(' ');
+}
+
+describe('destructive verbs never report success', () => {
+  // The structural half of ADR 0004: there is no branch that returns "deleted".
+
+  it('turns delete into a confirmation bound to the resolved email', () => {
+    const result = plan({ intent: 'delete' }, resolved('email-9'));
+
+    expect(result.followUp).toBe('await_confirmation');
+
+    const confirm = (result.payload as any).buttons.find(
+      (b: any) => decodeActionPayload(b.id)?.action === 'confirm_delete',
+    );
+    expect(decodeActionPayload(confirm.id)?.targetId).toBe('email-9');
+  });
+
+  it('never says the email was deleted', () => {
+    const text = textOf(plan({ intent: 'delete' }, resolved())).toLowerCase();
+    expect(text).not.toContain('deleted');
+    expect(text).toContain('?');
+  });
+
+  it('turns forward into a confirmation naming the recipient', () => {
+    const result = plan({ intent: 'forward', recipient: 'accounts@acme.com' }, resolved('email-3'));
+
+    expect(result.followUp).toBe('await_confirmation');
+    expect(textOf(result.payload)).toContain('accounts@acme.com');
+    expect(textOf(result.payload).toLowerCase()).not.toContain('forwarded');
+  });
+
+  it('offers a way out of every confirmation', () => {
+    for (const intent of [
+      { intent: 'delete' } as const,
+      { intent: 'forward', recipient: 'x@y.com' } as const,
+    ]) {
+      const actions = (plan(intent, resolved()).payload as any).buttons.map(
+        (b: any) => decodeActionPayload(b.id)?.action,
+      );
+      expect(actions.some((a: string) => a === 'cancel' || a === 'confirm_delete')).toBe(true);
+    }
+  });
+});
+
+describe('an unidentified target always produces a question', () => {
+  // Silence is the one response users read as "it's broken".
+
+  it('offers a pickable list when several emails could be meant', () => {
+    const result = plan({ intent: 'reply' }, ambiguous(3));
+
+    expect(result.followUp).toBe('await_confirmation');
+    expect((result.payload as any).sections[0].rows).toHaveLength(3);
+  });
+
+  it('makes each option resolve to exactly one email', () => {
+    const rows = (plan({ intent: 'reply' }, ambiguous(3)).payload as any).sections[0].rows;
+    for (const row of rows) {
+      expect(decodeActionPayload(row.id)?.targetId).toMatch(/^email-\d$/);
+    }
+  });
+
+  it('explains a named person we could not find, by name', () => {
+    const result = plan(
+      { intent: 'reply', target: 'Priya' },
+      {
+        outcome: 'none',
+        basis: 'no recent email from "Priya"',
+      },
+    );
+
+    expect(textOf(result.payload)).toContain('Priya');
+  });
+
+  it('tells the user how to disambiguate rather than just failing', () => {
+    const result = plan({ intent: 'reply' }, { outcome: 'none', basis: 'no recent emails' });
+    expect(textOf(result.payload).toLowerCase()).toContain('reply directly');
+  });
+
+  it('never returns an empty payload', () => {
+    const cases: Array<[CommandIntent, Resolution]> = [
+      [{ intent: 'reply' }, ambiguous()],
+      [{ intent: 'delete' }, { outcome: 'none', basis: 'x' }],
+      [{ intent: 'archive' }, ambiguous()],
+      [
+        { intent: 'unknown', raw: 'zzz' },
+        { outcome: 'none', basis: 'x' },
+      ],
+    ];
+
+    for (const [intent, resolution] of cases) {
+      expect(textOf(plan(intent, resolution)).length, intent.intent).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('replying', () => {
+  it('queues the send when the body was given inline', () => {
+    const result = plan({ intent: 'reply', body: 'On it' }, resolved());
+    expect(result.followUp).toBe('queue_send');
+  });
+
+  it('asks for the text when only the target was given', () => {
+    const result = plan({ intent: 'reply' }, resolved());
+    expect(result.followUp).toBe('await_reply_text');
+    expect(textOf(result.payload)).toContain('Q3 sales report');
+  });
+
+  it('treats a bare yes as a reply to the email in context', () => {
+    expect(plan({ intent: 'reply_affirmative' }, resolved()).followUp).toBe('queue_send');
+  });
+
+  it('treats dictated prose as reply text when a thread is in context', () => {
+    const result = plan({ intent: 'unknown', raw: 'Sounds good, Friday works' }, resolved(), {
+      looksLikeReplyBody: true,
+    });
+    expect(result.followUp).toBe('queue_send');
+  });
+
+  it('asks rather than sending when prose has no thread in context', () => {
+    const result = plan({ intent: 'unknown', raw: 'hmm' }, resolved(), {
+      looksLikeReplyBody: false,
+    });
+    expect(result.followUp).toBe('none');
+    expect(textOf(result.payload)).toContain('reply');
+  });
+});
+
+describe('reversible actions happen without a confirmation', () => {
+  it('archives directly', () => {
+    const result = plan({ intent: 'archive' }, resolved());
+    expect(result.followUp).toBe('queue_action');
+    expect(textOf(result.payload)).toContain('Archived');
+  });
+
+  it('distinguishes read from unread in the acknowledgement', () => {
+    expect(textOf(plan({ intent: 'mark_read', read: true }, resolved()))).toContain('read');
+    expect(textOf(plan({ intent: 'mark_read', read: false }, resolved()))).toContain('unread');
+  });
+});
+
+describe('unbuilt features say so plainly', () => {
+  // An assistant that goes quiet reads as broken. Naming the specific missing
+  // capability is more useful than a generic apology.
+
+  it('names the capability for AI verbs', () => {
+    expect(textOf(plan({ intent: 'summarize' }, resolved()))).toContain('summarise');
+    expect(textOf(plan({ intent: 'translate', language: 'sw' }, resolved()))).toContain(
+      'translate',
+    );
+    expect(textOf(plan({ intent: 'read_aloud' }, resolved()))).toContain('aloud');
+  });
+
+  it('explains that search is unavailable and suggests what does work', () => {
+    const text = textOf(plan({ intent: 'search', query: 'invoices' }, resolved()));
+    expect(text).toContain("can't search");
+    expect(text.toLowerCase()).toContain('reply');
+  });
+
+  it('does not apologise, blame the user, or hedge', () => {
+    const text = textOf(plan({ intent: 'summarize' }, resolved())).toLowerCase();
+    for (const word of ['sorry', 'unfortunately', 'oops', 'invalid']) {
+      expect(text, word).not.toContain(word);
+    }
+  });
+});
+
+describe('commands that need no email at all', () => {
+  const nowhere: Resolution = { outcome: 'none', basis: 'no recent emails to reply to' };
+
+  it('answers help even with an empty mailbox', () => {
+    const text = textOf(plan({ intent: 'help' }, nowhere));
+    expect(text).toContain('reply');
+    expect(text).toContain('archive');
+    // The product promise, restated where a new user will actually read it.
+    expect(text.toLowerCase()).toContain('own email address');
+  });
+
+  it('confirms a cancel without needing a target', () => {
+    const result = plan({ intent: 'cancel' }, nowhere);
+    expect(textOf(result.payload)).toContain('Cancelled');
+    expect(result.followUp).toBe('none');
+  });
+
+  it('makes clear a cancel sent nothing', () => {
+    expect(textOf(plan({ intent: 'cancel' }, nowhere))).toContain('Nothing was sent');
+  });
+});
+
+describe('payloads stay inside WhatsApp limits', () => {
+  it('clamps a long subject in a confirmation', () => {
+    const result = plan({ intent: 'delete' }, resolved(), { subject: 'x'.repeat(5000) });
+    expect((result.payload as any).body.length).toBeLessThanOrEqual(1024);
+  });
+
+  it('caps a disambiguation list at ten rows', () => {
+    const result = plan({ intent: 'reply' }, ambiguous(30));
+    expect((result.payload as any).sections[0].rows.length).toBeLessThanOrEqual(10);
+  });
+});

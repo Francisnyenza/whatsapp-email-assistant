@@ -11,6 +11,8 @@ import {
 import { parseCommand, needsConfirmation } from '@wea/whatsapp';
 import { ConfigService } from '../config/config.service.js';
 import { ThreadResolver } from '../services/thread-resolver.js';
+import { ResponsePlanner } from '../services/response-planner.js';
+import { OutboundService } from '../services/outbound.service.js';
 import { InboxRepository } from '../repositories/inbox.repository.js';
 import { startWorker } from './base.processor.js';
 
@@ -34,6 +36,8 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     private readonly resolver: ThreadResolver,
+    private readonly planner: ResponsePlanner,
+    private readonly outbound: OutboundService,
     private readonly inbox: InboxRepository,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
@@ -99,8 +103,23 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       ...(namedTarget ? { namedTarget } : {}),
     });
 
-    // Step 3 — destructive verbs become a confirmation, never an action.
+    // Step 3 — decide what to say. Destructive verbs become a confirmation
+    // here, never an action: the planner has no branch that reports success for
+    // one.
     const requiresTap = needsConfirmation(parsed.intent);
+
+    const subject =
+      resolution.outcome === 'resolved'
+        ? await this.inbox.findSubject(user.id, resolution.emailMessageId)
+        : null;
+
+    const planned = this.planner.plan({
+      intent: parsed.intent,
+      resolution,
+      ...(subject ? { subject } : {}),
+      looksLikeReplyBody: parsed.looksLikeReplyBody,
+      rawText: message.text ?? '',
+    });
 
     await this.inbox.recordResolution(user.id, message.id, parsed.intent.intent, parsed.source);
 
@@ -108,6 +127,18 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     if (resolution.outcome === 'resolved') {
       await this.inbox.touchConversation(user.id, message.timestamp, resolution.emailMessageId);
     }
+
+    // Answer. Sending is last, after the state it describes is already durable —
+    // a user told "archived" who then sees it un-archived is worse than a
+    // slightly delayed reply.
+    await this.outbound.reply({
+      userId: user.id,
+      phoneNumber,
+      payload: planned.payload,
+      kind: requiresTap ? 'reply_confirmation' : 'command_response',
+      ...(planned.emailMessageId ? { emailMessageId: planned.emailMessageId } : {}),
+      lastInboundAt: message.timestamp,
+    });
 
     this.logger.info(
       {
@@ -119,6 +150,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
         basis: resolution.basis,
         candidates: recent.length,
         awaitingConfirmation: requiresTap,
+        followUp: planned.followUp,
       },
       'Inbound command processed',
     );

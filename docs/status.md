@@ -8,7 +8,7 @@ Last updated: 2026-08-04.
 
 ## Verified working
 
-Everything below has tests that run and pass. **393 tests** (368 unit + 25 integration against
+Everything below has tests that run and pass. **420 tests** (392 unit + 28 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
@@ -19,7 +19,7 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
 | `@wea/mail`     | 99              | Threading headers, MIME composition, Gmail message normalizer, provider port                                    |
 | `apps/api`      | 17              | Webhook ingress with signature verification, health, config, error handling, DI metadata                        |
-| `apps/worker`   | 23 + 17 (int.)  | Thread-resolution ladder, inbox repository, queue consumer wiring                                               |
+| `apps/worker`   | 47 + 28 (int.)  | Thread-resolution ladder, response planner, outbound sender, inbox repository, queue consumers                  |
 
 ```bash
 pnpm -r test          # 328 unit tests
@@ -43,9 +43,10 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Outbound side of the command loop.** The processor resolves intent and thread against
-   real data, but nothing is sent back yet — the disambiguation list, the confirmation
-   prompt and the reply itself all need the notify path.
+1. **Acting on a confirmation tap.** The loop asks correctly and records the pending
+   action, but tapping "Delete" or "Send" does not yet execute anything — the handler for
+   an inbound `confirm_*` payload is the missing piece, and it needs the Gmail client
+   below to have anywhere to send.
 2. **Auth module** — JWT with refresh rotation and theft detection, TOTP 2FA, RBAC. The
    schema and crypto for all of it exist; the endpoints do not.
 3. **Gmail API client** — OAuth flow, `users.watch` + Pub/Sub, history sync, threaded send.
@@ -130,6 +131,9 @@ Each of these has a test. They are the load-bearing ones.
    connection cannot carry one user's context into the next request.
 6. **Under genuine ambiguity the resolver never picks an email.** It asks. A misrouted
    reply sends someone's words to the wrong person and cannot be undone.
+   6b. **A recognised user always gets an answer.** Silence is the one response people read
+   as "it's broken", so every intent — including ones we cannot serve yet — produces a
+   reply that names what is missing.
 7. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
    fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
    endless redelivery.
