@@ -1125,6 +1125,34 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+/// Maps a provider mailbox address to the account that owns it.
+///
+/// A provider push tells us only which mailbox changed — never whose it is. So
+/// the lookup has to happen before any tenant is established, which row-level
+/// security cannot express.
+///
+/// Relaxing RLS on `email_accounts` would solve it, but that table holds token
+/// ciphertext, and widening read access to the table holding credentials to
+/// solve a routing problem is the wrong trade. This table exists instead: it
+/// carries no secrets, only the identifiers needed to route a notification to
+/// the right queue, and is deliberately outside tenant isolation.
+model ProviderAccountRoute {
+  id String @id @default(uuid()) @db.Uuid
+
+  provider        MailProvider
+  /// Lower-cased. What the provider names in its push payload.
+  providerAddress String       @map("provider_address")
+
+  userId    String @map("user_id") @db.Uuid
+  accountId String @map("account_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([provider, providerAddress])
+  @@index([accountId])
+  @@map("provider_account_routes")
+}
+
 /// Idempotency ledger for webhooks. A row here means "already processed"; the
 /// unique constraint is what makes a provider's third retry a no-op.
 model ProcessedWebhook {

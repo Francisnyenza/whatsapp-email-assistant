@@ -8,7 +8,7 @@ Last updated: 2026-08-04.
 
 ## Verified working
 
-Everything below has tests that run and pass. **497 tests** (427 unit + 70 integration against
+Everything below has tests that run and pass. **519 tests** (449 unit + 70 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
@@ -18,7 +18,7 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/db`       | 8 (integration) | Prisma schema, two migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
 | `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                           |
-| `apps/api`      | 36 + 12 (int.)  | Auth with refresh rotation and theft detection, webhook ingress, OAuth connect flow, health, error handling     |
+| `apps/api`      | 58 + 12 (int.)  | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling        |
 | `apps/worker`   | 47 + 58 (int.)  | Ingest pipeline, notify with delivery policy, resolution ladder, response planner, at-most-once send            |
 
 ```bash
@@ -49,9 +49,10 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
    below to have anywhere to send.
 2. **Auth module** — JWT with refresh rotation and theft detection, TOTP 2FA, RBAC. The
    schema and crypto for all of it exist; the endpoints do not.
-3. **The Gmail Pub/Sub webhook.** The ingest processor exists and is tested, but nothing
-   enqueues it: `POST /webhooks/gmail` — verifying Google's JWT and extracting the historyId
-   — is not written. Until it is, ingest only runs if something else schedules it.
+3. **Watch renewal.** Gmail's `users.watch` expires after seven days, and nothing renews
+   it. A mailbox connected today stops receiving pushes next week — the single most likely
+   way this quietly stops working in production. Needs a scheduled sweep over
+   `(status, watchExpiresAt)`, which is already indexed for it.
 4. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
    and a 2FA-enabled account correctly receives a token with `mfa: false` — but there is no
    endpoint to verify a code and upgrade it, and no guard that requires `mfa: true`. So
@@ -61,7 +62,9 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
    not messaged recently is currently dropped rather than delivered.
 6. **The AI layer.** Notifications deliver without a summary today, which is by design —
    but the card is noticeably thinner than the product intends.
-7. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+7. **The polling fallback.** `pollingSince` is written when a watch fails, but nothing
+   reads it. An account that fell back to polling currently receives nothing at all.
+8. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
 ### After that
@@ -163,6 +166,9 @@ Each of these has a test. They are the load-bearing ones.
 10. **A reply is sent at most once.** The draft claim is a conditional write, so two
     workers racing on one draft means exactly one send. Tested with genuinely concurrent
     claims against Postgres, not two calls to a mock.
-11. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
+11. **Webhooks verify before parsing and acknowledge before working.** Both the WhatsApp
+    and Gmail endpoints reject unauthenticated requests before touching the payload, respond
+    before doing work, and always return 2xx once authentic — so a bug on our side cannot
+    make a provider redeliver forever. Missing raw bytes
     fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
     endless redelivery.

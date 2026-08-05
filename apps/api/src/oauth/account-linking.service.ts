@@ -124,6 +124,27 @@ export class AccountLinkingService {
       });
     });
 
+    // The route is what lets an inbound Gmail push find this account. Written
+    // outside the tenant transaction because the table is deliberately not
+    // tenant-scoped — it is consulted to determine the tenant.
+    await this.prisma.providerAccountRoute.upsert({
+      where: {
+        provider_providerAddress: {
+          provider: 'gmail',
+          providerAddress: identity.emailAddress.toLowerCase(),
+        },
+      },
+      create: {
+        provider: 'gmail',
+        providerAddress: identity.emailAddress.toLowerCase(),
+        userId,
+        accountId: account.id,
+      },
+      // A mailbox moving between accounts is unusual but legitimate — someone
+      // disconnecting and reconnecting under a different login.
+      update: { userId, accountId: account.id },
+    });
+
     // Note the address is masked by the logger's redaction, so this line is safe
     // even though it names a mailbox.
     this.logger.info(
