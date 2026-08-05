@@ -11,7 +11,8 @@
     "lint": "eslint src",
     "test": "tsc -p tsconfig.json && vitest run",
     "test:unit": "tsc -p tsconfig.json && vitest run",
-    "clean": "rm -rf dist *.tsbuildinfo"
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -19,22 +20,23 @@
     "@nestjs/platform-express": "^10.4.15",
     "@wea/crypto": "workspace:*",
     "@wea/db": "workspace:*",
+    "@wea/mail": "workspace:*",
     "@wea/shared": "workspace:*",
     "@wea/whatsapp": "workspace:*",
     "bullmq": "^5.34.5",
     "express": "^4.21.2",
     "helmet": "^8.0.0",
+    "jose": "^5.10.0",
     "pino": "^9.5.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1",
-    "@wea/mail": "workspace:*"
+    "rxjs": "^7.8.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
+    "@types/express-serve-static-core": "^5.0.0",
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8",
-    "@types/express-serve-static-core": "^5.0.0"
+    "vitest": "^2.1.8"
   }
 }

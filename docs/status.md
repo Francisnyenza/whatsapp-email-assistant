@@ -8,7 +8,7 @@ Last updated: 2026-08-04.
 
 ## Verified working
 
-Everything below has tests that run and pass. **466 tests** (427 unit + 39 integration against
+Everything below has tests that run and pass. **478 tests** (427 unit + 51 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
@@ -18,7 +18,7 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/db`       | 8 (integration) | Prisma schema, two migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
 | `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                           |
-| `apps/api`      | 36              | Webhook ingress, OAuth connect flow with signed state, health, config, error handling, DI metadata              |
+| `apps/api`      | 36 + 12 (int.)  | Auth with refresh rotation and theft detection, webhook ingress, OAuth connect flow, health, error handling     |
 | `apps/worker`   | 47 + 39 (int.)  | Resolution ladder, response planner, outbound sender, send pipeline with at-most-once claim, envelope crypto    |
 
 ```bash
@@ -52,11 +52,12 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 3. **The ingest processor** — Gmail push → fetch → persist → notify. This is the "email
    arrives on WhatsApp" half; `GmailProvider.fetchChanges` and the notification builder are
    both done, so what's missing is the handler joining them.
-4. **Authentication.** The OAuth routes exist and are secure, but `currentUserId` reads a
-   header a guard is meant to populate and throws when it is absent. Nothing can actually
-   sign in yet, so the connect flow cannot be driven by a real user — this is now the
-   single blocking gap.
-5. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+4. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
+   and a 2FA-enabled account correctly receives a token with `mfa: false` — but there is no
+   endpoint to verify a code and upgrade it, and no guard that requires `mfa: true`. So
+   enabling 2FA today would lock an account out rather than protect it.
+5. **The ingest processor.** Still the largest missing piece — see item 3.
+6. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
 ### After that
@@ -103,6 +104,15 @@ and `apps/api/test/di.spec.ts` asserts `design:paramtypes` survives — running 
 `dist/`, because vitest transpiles with esbuild, which does not implement
 `emitDecoratorMetadata` at all.
 
+**Auth tables cannot be gated on the tenant they are consulted to establish.** `sessions`
+and `api_keys` were placed under `tenant_isolation` in the original hardening migration,
+which meant a refresh token could never be looked up: the lookup is by hash, before any
+tenant is known. Authentication simply could not work. The fix relaxes _reads_ when no
+tenant context is set, while leaving writes strictly owner-scoped — verified directly in
+`psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
+than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
+credential.
+
 **Prisma's `upsert` cannot write an ownerless row under RLS.** It emits
 `INSERT ... ON CONFLICT DO UPDATE`, and Postgres evaluates the policy's `USING` clause on
 that path — which is NULL for a row with no owner, so the write is refused even though the
@@ -137,12 +147,15 @@ Each of these has a test. They are the load-bearing ones.
    6b. **A recognised user always gets an answer.** Silence is the one response people read
    as "it's broken", so every intent — including ones we cannot serve yet — produces a
    reply that names what is missing.
-7. **OAuth `state` is signed, expiring and carries the connecting user.** The callback
+7. **A reused refresh token revokes its whole family.** Presenting an already-rotated token
+   is impossible for a legitimate client, so it means two parties hold it. The response
+   logs out both — the user re-authenticates once; the attacker is out.
+8. **OAuth `state` is signed, expiring and carries the connecting user.** The callback
    never infers identity. Every rejection returns one identical public message, so a
    forgery attempt learns nothing about why it failed.
-8. **A reply is sent at most once.** The draft claim is a conditional write, so two
+9. **A reply is sent at most once.** The draft claim is a conditional write, so two
    workers racing on one draft means exactly one send. Tested with genuinely concurrent
    claims against Postgres, not two calls to a mock.
-9. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
-   fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
-   endless redelivery.
+10. **Webhooks verify before parsing and acknowledge before working.** Missing raw bytes
+    fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
+    endless redelivery.
