@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@wea/shared": "workspace:*",
+    "google-auth-library": "^9.15.1",
     "googleapis": "^144.0.0",
     "isomorphic-dompurify": "^2.19.0"
   },

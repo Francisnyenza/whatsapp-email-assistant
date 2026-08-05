@@ -43,3 +43,6 @@ export {
   type GmailMessage,
   type GmailMessagePart,
 } from './providers/gmail-normalize.js';
+
+export { GmailProvider, GMAIL_SCOPES } from './providers/gmail.provider.js';
+export { mapGmailError, isHistoryExpired, type GmailApiError } from './providers/gmail-errors.js';

@@ -8,7 +8,7 @@ Last updated: 2026-08-04.
 
 ## Verified working
 
-Everything below has tests that run and pass. **420 tests** (392 unit + 28 integration against
+Everything below has tests that run and pass. **436 tests** (408 unit + 28 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
@@ -17,7 +17,7 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/crypto`   | 74              | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes |
 | `@wea/db`       | 8 (integration) | Prisma schema, two migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
-| `@wea/mail`     | 99              | Threading headers, MIME composition, Gmail message normalizer, provider port                                    |
+| `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                           |
 | `apps/api`      | 17              | Webhook ingress with signature verification, health, config, error handling, DI metadata                        |
 | `apps/worker`   | 47 + 28 (int.)  | Thread-resolution ladder, response planner, outbound sender, inbox repository, queue consumers                  |
 
@@ -49,10 +49,11 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
    below to have anywhere to send.
 2. **Auth module** — JWT with refresh rotation and theft detection, TOTP 2FA, RBAC. The
    schema and crypto for all of it exist; the endpoints do not.
-3. **Gmail API client** — OAuth flow, `users.watch` + Pub/Sub, history sync, threaded send.
-   The normalizer and MIME composer it depends on are done and tested.
-4. **The remaining processors** — ingest, notify and send. `base.processor.ts` has the
-   retry and dead-letter behaviour; the handlers are what's missing.
+3. **The remaining processors** — ingest, notify and send. `base.processor.ts` has the
+   retry and dead-letter behaviour, and `GmailProvider` gives them somewhere to read from
+   and send to; the handlers themselves are what's missing.
+4. **OAuth connect endpoints** — `GmailProvider.authorizationUrl` and `exchangeCode` are
+   written and typed against the real client; the API routes that drive them are not.
 5. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
