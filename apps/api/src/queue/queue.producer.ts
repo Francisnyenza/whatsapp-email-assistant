@@ -35,6 +35,39 @@ export class QueueProducer implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Registers a job that repeats on a fixed interval.
+   *
+   * Upsert rather than add, because every worker replica calls this on boot and
+   * they must converge on one schedule rather than one per replica. Changing the
+   * interval in code is enough to move it — the scheduler id, not the interval,
+   * is the identity.
+   */
+  async schedule(
+    queueName: QueueName,
+    schedulerId: string,
+    everyMs: number,
+    jobName: JobName,
+    payload: unknown = {},
+  ): Promise<void> {
+    const defaults = QUEUE_DEFAULTS[queueName];
+
+    await this.queue(queueName).upsertJobScheduler(
+      schedulerId,
+      { every: everyMs },
+      {
+        name: jobName,
+        data: payload,
+        opts: {
+          attempts: defaults.attempts,
+          backoff: { type: 'exponential', delay: defaults.backoffMs },
+          removeOnComplete: { count: defaults.removeOnCompleteCount },
+          removeOnFail: { count: defaults.removeOnFailCount },
+        },
+      },
+    );
+  }
+
   private queue(name: QueueName): Queue {
     let queue = this.queues.get(name);
     if (!queue) {

@@ -1146,10 +1146,18 @@ model ProviderAccountRoute {
   userId    String @map("user_id") @db.Uuid
   accountId String @map("account_id") @db.Uuid
 
+  /// Mirror of `EmailAccount.watchExpiresAt`, kept here so the renewal sweep can
+  /// find lapsing subscriptions without reading the table that holds OAuth
+  /// tokens. NULL means no watch at all — an account on the polling fallback.
+  watchExpiresAt DateTime? @map("watch_expires_at")
+
   createdAt DateTime @default(now()) @map("created_at")
 
   @@unique([provider, providerAddress])
   @@index([accountId])
+  /// Drives the watch-renewal sweep. NULLs sort first: no watch is more urgent
+  /// than a watch about to lapse.
+  @@index([watchExpiresAt])
   @@map("provider_account_routes")
 }
 

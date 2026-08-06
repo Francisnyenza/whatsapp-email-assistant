@@ -12,7 +12,10 @@ import { IngestProcessor } from './processors/ingest.processor.js';
 import { NotifyProcessor } from './processors/notify.processor.js';
 import { MessageRepository } from './repositories/message.repository.js';
 import { QueueProducer } from './queue/queue.producer.js';
+import { SyncScheduler } from './queue/sync.scheduler.js';
 import { CommandsProcessor } from './processors/commands.processor.js';
+import { SyncProcessor } from './processors/sync.processor.js';
+import { WatchRepository } from './repositories/watch.repository.js';
 
 @Module({
   imports: [ConfigModule],
@@ -25,11 +28,14 @@ import { CommandsProcessor } from './processors/commands.processor.js';
     AccountService,
     DraftRepository,
     MessageRepository,
+    WatchRepository,
     QueueProducer,
+    SyncScheduler,
     CommandsProcessor,
     SendProcessor,
     IngestProcessor,
     NotifyProcessor,
+    SyncProcessor,
   ],
 })
 export class WorkerModule {}

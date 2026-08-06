@@ -42,6 +42,7 @@ export const JOB = {
   SEND_EMAIL: 'send.email',
 
   // sync
+  SWEEP_WATCHES: 'sync.sweepWatches',
   RENEW_WATCH: 'sync.renewWatch',
   RECONCILE_ACCOUNT: 'sync.reconcileAccount',
   REFRESH_TOKEN: 'sync.refreshToken',
@@ -160,6 +161,27 @@ export interface SendEmailJob {
   /** The draft row holding the composed message. */
   draftId: string;
   idempotencyKey: string;
+}
+
+/**
+ * The scheduled sweep. Carries no payload of its own — everything it needs is
+ * in the database — but the shape is declared so the processor's job type is
+ * honest about what arrives.
+ */
+export interface SweepWatchesJob {
+  /** Overrides the default horizon; used by operators to force an early sweep. */
+  horizonHours?: number;
+}
+
+export interface RenewWatchJob {
+  userId: string;
+  accountId: string;
+  /**
+   * The expiry that made this account due, carried only so the job id can be
+   * derived from it — two sweeps that see the same lapsing watch produce the
+   * same id and therefore one renewal.
+   */
+  dueAt: string | null;
 }
 
 export interface HandleInboundJob {

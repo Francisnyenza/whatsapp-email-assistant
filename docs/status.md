@@ -2,35 +2,37 @@
 
 Honest accounting of what exists, what is verified, and what remains.
 
-Last updated: 2026-08-04.
+Last updated: 2026-08-06.
 
 ---
 
 ## Verified working
 
-Everything below has tests that run and pass. **519 tests** (449 unit + 70 integration against
+Everything below has tests that run and pass. **570 tests** (478 unit + 92 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests           | What it does                                                                                                    |
-| --------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 40              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization         |
-| `@wea/crypto`   | 74              | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes |
-| `@wea/db`       | 8 (integration) | Prisma schema, two migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
-| `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
-| `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                           |
-| `apps/api`      | 58 + 12 (int.)  | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling        |
-| `apps/worker`   | 47 + 58 (int.)  | Ingest pipeline, notify with delivery policy, resolution ladder, response planner, at-most-once send            |
+| Package         | Tests           | What it does                                                                                                        |
+| --------------- | --------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 40              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization             |
+| `@wea/crypto`   | 74              | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes     |
+| `@wea/db`       | 8 (integration) | Prisma schema, five migrations, seed. RLS verified against real Postgres 16 + pgvector                              |
+| `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser                |
+| `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                               |
+| `apps/api`      | 58 + 12 (int.)  | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling            |
+| `apps/worker`   | 76 + 72 (int.)  | Ingest pipeline, notify with delivery policy, resolution ladder, response planner, at-most-once send, watch renewal |
 
 ```bash
-pnpm -r test          # 328 unit tests
+pnpm -r test          # 478 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
 ### Verified against real infrastructure
 
-- Both migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
+- All five migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
 - Row-level security isolates tenants: no context → no rows; scoped → own rows only;
   cross-tenant read → empty; cross-tenant write → refused by policy.
+- The watch-renewal sweep reads every tenant's routes without gaining read access to any
+  tenant's mailbox — asserted directly, as `wea_app`, in `watch-renewal.integration.spec.ts`.
 - `audit_logs` rejects UPDATE and DELETE at both the grant and trigger level.
 - Encryption-pairing CHECK constraints reject ciphertext stored without its wrapped key.
 - HNSW, trigram and partial indexes are created.
@@ -47,24 +49,20 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
    action, but tapping "Delete" or "Send" does not yet execute anything — the handler for
    an inbound `confirm_*` payload is the missing piece, and it needs the Gmail client
    below to have anywhere to send.
-2. **Auth module** — JWT with refresh rotation and theft detection, TOTP 2FA, RBAC. The
-   schema and crypto for all of it exist; the endpoints do not.
-3. **Watch renewal.** Gmail's `users.watch` expires after seven days, and nothing renews
-   it. A mailbox connected today stops receiving pushes next week — the single most likely
-   way this quietly stops working in production. Needs a scheduled sweep over
-   `(status, watchExpiresAt)`, which is already indexed for it.
-4. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
+2. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
    and a 2FA-enabled account correctly receives a token with `mfa: false` — but there is no
    endpoint to verify a code and upgrade it, and no guard that requires `mfa: true`. So
    enabling 2FA today would lock an account out rather than protect it.
-5. **Template sending.** Outside the 24-hour window the notify processor logs and stops,
+3. **Template sending.** Outside the 24-hour window the notify processor logs and stops,
    because the approved-template catalogue does not exist. So mail arriving when a user has
    not messaged recently is currently dropped rather than delivered.
-6. **The AI layer.** Notifications deliver without a summary today, which is by design —
+4. **The AI layer.** Notifications deliver without a summary today, which is by design —
    but the card is noticeably thinner than the product intends.
-7. **The polling fallback.** `pollingSince` is written when a watch fails, but nothing
-   reads it. An account that fell back to polling currently receives nothing at all.
-8. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+5. **The polling fallback.** `pollingSince` is written when a watch cannot be established
+   or renewed, and the renewal sweep now retries those accounts every hour — but nothing
+   yet polls on their behalf in the meantime. An account in that state receives nothing
+   until a watch succeeds.
+6. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
 ### After that
@@ -88,7 +86,7 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ## Findings worth carrying forward
 
-Four things surfaced during the build that would have been expensive to discover later.
+Things that surfaced during the build and would have been expensive to discover later.
 
 **Postgres exempts superusers from row-level security.** The isolation tests initially
 passed _vacuously_ — the policies existed, `\d` displayed them, and nothing was enforced,
@@ -119,6 +117,23 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**A scheduled job has no tenant, and row-level security has no way to express that.** The
+watch-renewal sweep runs on a timer on behalf of everyone, so a cross-tenant read of
+`email_accounts` would return zero rows under the policy — and the two obvious fixes are
+both bad: relax RLS on the table holding OAuth token ciphertext, or run the sweep as a role
+that bypasses RLS entirely. Neither is worth it for a scheduling problem. The expiry is
+mirrored instead onto `provider_account_routes`, which is already outside tenant isolation
+because it is consulted to _determine_ the tenant, and which carries no secrets. The sweep
+learns which mailboxes need renewing; the renewal itself still runs fully tenant-scoped.
+The cost is two columns that must not diverge, so both are written in one transaction, and
+an integration test asserts the sweep still cannot read or write another user's mailbox.
+
+**Renewing a subscription must not move the sync cursor.** Gmail hands back its current
+`historyId` when a watch is re-issued. Storing it would silently skip every message between
+the position we had and the moment of renewal — mail the user never hears about, caused by
+the very job that exists to keep mail flowing. The cursor is written on renewal only when
+the account has none.
 
 **Prisma's `upsert` cannot write an ownerless row under RLS.** It emits
 `INSERT ... ON CONFLICT DO UPDATE`, and Postgres evaluates the policy's `USING` clause on

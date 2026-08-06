@@ -141,8 +141,11 @@ export class AccountLinkingService {
         accountId: account.id,
       },
       // A mailbox moving between accounts is unusual but legitimate — someone
-      // disconnecting and reconnecting under a different login.
-      update: { userId, accountId: account.id },
+      // disconnecting and reconnecting under a different login. The expiry is
+      // cleared with it: whatever watch the previous account held says nothing
+      // about this one, and a stale expiry would read as healthy to the renewal
+      // sweep. `startWatching` sets the real value moments later.
+      update: { userId, accountId: account.id, watchExpiresAt: null },
     });
 
     // Note the address is masked by the logger's redaction, so this line is safe
@@ -197,16 +200,27 @@ export class AccountLinkingService {
             pollingSince: null,
           },
         });
+
+        // Mirrored onto the route in the same transaction, because that is what
+        // the renewal sweep reads. The two must not diverge: a route that looks
+        // healthier than the account is a mailbox that quietly stops receiving
+        // mail seven days from now.
+        await tx.providerAccountRoute.updateMany({
+          where: { accountId },
+          data: { watchExpiresAt: handle.expiresAt },
+        });
       });
 
       return true;
     } catch (err) {
-      // Fall back to polling rather than failing the connection.
+      // Fall back to polling rather than failing the connection. The route's
+      // expiry stays null, which is exactly what makes the renewal sweep pick
+      // this account up first and try again.
       await this.prisma
         .forUser(userId, async (tx) => {
           await tx.emailAccount.update({
             where: { id: accountId },
-            data: { status: 'active', pollingSince: new Date() },
+            data: { status: 'active', pollingSince: new Date(), watchExpiresAt: null },
           });
         })
         .catch(() => undefined);

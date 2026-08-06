@@ -70,6 +70,8 @@ export {
   type AnalyzeEmailJob,
   type NotifyEmailJob,
   type SendEmailJob,
+  type SweepWatchesJob,
+  type RenewWatchJob,
   type HandleInboundJob,
 } from './constants/queues.js';
 
