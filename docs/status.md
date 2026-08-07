@@ -8,27 +8,27 @@ Last updated: 2026-08-06.
 
 ## Verified working
 
-Everything below has tests that run and pass. **570 tests** (478 unit + 92 integration against
+Everything below has tests that run and pass. **616 tests** (510 unit + 106 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests           | What it does                                                                                                        |
-| --------------- | --------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 40              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization             |
-| `@wea/crypto`   | 74              | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes     |
-| `@wea/db`       | 8 (integration) | Prisma schema, five migrations, seed. RLS verified against real Postgres 16 + pgvector                              |
-| `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser                |
-| `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                               |
-| `apps/api`      | 58 + 12 (int.)  | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling            |
-| `apps/worker`   | 76 + 72 (int.)  | Ingest pipeline, notify with delivery policy, resolution ladder, response planner, at-most-once send, watch renewal |
+| Package         | Tests           | What it does                                                                                                    |
+| --------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 40              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization         |
+| `@wea/crypto`   | 74              | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes |
+| `@wea/db`       | 8 (integration) | Prisma schema, six migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
+| `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
+| `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                           |
+| `apps/api`      | 58 + 12 (int.)  | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling        |
+| `apps/worker`   | 108 + 86 (int.) | Ingest, notify, resolution ladder, response planner, mailbox actions, reply composition, send, watch renewal    |
 
 ```bash
-pnpm -r test          # 478 unit tests
+pnpm -r test          # 510 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
 ### Verified against real infrastructure
 
-- All five migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
+- All six migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
 - Row-level security isolates tenants: no context → no rows; scoped → own rows only;
   cross-tenant read → empty; cross-tenant write → refused by policy.
 - The watch-renewal sweep reads every tenant's routes without gaining read access to any
@@ -36,6 +36,12 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
 - `audit_logs` rejects UPDATE and DELETE at both the grant and trigger level.
 - Encryption-pairing CHECK constraints reject ciphertext stored without its wrapped key.
 - HNSW, trigram and partial indexes are created.
+- A WhatsApp command reaches the mailbox: "archive" flips `is_archived` and the provider is
+  asked to archive; a tapped delete confirmation sets `deleted_at` and asks for the trash,
+  never a permanent delete; "yes" writes a real draft with `Re: ` and the parent's
+  `Message-ID`, encrypted, and queues one send keyed on the draft.
+- When the provider refuses, the user is told so — the reply never claims an action that
+  did not happen.
 
 ---
 
@@ -45,10 +51,10 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Acting on a confirmation tap.** The loop asks correctly and records the pending
-   action, but tapping "Delete" or "Send" does not yet execute anything — the handler for
-   an inbound `confirm_*` payload is the missing piece, and it needs the Gmail client
-   below to have anywhere to send.
+1. **Forwarding.** The forward confirmation exists and its button now says plainly that
+   forwarding is not built, rather than doing nothing. It needs a composer of its own:
+   forwarding quotes the original and carries its attachments, which is a different
+   message from a reply, not a variation on one.
 2. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
    and a 2FA-enabled account correctly receives a token with `mfa: false` — but there is no
    endpoint to verify a code and upgrade it, and no guard that requires `mfa: true`. So
@@ -117,6 +123,22 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**A plan that is not executed is worse than no plan.** The response planner returned
+`followUp: 'queue_send' | 'queue_action'` and the processor only logged it — so the worker
+replied "Archived." and "Sending your reply…" without archiving or sending anything. Every
+test passed, because each half was correct on its own and nothing asserted the join. The
+fix is structural rather than a patch: the plan now carries a concrete `effect`, the
+processor carries it out **before** replying, and the sentence the user receives describes
+the outcome instead of the intention. A planner invariant test now pins `effect` to
+`followUp` in both directions, and the integration tests assert against the database and
+the provider stub rather than against the message we sent.
+
+**A button can outlive what it points at.** A tap from an old notification names an email
+that may since have been purged. Passing that id straight through violated the delivery
+record's foreign key, which threw, retried, and left the user with no answer at all — the
+one outcome the whole "always reply" rule exists to prevent. The target is now resolved
+before anything references it.
 
 **A scheduled job has no tenant, and row-level security has no way to express that.** The
 watch-renewal sweep runs on a timer on behalf of everyone, so a cross-tenant read of

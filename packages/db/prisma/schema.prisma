@@ -447,6 +447,11 @@ model EmailMessage {
   isDraft        Boolean @default(false) @map("is_draft")
   hasAttachments Boolean @default(false) @map("has_attachments")
 
+  /// Moved to the provider's trash. A timestamp rather than a row deletion: the
+  /// user authorized a recoverable trash, and the delivery record that resolves
+  /// their next reply has to outlive it.
+  deletedAt DateTime? @map("deleted_at")
+
   labels    String[]
   sizeBytes Int      @default(0) @map("size_bytes")
 
@@ -476,6 +481,7 @@ model EmailMessage {
   @@index([userId, fromAddress])
   @@index([contentHash])
   @@index([messageIdHeader])
+  @@index([userId, deletedAt])
   @@map("email_messages")
 }
 

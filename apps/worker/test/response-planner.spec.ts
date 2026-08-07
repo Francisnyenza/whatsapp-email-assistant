@@ -248,3 +248,73 @@ describe('payloads stay inside WhatsApp limits', () => {
     expect((result.payload as any).sections[0].rows.length).toBeLessThanOrEqual(10);
   });
 });
+
+describe('what it says matches what it does', () => {
+  /**
+   * `followUp` describes the plan and `effect` carries it out. They are written
+   * side by side in every branch, so they can drift — and drift here means a
+   * message saying "Archived." with nothing to archive, or an effect fired for a
+   * plan that was only meant to ask.
+   */
+  const everyPlan: Array<[string, ReturnType<typeof plan>]> = [
+    ['reply with body', plan({ intent: 'reply', body: 'On Friday' }, resolved())],
+    ['reply without body', plan({ intent: 'reply' }, resolved())],
+    ['yes', plan({ intent: 'reply_affirmative' }, resolved())],
+    ['no', plan({ intent: 'reply_negative' }, resolved())],
+    ['archive', plan({ intent: 'archive' }, resolved())],
+    ['mark read', plan({ intent: 'mark_read', read: true }, resolved())],
+    ['mark unread', plan({ intent: 'mark_read', read: false }, resolved())],
+    ['star', plan({ intent: 'mark_important', important: true }, resolved())],
+    ['delete', plan({ intent: 'delete' }, resolved())],
+    ['help', plan({ intent: 'help' }, resolved())],
+    ['unknown', plan({ intent: 'unknown', raw: 'zzz' }, resolved())],
+    [
+      'prose as a reply',
+      plan({ intent: 'unknown', raw: 'sounds good' }, resolved(), {
+        looksLikeReplyBody: true,
+        rawText: 'sounds good',
+      }),
+    ],
+  ];
+
+  for (const [label, result] of everyPlan) {
+    it(`${label}: an effect appears exactly when the plan is to act`, () => {
+      const shouldAct = result.followUp === 'queue_send' || result.followUp === 'queue_action';
+      expect(Boolean(result.effect), `followUp=${result.followUp}`).toBe(shouldAct);
+    });
+  }
+
+  it('queue_send always carries something to say', () => {
+    // An empty body would be a blank email sent under the user's name.
+    for (const [label, result] of everyPlan) {
+      if (result.followUp !== 'queue_send') continue;
+      expect(result.effect, label).toMatchObject({ kind: 'reply' });
+      expect((result.effect as { body: string }).body.trim().length, label).toBeGreaterThan(0);
+    }
+  });
+
+  it('queue_action always carries a mailbox operation', () => {
+    for (const [label, result] of everyPlan) {
+      if (result.followUp !== 'queue_action') continue;
+      expect(result.effect, label).toMatchObject({ kind: 'mutate' });
+    }
+  });
+
+  it('a destructive verb never carries an effect', () => {
+    // The one that would delete someone's mail without asking.
+    expect(plan({ intent: 'delete' }, resolved()).effect).toBeUndefined();
+    expect(plan({ intent: 'forward', recipient: 'x@y.com' }, resolved()).effect).toBeUndefined();
+  });
+
+  it('sends the user’s own text, not a paraphrase of it', () => {
+    const result = plan({ intent: 'reply', body: 'I will send it Friday' }, resolved());
+    expect(result.effect).toEqual({ kind: 'reply', body: 'I will send it Friday' });
+  });
+
+  it('honours mark unread rather than always marking read', () => {
+    expect(plan({ intent: 'mark_read', read: false }, resolved()).effect).toEqual({
+      kind: 'mutate',
+      operation: { kind: 'markRead', read: false },
+    });
+  });
+});

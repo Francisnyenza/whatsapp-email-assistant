@@ -1,7 +1,13 @@
 import { Injectable } from '@nestjs/common';
-import { encodeActionPayload, type CommandIntent, type WhatsAppOutboundPayload } from '@wea/shared';
+import {
+  encodeActionPayload,
+  type CommandIntent,
+  type MailOperation,
+  type WhatsAppOutboundPayload,
+} from '@wea/shared';
 import { buildDisambiguation, buildDeleteConfirmation, buildText, clamp } from '@wea/whatsapp';
 import type { Resolution, ResolutionCandidate } from './thread-resolver.js';
+import { YES_BODY, NO_BODY } from './canned-replies.js';
 
 /**
  * Deciding what to say back.
@@ -31,10 +37,25 @@ export interface PlanContext {
   rawText: string;
 }
 
+/**
+ * The concrete thing to do, when the plan involves doing something.
+ *
+ * Separate from `payload` because the payload is what we *say* and this is what
+ * we *do* — and the doing has to happen first. A message that reports an archive
+ * we then failed to perform is the one outcome worse than an error.
+ */
+export type PlannedEffect =
+  { kind: 'mutate'; operation: MailOperation } | { kind: 'reply'; body: string };
+
 export interface PlannedResponse {
   payload: WhatsAppOutboundPayload;
   /** What the worker should do after sending, if anything. */
   followUp: 'none' | 'await_confirmation' | 'await_reply_text' | 'queue_send' | 'queue_action';
+  /**
+   * Present exactly when `followUp` is `queue_send` or `queue_action`. The
+   * caller must carry it out before sending `payload`.
+   */
+  effect?: PlannedEffect;
   /** The email this response concerns, for the delivery record. */
   emailMessageId?: string;
 }
@@ -141,6 +162,7 @@ export class ResponsePlanner {
           return {
             payload: buildText(`Sending your reply to *${subject ?? 'this email'}*…`),
             followUp: 'queue_send',
+            effect: { kind: 'reply', body: intent.body },
             emailMessageId,
           };
         }
@@ -157,6 +179,10 @@ export class ResponsePlanner {
         return {
           payload: buildText(`Replying to *${subject ?? 'this email'}*…`),
           followUp: 'queue_send',
+          effect: {
+            kind: 'reply',
+            body: intent.intent === 'reply_affirmative' ? YES_BODY : NO_BODY,
+          },
           emailMessageId,
         };
 
@@ -165,6 +191,7 @@ export class ResponsePlanner {
         return {
           payload: buildText(`Archived *${subject ?? 'that email'}*.`),
           followUp: 'queue_action',
+          effect: { kind: 'mutate', operation: { kind: 'archive' } },
           emailMessageId,
         };
 
@@ -172,11 +199,17 @@ export class ResponsePlanner {
         return {
           payload: buildText(intent.read ? 'Marked as read.' : 'Marked as unread.'),
           followUp: 'queue_action',
+          effect: { kind: 'mutate', operation: { kind: 'markRead', read: intent.read } },
           emailMessageId,
         };
 
       case 'mark_important':
-        return { payload: buildText('Starred.'), followUp: 'queue_action', emailMessageId };
+        return {
+          payload: buildText(intent.important ? 'Starred.' : 'Unstarred.'),
+          followUp: 'queue_action',
+          effect: { kind: 'mutate', operation: { kind: 'star', starred: intent.important } },
+          emailMessageId,
+        };
 
       case 'summarize':
       case 'translate':
@@ -210,6 +243,7 @@ export class ResponsePlanner {
           return {
             payload: buildText(`Sending that as your reply to *${subject ?? 'this email'}*…`),
             followUp: 'queue_send',
+            effect: { kind: 'reply', body: context.rawText },
             emailMessageId,
           };
         }

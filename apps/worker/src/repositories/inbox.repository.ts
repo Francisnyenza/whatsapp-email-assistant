@@ -74,6 +74,9 @@ export class InboxRepository {
           direction: 'inbound',
           isArchived: false,
           isSpam: false,
+          // Offering someone an email they just deleted as a thing to reply to
+          // is how "did that work?" starts.
+          deletedAt: null,
           receivedAt: { gte: cutoff },
           // Only mail we actually told the user about. An email they never saw
           // is not something they can be replying to.

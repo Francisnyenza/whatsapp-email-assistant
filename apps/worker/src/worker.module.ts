@@ -6,6 +6,8 @@ import { InboxRepository } from './repositories/inbox.repository.js';
 import { ResponsePlanner } from './services/response-planner.js';
 import { OutboundService } from './services/outbound.service.js';
 import { AccountService } from './services/account.service.js';
+import { MailboxActionService } from './services/mailbox-action.service.js';
+import { ReplyComposer } from './services/reply-composer.js';
 import { DraftRepository } from './repositories/draft.repository.js';
 import { SendProcessor } from './processors/send.processor.js';
 import { IngestProcessor } from './processors/ingest.processor.js';
@@ -26,6 +28,8 @@ import { WatchRepository } from './repositories/watch.repository.js';
     ResponsePlanner,
     OutboundService,
     AccountService,
+    MailboxActionService,
+    ReplyComposer,
     DraftRepository,
     MessageRepository,
     WatchRepository,
