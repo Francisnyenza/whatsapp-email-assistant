@@ -47,7 +47,19 @@ export interface MailProvider {
    * day can have thousands of changes, and buffering them all before processing
    * any is how a worker runs out of memory.
    */
-  fetchChanges(account: ProviderAccount, cursor: string | null): AsyncIterable<ChangeEvent>;
+  /**
+   * Walks changes since `cursor`.
+   *
+   * Returns the provider's own new cursor as the generator's return value, not
+   * as a yielded event — the caller must store *that* and nothing else. Deriving
+   * a cursor from the last change seen is the bug this signature exists to
+   * prevent: a Gmail message id is not a historyId, and storing one produces a
+   * mailbox that never syncs again.
+   */
+  fetchChanges(
+    account: ProviderAccount,
+    cursor: string | null,
+  ): AsyncGenerator<ChangeEvent, string | null>;
 
   /** The cursor to resume from, for an account with no sync history. */
   getInitialCursor(account: ProviderAccount): Promise<string>;
@@ -88,6 +100,12 @@ export interface ProviderAccount {
   accessToken: string;
   refreshToken?: string;
   tokenExpiresAt?: Date;
+  /**
+   * Where this mailbox was last synced to. The adapter's own opaque value —
+   * Gmail's historyId, Graph's deltaLink — and the only correct place to resume
+   * from.
+   */
+  syncCursor?: string | null;
   /** Provider-specific settings: Gmail's Pub/Sub topic, Graph's notification URL. */
   config?: Record<string, string>;
 }

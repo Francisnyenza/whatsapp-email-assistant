@@ -8,7 +8,7 @@ Last updated: 2026-08-06.
 
 ## Verified working
 
-Everything below has tests that run and pass. **867 tests** (690 unit + 177 integration against
+Everything below has tests that run and pass. **873 tests** (690 unit + 183 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                 |
@@ -20,7 +20,7 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification            |
 | `@wea/ai`       | 58               | Prompt-injection envelope, instruction detection, structured analysis with schema discard, OpenAI provider   |
 | `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors     |
-| `apps/worker`   | 156 + 131 (int.) | Ingest, analysis, notify + templates + digest, resolution ladder, planner, actions, reply + forward, sweeps  |
+| `apps/worker`   | 156 + 137 (int.) | Ingest, analysis, notify + templates + digest, resolution ladder, planner, actions, reply + forward, sweeps  |
 
 ```bash
 pnpm -r test          # 690 unit tests
@@ -68,6 +68,9 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   analysis produces nothing rather than a half-trusted object.
 - Analysis never costs an email its delivery: no provider, no budget, invalid output,
   provider down, unreadable body — every exit still queues the notification.
+- Ingest resumes from the cursor we stored rather than the one on the job, and advances only
+  to the position the provider reported — asserted directly, because both halves were wrong
+  and the push path found no mail at all.
 - Deferred mail is recorded, and delivered as a digest the moment the user next messages us
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
@@ -150,6 +153,21 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**A stub that ignores the contract hides the bug the contract exists to prevent.** Ingest
+walked history from the cursor _on the job_. A Gmail push carries the mailbox's position
+**now**, so `history.list` started at "now" and returned nothing: every push was handled
+successfully, logged as a success, and found no mail. The push path was inert. Worse, the
+cursor was then advanced to the last _message id_ seen — and a message id is not a
+historyId, so the next sync started from a value Gmail cannot interpret and the mailbox
+never synced again.
+
+Neither was caught, because the test stub yielded from a fixed array regardless of the
+cursor it was handed and had no return value at all. The signature now makes the mistake
+hard: `fetchChanges` returns the provider's new cursor as the generator's _return_ value,
+so a caller cannot derive one from the last change it happened to see. The stub honours
+that contract, and six tests pin the behaviour — including one asserting that a push
+actually finds mail, which is the whole point of the feature.
 
 **A delimiter an attacker can close is a decoration.** Wrapping email content in `<email>`
 tags achieves nothing: the email writes `</email>` and continues with instructions. The

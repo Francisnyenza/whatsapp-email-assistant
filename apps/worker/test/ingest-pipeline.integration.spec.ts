@@ -39,6 +39,10 @@ describeIfDb('ingest pipeline (real database)', () => {
   let providerMessages: Map<string, NormalizedMessage>;
   let changes: Array<{ type: string; providerMessageId: string }>;
   let fetchChangesImpl: (() => AsyncIterable<any>) | null;
+  /** Every cursor ingest asked the provider to walk from. */
+  let cursorsRequested: Array<string | null>;
+  /** What the stubbed provider reports as the mailbox's new position. */
+  let providerCursor: string | null;
   /** Set to make sealing the body fail, so the fallback path can be exercised. */
   let sealFailure: Error | null = null;
 
@@ -84,14 +88,24 @@ describeIfDb('ingest pipeline (real database)', () => {
     providerMessages = new Map();
     changes = [];
     fetchChangesImpl = null;
+    cursorsRequested = [];
+    providerCursor = '2000';
 
+    // The stub honours the real contract: it is handed a cursor, and it returns
+    // the provider's new position as the generator's *return* value. An earlier
+    // version ignored both, which is precisely why ingest could walk history
+    // from the wrong place and store a message id as a cursor without a single
+    // test noticing.
     const provider = {
-      fetchChanges: () =>
-        fetchChangesImpl
-          ? fetchChangesImpl()
-          : (async function* () {
-              for (const change of changes) yield change;
-            })(),
+      fetchChanges: (_account: unknown, cursor: string | null) => {
+        if (fetchChangesImpl) return fetchChangesImpl();
+        cursorsRequested.push(cursor);
+        return (async function* () {
+          if (!cursor) return null;
+          for (const change of changes) yield change;
+          return providerCursor;
+        })();
+      },
       getMessage: async (_a: unknown, id: string) => {
         const found = providerMessages.get(id);
         if (!found) throw new AppError('NOT_FOUND', 'gone', { retryable: false });
@@ -106,6 +120,13 @@ describeIfDb('ingest pipeline (real database)', () => {
         userId,
         emailAddress: 'me@example.com',
         accessToken: 'x',
+        // Read from the row the tests actually set, so a change to how ingest
+        // resumes shows up here rather than being papered over.
+        syncCursor: await scopedTx(prisma, userId, (tx) =>
+          (tx as unknown as PrismaClient).emailAccount
+            .findUnique({ where: { id: accountId }, select: { syncCursor: true } })
+            .then((row) => row?.syncCursor ?? null),
+        ),
       }),
       providerFor: () => provider,
       markReauthRequired: vi.fn(),
@@ -191,6 +212,8 @@ describeIfDb('ingest pipeline (real database)', () => {
     providerMessages.clear();
     fetchChangesImpl = null;
     sealFailure = null;
+    cursorsRequested.length = 0;
+    providerCursor = '2000';
   });
 
   afterAll(async () => {
@@ -441,6 +464,97 @@ describeIfDb('ingest pipeline (real database)', () => {
 
       const stored = await withTenant((tx) =>
         tx.emailMessage.count({ where: { providerMessageId: survivor.providerMessageId } }),
+      );
+      expect(stored).toBe(1);
+    });
+  });
+
+  describe('where the sync resumes from', () => {
+    /**
+     * These pin the bug that made the whole push path inert: ingest walked
+     * history from the cursor *on the job*, and a Gmail push carries the
+     * mailbox's position **now** — so `history.list` started at "now" and
+     * returned nothing. Every push was handled successfully and found no mail.
+     *
+     * The second half is just as bad: the cursor was then advanced to the last
+     * *message id* seen. A message id is not a historyId, so the next sync
+     * started from a value Gmail cannot interpret and the mailbox never synced
+     * again.
+     */
+    const storedCursor = async () => {
+      const row = await withTenant((tx) =>
+        tx.emailAccount.findUnique({ where: { id: accountId }, select: { syncCursor: true } }),
+      );
+      return (row as { syncCursor: string | null }).syncCursor;
+    };
+
+    const setCursor = (value: string | null) =>
+      withTenant((tx) =>
+        tx.emailAccount.update({ where: { id: accountId }, data: { syncCursor: value } }),
+      );
+
+    it('resumes from what we stored, not from the cursor on the job', async () => {
+      await setCursor('1000');
+      stageIncoming();
+
+      // A push carries the mailbox's position now; walking from it finds nothing.
+      await ingest.handle({ data: { userId, accountId, cursor: '999999' } } as never);
+
+      expect(cursorsRequested).toEqual(['1000']);
+    });
+
+    it('advances to the position the provider reported', async () => {
+      await setCursor('1000');
+      providerCursor = '5150';
+      stageIncoming();
+
+      await runIngest();
+
+      expect(await storedCursor()).toBe('5150');
+    });
+
+    it('never stores a message id as the cursor', async () => {
+      // The stored value has to be something the provider can resume from.
+      await setCursor('1000');
+      const incoming = stageIncoming();
+
+      await runIngest();
+
+      expect(await storedCursor()).not.toBe(incoming.providerMessageId);
+      expect(await storedCursor()).toMatch(/^\d+$/);
+    });
+
+    it('leaves the cursor alone when the provider reports none', async () => {
+      await setCursor('1000');
+      providerCursor = null;
+      stageIncoming();
+
+      await runIngest();
+
+      expect(await storedCursor()).toBe('1000');
+    });
+
+    it('establishes a starting point for a mailbox that has never synced', async () => {
+      // Walking from nothing would either fail or replay the entire mailbox.
+      await setCursor(null);
+      stageIncoming();
+
+      await runIngest();
+
+      expect(await storedCursor()).toBe('fresh-cursor-999');
+      // And it did not try to walk history from nowhere.
+      expect(cursorsRequested).toEqual([]);
+      await setCursor('1000');
+    });
+
+    it('still finds mail when a push arrives, which is the whole point', async () => {
+      await setCursor('1000');
+      const incoming = stageIncoming();
+
+      await ingest.handle({ data: { userId, accountId, cursor: '999999' } } as never);
+
+      const stored = await withTenant((tx) =>
+        tx.emailMessage.count({ where: { providerMessageId: incoming.providerMessageId } }),
       );
       expect(stored).toBe(1);
     });

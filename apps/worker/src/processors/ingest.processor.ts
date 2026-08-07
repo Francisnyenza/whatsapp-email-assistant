@@ -22,9 +22,11 @@ import { startWorker } from './base.processor.js';
  *     row, and a message that was already stored is skipped. Redelivery is
  *     constant here, and notifying twice is the most visible bug this system
  *     could have.
- *  2. **The cursor advances only after the work succeeds.** Advancing first
- *     would silently skip mail whenever a fetch failed mid-batch — mail the
- *     user never learns about, which is worse than processing something twice.
+ *  2. **The cursor advances only after the work succeeds, and only to the
+ *     position the provider reported.** Advancing first would silently skip mail
+ *     whenever a fetch failed mid-batch. Advancing to the last message id seen
+ *     is worse still: a message id is not a historyId, and storing one leaves a
+ *     mailbox that never syncs again.
  *  3. **An expired cursor is normal, not an incident.** Gmail keeps history for
  *     about a week, so a paused account comes back to a 404/412 rather than to
  *     silence. That path resyncs instead of dead-lettering.
@@ -51,17 +53,44 @@ export class IngestProcessor implements OnModuleInit, OnModuleDestroy {
   }
 
   async handle(job: Job<ProcessChangeJob>): Promise<void> {
-    const { userId, accountId, cursor } = job.data;
+    const { userId, accountId } = job.data;
 
     const account = await this.accounts.load(userId, accountId);
     const provider = this.accounts.providerFor('gmail');
 
+    // From what we have already seen — never from the cursor on the job. A
+    // Gmail push carries the mailbox's position *now*, so walking history from
+    // it returns nothing at all: every push would be handled successfully and
+    // find no mail. The job's cursor is a hint for ordering and logging.
+    const from = account.syncCursor ?? null;
+
+    if (!from) {
+      // Never synced. Establish a starting point rather than guessing one —
+      // walking from nothing would either fail or replay the entire mailbox.
+      const fresh = await provider.getInitialCursor(account);
+      await this.messages.setCursor(userId, accountId, fresh);
+      this.logger.info(
+        { event: 'ingest.cursor_initialised', accountId },
+        'No sync position stored; starting from now',
+      );
+      return;
+    }
+
     let processed = 0;
     let notified = 0;
-    let latestCursor = cursor;
 
     try {
-      for await (const change of provider.fetchChanges(account, cursor)) {
+      // Driven by hand rather than with `for await`, because the generator's
+      // *return* value is the new cursor and `for await` discards it. That
+      // value is the provider's own position; deriving one from the last change
+      // seen is how a message id ends up stored as a historyId, after which the
+      // mailbox never syncs again.
+      const changes = provider.fetchChanges(account, from);
+      let next = await changes.next();
+
+      for (; !next.done; next = await changes.next()) {
+        const change = next.value;
+
         // Deletions and label changes matter for keeping our copy honest, but
         // neither is something to notify about — the user made those.
         if (change.type !== 'messageAdded') continue;
@@ -99,17 +128,16 @@ export class IngestProcessor implements OnModuleInit, OnModuleDestroy {
           // a second notification for the same email.
           { jobId: `analyze:${stored.emailMessageId}` },
         );
-
-        latestCursor = change.providerMessageId;
       }
 
-      // Only now. See the class comment.
-      if (job.data.cursor) {
-        await this.messages.setCursor(userId, accountId, latestCursor ?? job.data.cursor);
+      // Only now, and only what the provider said. See the class comment.
+      const advanced = next.value;
+      if (advanced) {
+        await this.messages.setCursor(userId, accountId, advanced);
       }
 
       this.logger.info(
-        { event: 'ingest.completed', accountId, processed, notified },
+        { event: 'ingest.completed', accountId, processed, notified, cursor: advanced ?? from },
         'Mailbox changes processed',
       );
     } catch (err) {

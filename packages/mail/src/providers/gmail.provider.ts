@@ -148,11 +148,17 @@ export class GmailProvider implements MailProvider {
    * it surfaces as a distinct error the caller handles with a full resync rather
    * than as a generic failure.
    */
-  async *fetchChanges(account: ProviderAccount, cursor: string | null): AsyncIterable<ChangeEvent> {
-    if (!cursor) return;
+  async *fetchChanges(
+    account: ProviderAccount,
+    cursor: string | null,
+  ): AsyncGenerator<ChangeEvent, string | null> {
+    // Nothing to walk from. The caller establishes a starting point with
+    // `getInitialCursor` rather than guessing one here.
+    if (!cursor) return null;
 
     const gmail = this.client(account);
     let pageToken: string | undefined;
+    let latest: string | null = null;
 
     do {
       let page: gmail_v1.Schema$ListHistoryResponse;
@@ -195,8 +201,15 @@ export class GmailProvider implements MailProvider {
         }
       }
 
+      // Gmail reports the mailbox's current position on every page. This — not
+      // the id of the last message we happened to see — is what resumes the
+      // next sync.
+      if (page.historyId) latest = page.historyId;
+
       pageToken = page.nextPageToken ?? undefined;
     } while (pageToken);
+
+    return latest;
   }
 
   async getMessage(

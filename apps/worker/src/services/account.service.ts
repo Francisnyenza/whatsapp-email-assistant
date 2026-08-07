@@ -81,6 +81,10 @@ export class AccountService {
       accessToken,
       ...(refreshToken ? { refreshToken } : {}),
       ...(account.tokenExpiresAt ? { tokenExpiresAt: account.tokenExpiresAt } : {}),
+      // Where this mailbox was last synced to. Ingest resumes from here and
+      // from nowhere else — a cursor arriving on a job describes the mailbox
+      // *now*, and walking history from "now" finds nothing.
+      syncCursor: account.syncCursor,
     };
   }
 

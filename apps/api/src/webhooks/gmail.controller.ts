@@ -126,9 +126,11 @@ export class GmailWebhookController {
         {
           userId: route.userId,
           accountId: route.accountId,
-          // Gmail's historyId in the push is where the mailbox is *now*. The
-          // job syncs from the cursor we stored, so this is carried only for
-          // logging and ordering.
+          // Gmail's historyId in the push is where the mailbox is *now*, so it
+          // is carried for logging and ordering only. Ingest resumes from the
+          // cursor we stored — walking history from "now" returns nothing, and
+          // for a while this comment described that intent while the code did
+          // the opposite.
           cursor: push.historyId,
         },
         // Keyed per account rather than per push: several notifications for one
