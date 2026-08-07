@@ -19,6 +19,7 @@ import { ResponsePlanner, type PlannedEffect } from '../services/response-planne
 import { OutboundService } from '../services/outbound.service.js';
 import { MailboxActionService } from '../services/mailbox-action.service.js';
 import { ReplyComposer } from '../services/reply-composer.js';
+import { ForwardComposer } from '../services/forward-composer.js';
 import { interpretTap, type TapEffect } from '../services/tap-interpreter.js';
 import { InboxRepository } from '../repositories/inbox.repository.js';
 import { startWorker } from './base.processor.js';
@@ -56,7 +57,8 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly planner: ResponsePlanner,
     private readonly outbound: OutboundService,
     private readonly mailbox: MailboxActionService,
-    private readonly composer: ReplyComposer,
+    private readonly replies: ReplyComposer,
+    private readonly forwards: ForwardComposer,
     private readonly inbox: InboxRepository,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
@@ -195,17 +197,20 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       case 'mutate':
         return this.attempt(
           () => this.mailbox.apply(userId, emailMessageId, effect.operation),
-          buildText(effect.confirmation),
+          () => buildText(effect.confirmation),
         );
 
       case 'reply':
         return this.attempt(
-          () => this.composer.composeReply({ userId, emailMessageId, bodyText: effect.body }),
-          buildText(`Sending: “${effect.body}”`),
+          () => this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body }),
+          () => buildText(`Sending: “${effect.body}”`),
         );
 
       case 'confirm':
         return { payload: buildDeleteConfirmation(emailMessageId, subject) };
+
+      case 'confirm_forward':
+        return this.carryOutForward(userId, emailMessageId);
 
       case 'await_reply_text':
         return { payload: buildText('What would you like to say? Just type it here.') };
@@ -221,6 +226,57 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           ),
         };
     }
+  }
+
+  /**
+   * The forward the user was asked to confirm.
+   *
+   * The recipient comes from the pending action, written server-side when they
+   * typed the command — never from the button. Reading it also clears it, so a
+   * second tap on the same confirmation forwards nothing rather than sending a
+   * second copy.
+   */
+  private async carryOutForward(
+    userId: string,
+    emailMessageId: string,
+  ): Promise<{ payload: WhatsAppOutboundPayload; failed?: string }> {
+    const pending = await this.inbox.takePendingAction(userId, PENDING_FORWARD);
+
+    const recipient = typeof pending?.recipient === 'string' ? pending.recipient : null;
+    const target = typeof pending?.emailMessageId === 'string' ? pending.emailMessageId : null;
+
+    if (!recipient || target !== emailMessageId) {
+      // Expired, already spent, or pointing somewhere else. Never guess a
+      // recipient — sending someone's mail to the wrong address cannot be
+      // undone.
+      //
+      // A mismatch consumes the pending confirmation rather than leaving it,
+      // which costs the user one repeat of the command. That is the right way
+      // round: the alternative lets a stale or crafted tap probe for what is
+      // pending without spending it.
+      return {
+        payload: buildText(
+          "That confirmation has expired. Tell me again who to forward it to and I'll ask once more.",
+        ),
+        failed: 'no pending forward',
+      };
+    }
+
+    return this.attempt(
+      () =>
+        this.forwards.composeForward({
+          userId,
+          emailMessageId,
+          recipient,
+          ...(typeof pending?.note === 'string' ? { note: pending.note } : {}),
+        }),
+      (summary) =>
+        buildText(
+          summary.attachmentCount > 0
+            ? `Forwarding to ${recipient}, with ${describeAttachments(summary.attachmentCount)}…`
+            : `Forwarding to ${recipient}…`,
+        ),
+    );
   }
 
   /* ------------------------------- typed --------------------------------- */
@@ -270,6 +326,17 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     // Remember what we settled on, so a follow-up "yes" lands on the same email.
     if (resolution.outcome === 'resolved') {
       await this.inbox.touchConversation(userId, message.timestamp, resolution.emailMessageId);
+    }
+
+    // A forward's recipient is recorded here, server-side, at the moment the
+    // user names it — never carried on the confirmation button. That is what
+    // makes the tap safe: it can only re-authorize this forward, and cannot
+    // redirect their mail to an address that arrived with the tap.
+    if (parsed.intent.intent === 'forward' && resolution.outcome === 'resolved') {
+      await this.inbox.setPendingAction(userId, PENDING_FORWARD, {
+        emailMessageId: resolution.emailMessageId,
+        recipient: parsed.intent.recipient,
+      });
     }
 
     // Step 4 — carry it out, *then* answer. The planner's payload describes a
@@ -329,13 +396,13 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     if (effect.kind === 'mutate') {
       return this.attempt(
         () => this.mailbox.apply(userId, emailMessageId, effect.operation),
-        intended,
+        () => intended,
       );
     }
 
     return this.attempt(
-      () => this.composer.composeReply({ userId, emailMessageId, bodyText: effect.body }),
-      intended,
+      () => this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body }),
+      () => intended,
     );
   }
 
@@ -349,13 +416,12 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
    * silently swallowed error here is indistinguishable to the user from the
    * feature not existing.
    */
-  private async attempt(
-    action: () => Promise<unknown>,
-    onSuccess: WhatsAppOutboundPayload,
+  private async attempt<T>(
+    action: () => Promise<T>,
+    onSuccess: (result: T) => WhatsAppOutboundPayload,
   ): Promise<{ payload: WhatsAppOutboundPayload; failed?: string }> {
     try {
-      await action();
-      return { payload: onSuccess };
+      return { payload: onSuccess(await action()) };
     } catch (err) {
       const error = AppError.from(err);
 
@@ -379,6 +445,13 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
 
 const GENERIC_FAILURE = "Something went wrong and I couldn't do that. Please try again.";
 
+/** The pending-action key a forward confirmation is stored under. */
+const PENDING_FORWARD = 'awaiting_forward_confirmation';
+
+function describeAttachments(count: number): string {
+  return count === 1 ? 'its attachment' : `its ${count} attachments`;
+}
+
 /**
  * Why it failed, in the user's terms.
  *
@@ -396,6 +469,8 @@ function userFacingFailure(error: AppError): string {
       return 'I lost access to your mailbox. Please reconnect it and try again.';
     case 'PROVIDER_RATE_LIMITED':
       return 'Your mail provider is rate-limiting us. Try again in a minute.';
+    case 'PAYLOAD_TOO_LARGE':
+      return "That email's attachments are too large to forward.";
     case 'BAD_REQUEST':
       return "I didn't have enough to go on there.";
     default:

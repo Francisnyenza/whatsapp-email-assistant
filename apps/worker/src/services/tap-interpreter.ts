@@ -23,6 +23,8 @@ export type TapEffect =
   | { kind: 'reply'; body: string }
   /** Ask before acting. The planner builds the prompt. */
   | { kind: 'confirm'; verb: 'delete' }
+  /** Carry out the forward the user was asked to confirm. */
+  | { kind: 'confirm_forward' }
   /** Wait for the user to type their reply. */
   | { kind: 'await_reply_text' }
   /** Nothing happens; say the given line. */
@@ -89,14 +91,18 @@ export function interpretTap(payload: ActionPayload): TapEffect {
         message: 'Got it. What would you like to do — *reply*, *archive*, or *delete*?',
       };
 
-    // --- not built yet --------------------------------------------------------
     case 'confirm_send':
-      // Reached only from the forward confirmation, and forwarding has no
-      // composer yet. Saying so beats a button that silently does nothing.
-      return { kind: 'unavailable', capability: 'forward emails' };
+      // The recipient is deliberately not in this payload. It was written to
+      // the conversation's pending action when the user typed the command, so a
+      // replayed or crafted tap can only re-authorize the forward they already
+      // described — never redirect their mail somewhere new.
+      return { kind: 'confirm_forward' };
 
+    // --- not built yet --------------------------------------------------------
     case 'forward':
-      return { kind: 'unavailable', capability: 'forward emails' };
+      // The card has no forward button today; a typed command is the only way
+      // in, because a forward needs a recipient and a button cannot ask for one.
+      return { kind: 'unavailable', capability: 'forward from a button' };
 
     case 'summarize':
       return { kind: 'unavailable', capability: 'summarise emails' };

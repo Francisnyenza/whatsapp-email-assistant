@@ -17,6 +17,7 @@ export type ErrorCode =
   | 'FORBIDDEN'
   | 'NOT_FOUND'
   | 'CONFLICT'
+  | 'PAYLOAD_TOO_LARGE'
   | 'RATE_LIMITED'
   | 'QUOTA_EXCEEDED'
   | 'PAYMENT_REQUIRED'
@@ -41,6 +42,7 @@ const STATUS: Record<ErrorCode, number> = {
   FORBIDDEN: 403,
   NOT_FOUND: 404,
   CONFLICT: 409,
+  PAYLOAD_TOO_LARGE: 413,
   RATE_LIMITED: 429,
   QUOTA_EXCEEDED: 429,
   PAYMENT_REQUIRED: 402,
@@ -89,6 +91,7 @@ const GENERIC_PUBLIC_MESSAGE: Partial<Record<ErrorCode, string>> = {
   FORBIDDEN: "You don't have access to this.",
   NOT_FOUND: 'We could not find that.',
   CONFLICT: 'That conflicts with something that already exists.',
+  PAYLOAD_TOO_LARGE: 'That is too large to send.',
   RATE_LIMITED: "That's a lot of requests — please slow down.",
   QUOTA_EXCEEDED: "You've reached your plan's limit.",
   PAYMENT_REQUIRED: 'This feature needs an active subscription.',

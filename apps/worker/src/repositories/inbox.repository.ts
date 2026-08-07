@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.js';
-import { withoutTenantScope } from '@wea/db';
+import { withoutTenantScope, Prisma } from '@wea/db';
 import type { ResolutionCandidate } from '../services/thread-resolver.js';
 
 /**
@@ -161,6 +161,59 @@ export class InboxRepository {
           ...(activeEmailMessageId ? { activeEmailMessageId } : {}),
         },
       });
+    });
+  }
+
+  /**
+   * Remembers an action the user has been asked to confirm.
+   *
+   * This is what makes a confirmation tap safe. The button carries only our own
+   * record id — never a recipient — so the address a forward goes to is written
+   * here, server-side, at the moment the user typed it. A replayed or crafted
+   * tap therefore cannot redirect someone's mail anywhere; the worst it can do
+   * is re-authorize the forward the user already described.
+   */
+  async setPendingAction(
+    userId: string,
+    action: string,
+    details: Record<string, unknown>,
+  ): Promise<void> {
+    await this.prisma.forUser(userId, async (tx) => {
+      await tx.conversationState.updateMany({
+        where: { userId },
+        data: { pendingAction: action, pendingOptions: details as Prisma.InputJsonValue },
+      });
+    });
+  }
+
+  /**
+   * Reads and clears a pending action.
+   *
+   * Clearing on read is the point: a confirmation is spent once. Tapping the
+   * same button twice must not send two emails, and the send path's idempotency
+   * key does not help here because a second tap would compose a second draft.
+   */
+  async takePendingAction(userId: string, action: string): Promise<Record<string, unknown> | null> {
+    return this.prisma.forUser(userId, async (tx) => {
+      const state = await tx.conversationState.findUnique({
+        where: { userId },
+        select: { pendingAction: true, pendingOptions: true, expiresAt: true },
+      });
+
+      if (!state || state.pendingAction !== action) return null;
+      // An expired confirmation is not a confirmation. The user has moved on,
+      // and acting on it now would act on something they no longer have in mind.
+      if (state.expiresAt.getTime() <= Date.now()) return null;
+
+      await tx.conversationState.updateMany({
+        where: { userId, pendingAction: action },
+        // `Prisma.DbNull` writes SQL NULL; a bare `null` on a Json column means
+        // the JSON value `null`, and `undefined` means "leave it alone" — both
+        // would leave the spent confirmation readable.
+        data: { pendingAction: null, pendingOptions: Prisma.DbNull },
+      });
+
+      return (state.pendingOptions as Record<string, unknown> | null) ?? {};
     });
   }
 

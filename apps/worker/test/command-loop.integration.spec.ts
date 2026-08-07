@@ -7,6 +7,7 @@ import { ThreadResolver } from '../src/services/thread-resolver.js';
 import { ResponsePlanner } from '../src/services/response-planner.js';
 import { MailboxActionService } from '../src/services/mailbox-action.service.js';
 import { ReplyComposer } from '../src/services/reply-composer.js';
+import { ForwardComposer } from '../src/services/forward-composer.js';
 import { CommandsProcessor } from '../src/processors/commands.processor.js';
 import { encodeActionPayload, type InboundWhatsAppMessage, type MailOperation } from '@wea/shared';
 
@@ -32,6 +33,14 @@ describeIfDb('command loop (real database)', () => {
   let enqueued: Array<{ queue: string; payload: any; opts: any }>;
   /** Set to make the provider refuse, so the failure path can be exercised. */
   let mutateFailure: Error | null;
+  /** What the stubbed mailbox reports as attached to the original. */
+  let providerAttachments: Array<{
+    providerAttachmentId: string;
+    filename: string;
+    mimeType: string;
+    sizeBytes: number;
+    disposition: string;
+  }>;
 
   const userId = randomUUID();
   const accountId = randomUUID();
@@ -74,6 +83,7 @@ describeIfDb('command loop (real database)', () => {
     mutations = [];
     enqueued = [];
     mutateFailure = null;
+    providerAttachments = [];
 
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
@@ -86,6 +96,18 @@ describeIfDb('command loop (real database)', () => {
         if (mutateFailure) throw mutateFailure;
         mutations.push({ providerMessageId, operation });
       }),
+      // A forward reads the original from the mailbox rather than from our
+      // database, because ingest stores only a snippet.
+      getMessage: vi.fn(async (_a: unknown, providerMessageId: string) => ({
+        providerMessageId,
+        subject: 'Q3 report',
+        from: { address: 'sarah.chen@acme.com', name: 'Sarah Chen' },
+        to: [{ address: 'me@example.com' }],
+        cc: [],
+        sentAt: new Date('2026-08-04T09:30:00Z'),
+        bodyText: 'Could you send the Q3 report before Friday?',
+        attachments: providerAttachments,
+      })),
     };
 
     const accounts = {
@@ -118,6 +140,12 @@ describeIfDb('command loop (real database)', () => {
       outbound as never,
       new MailboxActionService(service as never, accounts as never, logger as never),
       new ReplyComposer(
+        accounts as never,
+        new DraftRepository(service as never),
+        queue as never,
+        logger as never,
+      ),
+      new ForwardComposer(
         accounts as never,
         new DraftRepository(service as never),
         queue as never,
@@ -211,6 +239,7 @@ describeIfDb('command loop (real database)', () => {
     mutations.length = 0;
     enqueued.length = 0;
     mutateFailure = null;
+    providerAttachments.length = 0;
     await withTenant(userId, async (tx) => {
       await tx.conversationState.deleteMany({ where: { userId } });
       await tx.draft.deleteMany({ where: { userId } });
@@ -578,6 +607,182 @@ describeIfDb('command loop (real database)', () => {
 
       expect(enqueued).toHaveLength(0);
       expect(lastText().toLowerCase()).toContain("couldn't find");
+    });
+  });
+
+  describe('forwarding', () => {
+    const forwardTap = (targetId: string) =>
+      deliver({
+        type: 'interactive',
+        text: undefined,
+        interactive: {
+          type: 'button_reply',
+          id: encodeActionPayload({ action: 'confirm_send', targetId }),
+          title: '➡️ Forward',
+        },
+      });
+
+    const draft = () => withTenant(userId, (tx) => tx.draft.findFirst({ where: { userId } }));
+
+    it('asks before forwarding and sends nothing yet', async () => {
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'forward to colleague@acme.com',
+      });
+
+      expect(enqueued).toHaveLength(0);
+      expect(await draft()).toBeNull();
+      expect(sent.at(-1)!.kind).toBe('reply_confirmation');
+    });
+
+    it('remembers the recipient server-side, not on the button', async () => {
+      // The button id is capped at 256 characters and is echoed back by the
+      // client. An address travelling on it would be an address an attacker
+      // could change.
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'forward to colleague@acme.com',
+      });
+
+      const buttons = (sent.at(-1)!.payload as any).buttons as Array<{ id: string }>;
+      for (const button of buttons) {
+        expect(button.id).not.toContain('colleague@acme.com');
+      }
+
+      const state = await withTenant(userId, (tx) =>
+        tx.conversationState.findUnique({ where: { userId } }),
+      );
+      expect(state!.pendingAction).toBe('awaiting_forward_confirmation');
+      expect(state!.pendingOptions).toMatchObject({ recipient: 'colleague@acme.com' });
+    });
+
+    it('forwards to the remembered address once confirmed', async () => {
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'forward to colleague@acme.com',
+      });
+      await forwardTap(emails.sarah!);
+
+      const composed = await draft();
+      expect(composed!.kind).toBe('forward');
+      expect(composed!.toAddresses).toEqual(['colleague@acme.com']);
+      expect(composed!.subject).toBe('Fwd: Q3 report');
+      expect(enqueued).toHaveLength(1);
+    });
+
+    it('starts a new conversation rather than threading onto the original', async () => {
+      // A forward threaded onto the original lands inside the sender's thread
+      // in the recipient's client, which also discloses that the conversation
+      // continued elsewhere.
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'forward to colleague@acme.com',
+      });
+      await forwardTap(emails.sarah!);
+
+      const composed = await draft();
+      expect(composed!.inReplyToHeader).toBeNull();
+      expect(composed!.referencesHeader).toEqual([]);
+      expect(composed!.providerThreadId).toBeNull();
+    });
+
+    it('reproduces the original in the quoted block', async () => {
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'forward to colleague@acme.com',
+      });
+      await forwardTap(emails.sarah!);
+
+      const composed = await draft();
+      const body = Buffer.from(composed!.bodyTextCipher).toString('utf8');
+
+      expect(body).toContain('---------- Forwarded message ----------');
+      expect(body).toContain('From: Sarah Chen <sarah.chen@acme.com>');
+      expect(body).toContain('Could you send the Q3 report before Friday?');
+    });
+
+    it('spends the confirmation, so a second tap sends nothing', async () => {
+      // The send path's idempotency key does not help here: a second tap would
+      // compose a second draft with a key of its own.
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'forward to colleague@acme.com',
+      });
+      await forwardTap(emails.sarah!);
+      enqueued.length = 0;
+
+      await forwardTap(emails.sarah!);
+
+      expect(enqueued).toHaveLength(0);
+      expect(lastText().toLowerCase()).toContain('expired');
+    });
+
+    it('refuses a tap with no confirmation behind it', async () => {
+      // Never guess a recipient. Sending someone's mail to the wrong address
+      // cannot be undone.
+      await forwardTap(emails.sarah!);
+
+      expect(enqueued).toHaveLength(0);
+      expect(await draft()).toBeNull();
+    });
+
+    it('will not forward using a confirmation raised for a different email', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'forward to colleague@acme.com' });
+
+      await forwardTap(emails.tom!);
+
+      expect(enqueued).toHaveLength(0);
+      expect(await draft()).toBeNull();
+    });
+
+    it('says what is going with it', async () => {
+      providerAttachments.push({
+        providerAttachmentId: 'att-1',
+        filename: 'q3.pdf',
+        mimeType: 'application/pdf',
+        sizeBytes: 2048,
+        disposition: 'attachment',
+      });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'forward to colleague@acme.com' });
+      await forwardTap(emails.sarah!);
+
+      expect(lastText()).toContain('its attachment');
+    });
+
+    it('refuses rather than silently dropping attachments that will not fit', async () => {
+      // A forward arriving without the invoice, after the user was told it
+      // went, is the failure they cannot see.
+      providerAttachments.push({
+        providerAttachmentId: 'att-huge',
+        filename: 'video.mp4',
+        mimeType: 'video/mp4',
+        sizeBytes: 40 * 1024 * 1024,
+        disposition: 'attachment',
+      });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'forward to colleague@acme.com' });
+      await forwardTap(emails.sarah!);
+
+      expect(enqueued).toHaveLength(0);
+      expect(lastText().toLowerCase()).toContain('too large');
+    });
+
+    it('does not count inline images towards the budget', async () => {
+      // They belong to the HTML body a forward does not reproduce, so counting
+      // them would refuse forwards that were always going to be fine.
+      providerAttachments.push({
+        providerAttachmentId: 'logo',
+        filename: 'logo.png',
+        mimeType: 'image/png',
+        sizeBytes: 30 * 1024 * 1024,
+        disposition: 'inline',
+      });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'forward to colleague@acme.com' });
+      await forwardTap(emails.sarah!);
+
+      expect(enqueued).toHaveLength(1);
     });
   });
 });

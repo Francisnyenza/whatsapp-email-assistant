@@ -1,8 +1,9 @@
 import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { AppError, QUEUE, type SendEmailJob } from '@wea/shared';
-import { buildReplyHeaders, resolveReplyRecipients } from '@wea/mail';
+import type { Readable } from 'node:stream';
+import { AppError, QUEUE, type SendEmailJob, type OutboundAttachment } from '@wea/shared';
+import { buildReplyHeaders, resolveReplyRecipients, type ProviderAccount } from '@wea/mail';
 import { buildText } from '@wea/whatsapp';
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
@@ -71,11 +72,20 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
     const provider = this.accounts.providerFor('gmail');
 
     try {
+      // A forward carries the original's files. They are fetched here rather
+      // than stored at compose time, so the forwarded copy ends up in two
+      // mailboxes and in neither of our stores.
+      const attachments =
+        draft.kind === 'forward' && draft.inReplyToMessageId
+          ? await this.collectForwardedAttachments(userId, account, draft.inReplyToMessageId)
+          : [];
+
       const result = await provider.send(account, {
         to: draft.to,
         ...(draft.cc.length ? { cc: draft.cc } : {}),
         subject: draft.subject,
         bodyText: draft.bodyText,
+        ...(attachments.length ? { attachments } : {}),
         // Frozen at compose time — see the class comment.
         ...(draft.inReplyTo ? { inReplyTo: draft.inReplyTo } : {}),
         ...(draft.references.length ? { references: draft.references } : {}),
@@ -130,11 +140,71 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Streams the original's attachments so a forward carries them.
+   *
+   * Total size was checked at compose time against a budget below the
+   * provider's own limit, so this is not the place that decides whether they
+   * fit. What it does decide is what happens when one cannot be fetched — and
+   * the answer is to fail the send. Delivering a forward with the invoice
+   * missing, having told the user it went, is the failure they cannot see and
+   * cannot recover from.
+   */
+  private async collectForwardedAttachments(
+    userId: string,
+    account: ProviderAccount,
+    emailMessageId: string,
+  ): Promise<OutboundAttachment[]> {
+    const provider = this.accounts.providerFor('gmail');
+    const original = await this.drafts.findForForward(userId, emailMessageId);
+    if (!original) return [];
+
+    const message = await provider.getMessage(account, original.providerMessageId);
+    const wanted = message.attachments.filter((a) => a.disposition !== 'inline');
+
+    const collected: OutboundAttachment[] = [];
+    for (const attachment of wanted) {
+      const stream = await provider.getAttachment(
+        account,
+        original.providerMessageId,
+        attachment.providerAttachmentId,
+      );
+
+      collected.push({
+        filename: attachment.filename,
+        mimeType: attachment.mimeType,
+        content: await readAll(stream),
+      });
+    }
+
+    this.logger.info(
+      { event: 'send.attachments_collected', emailMessageId, count: collected.length },
+      'Forwarded attachments fetched',
+    );
+
+    return collected;
+  }
+
   async onModuleDestroy(): Promise<void> {
     // Never abandon an in-flight send: the provider call may already be in
     // progress, and killing it mid-request is how a message gets sent twice.
     await this.worker?.close();
   }
+}
+
+/**
+ * Buffers a stream.
+ *
+ * Attachments are streamed everywhere else precisely to avoid this, but a MIME
+ * message has to be assembled whole before it can be base64-encoded and sent.
+ * The compose-time size budget is what keeps this bounded.
+ */
+async function readAll(stream: Readable): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+  }
+  return Buffer.concat(chunks);
 }
 
 /** Builds the reply headers and recipients for a draft. Exported for testing. */

@@ -13,6 +13,8 @@ import { PrismaService } from '../common/prisma.service.js';
 export interface ClaimedDraft {
   id: string;
   accountId: string;
+  /** A forward carries the original's attachments; a reply does not. */
+  kind: string;
   to: EmailAddress[];
   cc: EmailAddress[];
   subject: string;
@@ -42,6 +44,8 @@ export class DraftRepository {
     userId: string;
     accountId: string;
     inReplyToMessageId: string;
+    /** `reply` unless stated; a forward is composed and sent differently. */
+    kind?: 'reply' | 'forward';
     to: EmailAddress[];
     cc?: EmailAddress[];
     subject: string;
@@ -61,7 +65,7 @@ export class DraftRepository {
           userId: input.userId,
           accountId: input.accountId,
           inReplyToMessageId: input.inReplyToMessageId,
-          kind: 'reply',
+          kind: input.kind ?? 'reply',
           toAddresses: input.to.map((a) => a.address),
           ccAddresses: (input.cc ?? []).map((a) => a.address),
           subject: input.subject,
@@ -137,6 +141,7 @@ export class DraftRepository {
       return {
         id: draft.id,
         accountId: draft.accountId,
+        kind: draft.kind,
         to: draft.toAddresses.map((address) => ({ address })),
         cc: draft.ccAddresses.map((address) => ({ address })),
         subject: draft.subject,
@@ -180,6 +185,29 @@ export class DraftRepository {
         data: { status: retryable ? 'queued' : 'failed', failureReason: reason },
       });
     });
+  }
+
+  /**
+   * Establishes that a user may forward a message, and where to fetch it from.
+   *
+   * Narrow on purpose. Ingest stores only a snippet, so there is no body here to
+   * quote — the forward's content comes from the provider. What this row is for
+   * is authorization: row-level security is what makes a request to forward
+   * someone else's mail return nothing rather than their mail.
+   */
+  async findForForward(userId: string, emailMessageId: string) {
+    return this.prisma.forUser(userId, async (tx) =>
+      tx.emailMessage.findUnique({
+        where: { id: emailMessageId },
+        select: {
+          id: true,
+          accountId: true,
+          providerMessageId: true,
+          subject: true,
+          deletedAt: true,
+        },
+      }),
+    );
   }
 
   /** The original message a reply is threading onto. */

@@ -8,7 +8,7 @@ Last updated: 2026-08-06.
 
 ## Verified working
 
-Everything below has tests that run and pass. **616 tests** (510 unit + 106 integration against
+Everything below has tests that run and pass. **650 tests** (533 unit + 117 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests           | What it does                                                                                                    |
@@ -17,12 +17,12 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/crypto`   | 74              | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes |
 | `@wea/db`       | 8 (integration) | Prisma schema, six migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
 | `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
-| `@wea/mail`     | 115             | Threading, MIME composition, Gmail normalizer + provider, OAuth, error classification                           |
+| `@wea/mail`     | 130             | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification               |
 | `apps/api`      | 58 + 12 (int.)  | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling        |
-| `apps/worker`   | 108 + 86 (int.) | Ingest, notify, resolution ladder, response planner, mailbox actions, reply composition, send, watch renewal    |
+| `apps/worker`   | 116 + 97 (int.) | Ingest, notify, resolution ladder, planner, mailbox actions, reply + forward composition, send, watch renewal   |
 
 ```bash
-pnpm -r test          # 510 unit tests
+pnpm -r test          # 533 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -42,6 +42,9 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   `Message-ID`, encrypted, and queues one send keyed on the draft.
 - When the provider refuses, the user is told so — the reply never claims an action that
   did not happen.
+- A forward asks first, remembers the recipient server-side, and on confirmation writes a
+  `Fwd: ` draft with no threading headers, the original quoted, and its attachments carried.
+  A second tap on the same confirmation sends nothing.
 
 ---
 
@@ -51,10 +54,12 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Forwarding.** The forward confirmation exists and its button now says plainly that
-   forwarding is not built, rather than doing nothing. It needs a composer of its own:
-   forwarding quotes the original and carries its attachments, which is a different
-   message from a reply, not a variation on one.
+1. **Message bodies are never stored.** Ingest writes a 300-character snippet and nothing
+   else, so `email_messages.body_text_cipher` — and the envelope encryption the schema and
+   ADR 0002 describe for it — is dead weight today. Nothing depends on it yet: the forward
+   composer reads the original from the mailbox instead, which is better for privacy and
+   works for mail of any age. But summarisation and search both will, so this has to be
+   settled before the AI layer rather than after.
 2. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
    and a 2FA-enabled account correctly receives a token with `mfa: false` — but there is no
    endpoint to verify a code and upgrade it, and no guard that requires `mfa: true`. So
@@ -123,6 +128,13 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**A confirmation must not carry what it authorizes.** A forward's recipient never travels
+on the button. WhatsApp echoes an interactive id straight back to us, so an address placed
+there would be an address the client could change — and a forward to the wrong person
+cannot be recalled. The recipient is written to the conversation's pending action when the
+user types the command, and reading it clears it, so a replayed tap can at most
+re-authorize the forward they already described, and a second tap sends nothing at all.
 
 **A plan that is not executed is worse than no plan.** The response planner returned
 `followUp: 'queue_send' | 'queue_action'` and the processor only logged it — so the worker

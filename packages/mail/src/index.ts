@@ -13,6 +13,8 @@ export {
   type ThreadHeaders,
 } from './threading.js';
 
+export { buildForwardBody, type ForwardSource } from './forwarding.js';
+
 export {
   composeMime,
   toGmailRaw,
