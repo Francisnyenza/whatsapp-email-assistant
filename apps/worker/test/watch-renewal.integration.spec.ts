@@ -312,4 +312,53 @@ describeIfDb('watch renewal (real database)', () => {
       expect(account!.watchExpiresAt?.getTime()).toBe(expiresAt.getTime());
     });
   });
+
+  describe('the polling fallback', () => {
+    const mineOf = <T extends { accountId: string }>(rows: T[]) =>
+      rows.filter((r) => r.accountId === aliceAccount || r.accountId === bobAccount);
+
+    it('finds a mailbox with no watch, across tenants', async () => {
+      // The route table already knows: a null expiry is written when a watch
+      // could not be established, so no extra state is needed to answer this.
+      await seedAccount(alice, aliceAccount, { watchExpiresAt: null });
+      await seedAccount(bob, bobAccount, { watchExpiresAt: null });
+
+      const unwatched = mineOf(await watches.findWithoutWatch(100));
+
+      expect(unwatched.map((u) => u.accountId).sort()).toEqual([aliceAccount, bobAccount].sort());
+    });
+
+    it('ignores a mailbox that is on push', async () => {
+      await seedAccount(alice, aliceAccount, { watchExpiresAt: new Date(Date.now() + HOUR) });
+
+      expect(mineOf(await watches.findWithoutWatch(100))).toHaveLength(0);
+    });
+
+    it('stops on its own once a watch is established', async () => {
+      // Self-limiting: recording a renewal sets the expiry, which is the same
+      // column this query filters on.
+      await seedAccount(alice, aliceAccount, { watchExpiresAt: null });
+      expect(mineOf(await watches.findWithoutWatch(100))).toHaveLength(1);
+
+      await watches.recordRenewed(alice, aliceAccount, new Date(Date.now() + 7 * 24 * HOUR), '1');
+
+      expect(mineOf(await watches.findWithoutWatch(100))).toHaveLength(0);
+    });
+
+    it('starts again when a watch is lost', async () => {
+      await seedAccount(alice, aliceAccount, { watchExpiresAt: new Date(Date.now() + HOUR) });
+      expect(mineOf(await watches.findWithoutWatch(100))).toHaveLength(0);
+
+      await watches.recordUnavailable(alice, aliceAccount, 'DEPENDENCY_UNAVAILABLE');
+
+      expect(mineOf(await watches.findWithoutWatch(100))).toHaveLength(1);
+    });
+
+    it('respects the batch cap', async () => {
+      await seedAccount(alice, aliceAccount, { watchExpiresAt: null });
+      await seedAccount(bob, bobAccount, { watchExpiresAt: null });
+
+      expect(await watches.findWithoutWatch(1)).toHaveLength(1);
+    });
+  });
 });

@@ -8,7 +8,7 @@ Last updated: 2026-08-06.
 
 ## Verified working
 
-Everything below has tests that run and pass. **873 tests** (690 unit + 183 integration against
+Everything below has tests that run and pass. **884 tests** (696 unit + 188 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                 |
@@ -20,10 +20,10 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification            |
 | `@wea/ai`       | 58               | Prompt-injection envelope, instruction detection, structured analysis with schema discard, OpenAI provider   |
 | `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors     |
-| `apps/worker`   | 156 + 137 (int.) | Ingest, analysis, notify + templates + digest, resolution ladder, planner, actions, reply + forward, sweeps  |
+| `apps/worker`   | 162 + 142 (int.) | Ingest, analysis, notify + templates + digest, resolution ladder, planner, actions, reply + forward, sweeps  |
 
 ```bash
-pnpm -r test          # 690 unit tests
+pnpm -r test          # 696 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -71,6 +71,9 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
 - Ingest resumes from the cursor we stored rather than the one on the job, and advances only
   to the position the provider reported — asserted directly, because both halves were wrong
   and the push path found no mail at all.
+- A mailbox with no push subscription is polled every two minutes and stops being polled the
+  moment a watch is established — asserted across tenants, and in both directions as a watch
+  is gained and lost.
 - Deferred mail is recorded, and delivered as a digest the moment the user next messages us
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
@@ -84,14 +87,10 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **The polling fallback.** `pollingSince` is written when a watch cannot be established
-   or renewed, and the renewal sweep now retries those accounts every hour — but nothing
-   yet polls on their behalf in the meantime. An account in that state receives nothing
-   until a watch succeeds.
-2. **Embeddings and search.** `@wea/ai` covers analysis; `ai.embedEmail` and the pgvector
+1. **Embeddings and search.** `@wea/ai` covers analysis; `ai.embedEmail` and the pgvector
    search over `message_embeddings` are not built, so "find the invoice from Tom" still
    answers that it cannot search yet.
-3. **A Gemini provider.** `AI_PRIMARY_PROVIDER` accepts `gemini` and `anthropic` and only
+2. **A Gemini provider.** `AI_PRIMARY_PROVIDER` accepts `gemini` and `anthropic` and only
    `openai` is implemented, so selecting either silently disables summaries rather than
    failing at boot.
 
@@ -153,6 +152,15 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**The fallback and the bug were the same shape.** Polling exists for mailboxes whose watch
+could not be established, and it turned out to need no new state at all: a null expiry on
+`provider_account_routes` already means "no push subscription", is written when a watch
+fails and cleared when one succeeds, and can be read without a tenant — which is exactly
+what a scheduled sweep needs. It also stops on its own. The reason it is a dozen lines
+rather than a second pipeline is the cursor fix below: polling and push now reach the same
+ingest path two different ways, because ingest resumes from what it stored rather than from
+whatever the caller hands it.
 
 **A stub that ignores the contract hides the bug the contract exists to prevent.** Ingest
 walked history from the cursor _on the job_. A Gmail push carries the mailbox's position

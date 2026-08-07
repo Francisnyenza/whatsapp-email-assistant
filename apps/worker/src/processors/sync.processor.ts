@@ -12,6 +12,8 @@ import {
   SWEEP_BATCH_SIZE,
   PURGE_USER_BATCH,
   PURGE_ROWS_PER_USER,
+  POLL_BATCH_SIZE,
+  POLL_INTERVAL_MS,
   renewalJobId,
 } from '../services/watch-schedule.js';
 import {
@@ -44,6 +46,11 @@ type SyncJob = SweepWatchesJob | RenewWatchJob;
  * access to the table holding OAuth tokens. It also means one mailbox failing
  * to renew cannot stall the rest: each is its own job, its own retries, its own
  * dead letter.
+ *
+ * The polling sweep is the counterweight to the renewal one. Renewal tries to
+ * keep every mailbox on push; polling is what keeps mail flowing to the ones
+ * that, for now, are not — because "we tried to set up a watch and could not"
+ * must not mean "you receive nothing".
  *
  * The retention purge is the third job, and it is here for the same reason: it
  * runs on a timer with no tenant, and it solves that the same way — enumerate
@@ -82,6 +89,8 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
         return this.purge();
       case JOB.SWEEP_DIGESTS:
         return this.sweepDigests();
+      case JOB.SWEEP_POLLING:
+        return this.sweepPolling();
       default:
         // Not retryable: an unknown job name will still be unknown on the
         // fourth attempt. Straight to the dead letter, where it is visible.
@@ -168,6 +177,53 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
         retentionDays: this.config.env.RETENTION_BODY_DAYS,
       },
       'Retention sweep completed',
+    );
+  }
+
+  /**
+   * Syncs mailboxes that have no push subscription.
+   *
+   * Push is the product; this is what happens when it cannot be arranged — a
+   * Pub/Sub misconfiguration, a Google outage during linking, a watch that
+   * failed its renewals. Without it `pollingSince` is a column nobody reads and
+   * such an account receives nothing at all until a watch happens to succeed.
+   *
+   * A null expiry on the route is exactly the condition, so this needs no extra
+   * state and stops on its own the moment a watch is established.
+   *
+   * The job it enqueues is the ordinary ingest job. Now that ingest resumes from
+   * the stored cursor rather than one handed to it, polling and push are the
+   * same code path reached two different ways — which is the only reason this is
+   * a dozen lines rather than a second pipeline.
+   */
+  private async sweepPolling(): Promise<void> {
+    const now = Date.now();
+    const unwatched = await this.watches.findWithoutWatch(POLL_BATCH_SIZE);
+
+    for (const account of unwatched) {
+      await this.queue.enqueue(
+        QUEUE.INGEST,
+        JOB.PROCESS_CHANGE,
+        {
+          userId: account.userId,
+          accountId: account.accountId,
+          // Ingest ignores this and resumes from what it stored; it is carried
+          // because the job's shape requires it and it makes the log honest
+          // about which sweep produced the sync.
+          cursor: 'poll',
+        },
+        // One sync per account per interval, however many sweeps overlap.
+        { jobId: `poll:${account.accountId}:${Math.floor(now / POLL_INTERVAL_MS)}` },
+      );
+    }
+
+    this.logger.info(
+      {
+        event: 'sync.poll_sweep_completed',
+        polled: unwatched.length,
+        saturated: unwatched.length === POLL_BATCH_SIZE,
+      },
+      'Polled mailboxes without a push subscription',
     );
   }
 

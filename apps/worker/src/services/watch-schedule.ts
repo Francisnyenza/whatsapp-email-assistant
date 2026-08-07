@@ -38,6 +38,23 @@ export const PURGE_ROWS_PER_USER = 1_000;
 export const PURGE_INTERVAL_MS = 24 * 3_600_000;
 
 /**
+ * How often mailboxes with no push subscription are polled.
+ *
+ * The gap between the product's promise and its fallback. Push delivers in
+ * seconds; two minutes is the most a user should wait for mail on an account
+ * whose watch could not be established, and it is still cheap — `history.list`
+ * from a stored cursor is two quota units and usually returns nothing.
+ */
+export const POLL_INTERVAL_MS = 2 * 60_000;
+
+/**
+ * Polled per sweep. A cap rather than a limit on how many accounts may use the
+ * fallback: an outage that unwatches everyone drains over successive sweeps
+ * instead of arriving as one burst against the Gmail API.
+ */
+export const POLL_BATCH_SIZE = 200;
+
+/**
  * The id under which a renewal is enqueued.
  *
  * De-duplication is the point. The sweep runs hourly and the horizon is two

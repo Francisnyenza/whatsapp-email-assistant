@@ -2,13 +2,18 @@ import { Injectable, Inject, type OnModuleInit } from '@nestjs/common';
 import type { Logger } from 'pino';
 import { QUEUE, JOB } from '@wea/shared';
 import { QueueProducer } from './queue.producer.js';
-import { SWEEP_INTERVAL_MS, PURGE_INTERVAL_MS } from '../services/watch-schedule.js';
+import {
+  SWEEP_INTERVAL_MS,
+  PURGE_INTERVAL_MS,
+  POLL_INTERVAL_MS,
+} from '../services/watch-schedule.js';
 import { DIGEST_SWEEP_INTERVAL_MS } from '../services/digest-schedule.js';
 
 /** Scheduler identities. Stable, because changing one leaves the old schedule running. */
 const WATCH_SWEEP_ID = 'watch-renewal-sweep';
 const RETENTION_SWEEP_ID = 'retention-sweep';
 const DIGEST_SWEEP_ID = 'digest-sweep';
+const POLL_SWEEP_ID = 'polling-sweep';
 
 /**
  * The clock.
@@ -54,6 +59,13 @@ export class SyncScheduler implements OnModuleInit {
       DIGEST_SWEEP_INTERVAL_MS,
       JOB.SWEEP_DIGESTS,
       'deferred mail will never be delivered',
+    );
+
+    await this.register(
+      POLL_SWEEP_ID,
+      POLL_INTERVAL_MS,
+      JOB.SWEEP_POLLING,
+      'mailboxes without a push subscription will receive nothing',
     );
   }
 

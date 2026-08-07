@@ -56,6 +56,38 @@ export class WatchRepository {
   }
 
   /**
+   * Accounts with no push subscription at all.
+   *
+   * A null expiry on the route is exactly the condition: it is written when a
+   * watch could not be established and cleared when one is. So the table that
+   * exists to route pushes also, usefully, knows which mailboxes are not
+   * receiving any — and it can be read without a tenant, which is what a
+   * scheduled sweep needs.
+   *
+   * Self-limiting: the moment a watch succeeds the expiry is set and the account
+   * stops appearing here.
+   */
+  async findWithoutWatch(limit: number): Promise<DueWatch[]> {
+    return withoutTenantScope(this.prisma, 'watch-renewal', async (db) => {
+      const routes = await db.providerAccountRoute.findMany({
+        where: { provider: 'gmail', watchExpiresAt: null },
+        select: { userId: true, accountId: true, watchExpiresAt: true },
+        // Oldest route first, so a mailbox that has been unwatched longest is
+        // polled before one that was linked a moment ago and is probably about
+        // to get a watch anyway.
+        orderBy: { createdAt: 'asc' },
+        take: limit,
+      });
+
+      return routes.map((route) => ({
+        userId: route.userId,
+        accountId: route.accountId,
+        expiresAt: route.watchExpiresAt,
+      }));
+    });
+  }
+
+  /**
    * Records a renewed watch.
    *
    * `cursor` is Gmail's current historyId, and it is written **only when the

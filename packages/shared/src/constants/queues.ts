@@ -44,6 +44,7 @@ export const JOB = {
   // sync
   SWEEP_WATCHES: 'sync.sweepWatches',
   SWEEP_DIGESTS: 'sync.sweepDigests',
+  SWEEP_POLLING: 'sync.sweepPolling',
   RENEW_WATCH: 'sync.renewWatch',
   RECONCILE_ACCOUNT: 'sync.reconcileAccount',
   REFRESH_TOKEN: 'sync.refreshToken',

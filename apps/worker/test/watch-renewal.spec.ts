@@ -85,6 +85,7 @@ describe('the sync processor', () => {
   let processor: SyncProcessor;
   let watches: {
     findDue: ReturnType<typeof vi.fn>;
+    findWithoutWatch: ReturnType<typeof vi.fn>;
     recordRenewed: ReturnType<typeof vi.fn>;
     recordUnavailable: ReturnType<typeof vi.fn>;
     recordRenewalFailure: ReturnType<typeof vi.fn>;
@@ -108,6 +109,7 @@ describe('the sync processor', () => {
   beforeEach(() => {
     watches = {
       findDue: vi.fn().mockResolvedValue([]),
+      findWithoutWatch: vi.fn().mockResolvedValue([]),
       recordRenewed: vi.fn().mockResolvedValue(undefined),
       recordUnavailable: vi.fn().mockResolvedValue(undefined),
       recordRenewalFailure: vi.fn().mockResolvedValue(undefined),
@@ -270,6 +272,74 @@ describe('the sync processor', () => {
         'acct-1',
         'PROVIDER_RATE_LIMITED',
       );
+    });
+  });
+
+  describe('the polling fallback', () => {
+    const poll = () => run(JOB.SWEEP_POLLING, {});
+
+    it('syncs a mailbox that has no push subscription', async () => {
+      // Otherwise "we could not set up a watch" means "you receive nothing".
+      watches.findWithoutWatch.mockResolvedValue([
+        { userId: 'user-1', accountId: 'acct-1', expiresAt: null },
+      ]);
+
+      await poll();
+
+      expect(enqueue).toHaveBeenCalledWith(
+        'ingest',
+        'ingest.processChange',
+        expect.objectContaining({ userId: 'user-1', accountId: 'acct-1' }),
+        expect.objectContaining({ jobId: expect.stringMatching(/^poll:acct-1:/) }),
+      );
+    });
+
+    it('collapses overlapping sweeps into one sync per account', async () => {
+      watches.findWithoutWatch.mockResolvedValue([
+        { userId: 'user-1', accountId: 'acct-1', expiresAt: null },
+      ]);
+
+      await poll();
+      await poll();
+
+      const ids = enqueue.mock.calls.map((call) => call[3].jobId);
+      expect(new Set(ids).size).toBe(1);
+    });
+
+    it('polls every unwatched account, not just the first', async () => {
+      watches.findWithoutWatch.mockResolvedValue([
+        { userId: 'user-1', accountId: 'acct-1', expiresAt: null },
+        { userId: 'user-2', accountId: 'acct-2', expiresAt: null },
+      ]);
+
+      await poll();
+
+      expect(enqueue).toHaveBeenCalledTimes(2);
+    });
+
+    it('caps the batch, so an outage does not become a burst', async () => {
+      await poll();
+
+      const [limit] = watches.findWithoutWatch.mock.calls[0]!;
+      expect(limit).toBeGreaterThan(0);
+      expect(limit).toBeLessThanOrEqual(1_000);
+    });
+
+    it('does nothing when every mailbox is on push', async () => {
+      await poll();
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it('leaves the cursor to ingest rather than inventing one', async () => {
+      // Ingest resumes from what it stored. A cursor supplied here would be the
+      // exact bug that made the push path inert.
+      watches.findWithoutWatch.mockResolvedValue([
+        { userId: 'user-1', accountId: 'acct-1', expiresAt: null },
+      ]);
+
+      await poll();
+
+      expect(enqueue.mock.calls[0]![2].cursor).toBe('poll');
     });
   });
 
