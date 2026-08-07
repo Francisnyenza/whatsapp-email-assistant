@@ -206,6 +206,92 @@ export class MessageRepository {
     });
   }
 
+  /**
+   * Records that a notification was held back.
+   *
+   * The only thing that makes a digest possible: without it, "deferred" and
+   * "delivered" are indistinguishable afterwards, and the held mail is simply
+   * never sent. Suppressed mail deliberately does not come through here — a
+   * mute is the user saying they do not want to hear about it, and resurfacing
+   * it in a digest would override them.
+   */
+  async markDeferred(userId: string, emailMessageId: string): Promise<void> {
+    await this.prisma.forUser(userId, async (tx) => {
+      await tx.emailMessage.updateMany({
+        // Only if it is not already waiting: re-deferring would reset the clock,
+        // and how long something has been waiting is what tells a working digest
+        // from one that quietly stopped.
+        where: { id: emailMessageId, notifyDeferredAt: null },
+        data: { notifyDeferredAt: new Date() },
+      });
+    });
+  }
+
+  /** Clears the backlog flag once a message has actually been delivered. */
+  async markNotified(userId: string, emailMessageIds: string[]): Promise<void> {
+    if (emailMessageIds.length === 0) return;
+    await this.prisma.forUser(userId, async (tx) => {
+      await tx.emailMessage.updateMany({
+        where: { id: { in: emailMessageIds } },
+        data: { notifyDeferredAt: null },
+      });
+    });
+  }
+
+  /**
+   * What this user is still owed, oldest first.
+   *
+   * Archived, deleted and spam are excluded: the user has already dealt with
+   * them elsewhere, and a digest offering mail they binned yesterday reads as
+   * broken.
+   */
+  async findDeferred(userId: string, limit = 20) {
+    return this.prisma.forUser(userId, async (tx) =>
+      tx.emailMessage.findMany({
+        where: {
+          notifyDeferredAt: { not: null },
+          isArchived: false,
+          isSpam: false,
+          deletedAt: null,
+        },
+        orderBy: { receivedAt: 'asc' },
+        take: limit,
+        select: {
+          id: true,
+          fromAddress: true,
+          fromName: true,
+          subject: true,
+          receivedAt: true,
+          analysis: { select: { priority: true, summary: true } },
+        },
+      }),
+    );
+  }
+
+  /** How many are waiting, for the digest template's one placeholder. */
+  async countDeferred(userId: string): Promise<number> {
+    return this.prisma.forUser(userId, async (tx) =>
+      tx.emailMessage.count({
+        where: {
+          notifyDeferredAt: { not: null },
+          isArchived: false,
+          isSpam: false,
+          deletedAt: null,
+        },
+      }),
+    );
+  }
+
+  /** Notes that a digest just went out, so the sweep does not send another at the next tick. */
+  async recordDigestSent(userId: string): Promise<void> {
+    await this.prisma.forUser(userId, async (tx) => {
+      await tx.conversationState.updateMany({
+        where: { userId },
+        data: { lastDigestAt: new Date() },
+      });
+    });
+  }
+
   /** Records a sync failure, for the back-off and the health view. */
   async recordSyncFailure(userId: string, accountId: string, code: string): Promise<void> {
     await this.prisma.forUser(userId, async (tx) => {
@@ -225,7 +311,10 @@ export class MessageRepository {
     return this.prisma.forUser(userId, async (tx) => {
       const [preferences, state, user] = await Promise.all([
         tx.userPreference.findUnique({ where: { userId } }),
-        tx.conversationState.findUnique({ where: { userId }, select: { lastInboundAt: true } }),
+        tx.conversationState.findUnique({
+          where: { userId },
+          select: { lastInboundAt: true, lastDigestAt: true },
+        }),
         tx.user.findUnique({
           where: { id: userId },
           select: { phoneNumber: true, timezone: true, locale: true },

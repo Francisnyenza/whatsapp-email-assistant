@@ -14,6 +14,11 @@ import {
   PURGE_ROWS_PER_USER,
   renewalJobId,
 } from '../services/watch-schedule.js';
+import {
+  isDigestDue,
+  DIGEST_USER_BATCH,
+  DIGEST_SWEEP_INTERVAL_MS,
+} from '../services/digest-schedule.js';
 import { startWorker } from './base.processor.js';
 
 type SyncJob = SweepWatchesJob | RenewWatchJob;
@@ -75,6 +80,8 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
         return this.renew(job.data as RenewWatchJob);
       case JOB.PURGE_EXPIRED:
         return this.purge();
+      case JOB.SWEEP_DIGESTS:
+        return this.sweepDigests();
       default:
         // Not retryable: an unknown job name will still be unknown on the
         // fourth attempt. Straight to the dead letter, where it is visible.
@@ -161,6 +168,65 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
         retentionDays: this.config.env.RETENTION_BODY_DAYS,
       },
       'Retention sweep completed',
+    );
+  }
+
+  /**
+   * Finds users whose scheduled digest is due and enqueues one each.
+   *
+   * The other half of deferral. A user in digest mode, or one who simply has
+   * not messaged us, accumulates held-back mail that nothing would otherwise
+   * deliver — "deferred" would just be a politer word for dropped.
+   *
+   * Per-user rather than one cross-tenant query, because `email_messages` is
+   * under row-level security and the alternative is a scheduled job that can
+   * read every mailbox. Users with nothing waiting are skipped on a single
+   * indexed count.
+   */
+  private async sweepDigests(): Promise<void> {
+    const now = new Date();
+    let due = 0;
+    let examined = 0;
+    let cursor: string | undefined;
+
+    for (;;) {
+      const batch = await this.retention.findUserIds(DIGEST_USER_BATCH, cursor);
+      if (batch.length === 0) break;
+
+      for (const userId of batch) {
+        examined++;
+        const candidate = await this.retention.digestCandidate(userId);
+        if (!candidate) continue;
+
+        if (
+          !isDigestDue({
+            times: candidate.digestTimes,
+            timezone: candidate.timezone,
+            lastDigestAt: candidate.lastDigestAt,
+            now,
+          })
+        ) {
+          continue;
+        }
+
+        due++;
+        await this.queue.enqueue(
+          QUEUE.NOTIFY,
+          JOB.SEND_DIGEST,
+          { userId },
+          // Bucketed per sweep interval so two ticks cannot both fire while the
+          // first digest is still in flight.
+          { jobId: `digest:${userId}:${Math.floor(now.getTime() / DIGEST_SWEEP_INTERVAL_MS)}` },
+        );
+      }
+
+      cursor = batch.at(-1);
+      if (batch.length < DIGEST_USER_BATCH) break;
+    }
+
+    this.logger.info(
+      { event: 'sync.digest_sweep_completed', examined, due },
+      'Digest sweep completed',
     );
   }
 

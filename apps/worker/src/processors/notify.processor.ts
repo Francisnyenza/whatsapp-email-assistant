@@ -1,10 +1,12 @@
 import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { QUEUE, type NotifyEmailJob, type EmailPriority } from '@wea/shared';
+import { AppError, QUEUE, JOB, type NotifyEmailJob, type EmailPriority } from '@wea/shared';
 import {
   buildEmailNotification,
   buildNewEmailTemplate,
+  buildDigest,
+  buildDigestTemplate,
   evaluateWindow,
   decideDelivery,
 } from '@wea/whatsapp';
@@ -46,7 +48,96 @@ export class NotifyProcessor implements OnModuleInit, OnModuleDestroy {
   }
 
   async handle(job: Job<NotifyEmailJob>): Promise<void> {
-    const { userId, emailMessageId, force } = job.data;
+    switch (job.name) {
+      case JOB.NOTIFY_EMAIL:
+        return this.notifyOne(job.data);
+      case JOB.SEND_DIGEST:
+        return this.sendDigest(job.data.userId);
+      default:
+        // Not retryable: an unknown job name will still be unknown on the
+        // fourth attempt.
+        throw new AppError('BAD_REQUEST', `Unknown notify job: ${job.name}`, { retryable: false });
+    }
+  }
+
+  /**
+   * Everything this user is still owed, in one message.
+   *
+   * Fired when the messaging window reopens — the moment a user texts us, we
+   * can finally deliver what was held back — and on their scheduled digest
+   * times. Both matter: the first is what makes deferral honest rather than a
+   * polite word for dropping mail, and the second is what reaches someone who
+   * never texts.
+   */
+  private async sendDigest(userId: string): Promise<void> {
+    const { state, user } = await this.messages.findDeliveryContext(userId);
+    if (!user?.phoneNumber) return;
+
+    const waiting = await this.messages.findDeferred(userId);
+    if (waiting.length === 0) {
+      this.logger.info({ event: 'notify.digest_empty', userId }, 'Nothing waiting');
+      return;
+    }
+
+    const window = evaluateWindow({ lastInboundAt: state?.lastInboundAt ?? null });
+    const total = await this.messages.countDeferred(userId);
+
+    if (window.mode !== 'free_form') {
+      // Outside the window only a template gets through, and its text is fixed
+      // at approval time — so it can carry a count and nothing else. The
+      // backlog is deliberately *not* cleared: the user has been told mail is
+      // waiting, not shown it, and clearing here would lose it for good.
+      await this.outbound.reply({
+        userId,
+        phoneNumber: user.phoneNumber,
+        payload: buildDigestTemplate({ count: total, locale: user.locale }),
+        kind: 'digest',
+        lastInboundAt: state?.lastInboundAt ?? null,
+        allowOutsideWindow: true,
+      });
+
+      await this.messages.recordDigestSent(userId);
+
+      this.logger.info(
+        { event: 'notify.digest_template_sent', userId, waiting: total },
+        'Told the user mail is waiting',
+      );
+      return;
+    }
+
+    await this.outbound.reply({
+      userId,
+      phoneNumber: user.phoneNumber,
+      payload: buildDigest(
+        waiting.map((message) => ({
+          emailMessageId: message.id,
+          ...(message.fromName ? { fromName: message.fromName } : {}),
+          fromAddress: message.fromAddress,
+          subject: message.subject,
+          priority: (message.analysis?.priority ?? 'normal') as EmailPriority,
+          ...(message.analysis?.summary ? { summary: message.analysis.summary } : {}),
+        })),
+      ),
+      kind: 'digest',
+      lastInboundAt: state?.lastInboundAt ?? null,
+    });
+
+    // Only what was actually shown. Anything beyond the list's cap is still
+    // owed, and stays owed.
+    await this.messages.markNotified(
+      userId,
+      waiting.map((message) => message.id),
+    );
+    await this.messages.recordDigestSent(userId);
+
+    this.logger.info(
+      { event: 'notify.digest_sent', userId, delivered: waiting.length, waiting: total },
+      'Digest delivered',
+    );
+  }
+
+  private async notifyOne(data: NotifyEmailJob): Promise<void> {
+    const { userId, emailMessageId, force } = data;
 
     const message = await this.messages.findForNotification(userId, emailMessageId);
     if (!message) {
@@ -92,6 +183,14 @@ export class NotifyProcessor implements OnModuleInit, OnModuleDestroy {
       // Both are the user's own settings being honoured, so neither is a
       // failure — but they are logged distinctly, because "my mail stopped
       // arriving" is answered by exactly this line.
+      //
+      // Only a deferral is recorded. A suppression is the user saying they do
+      // not want to hear about it, and resurfacing it in a digest would
+      // override them.
+      if (action.action === 'defer') {
+        await this.messages.markDeferred(userId, emailMessageId);
+      }
+
       this.logger.info(
         { event: `notify.${action.action}`, emailMessageId, reason: action.reason, priority },
         `Notification ${action.action}`,
@@ -121,6 +220,10 @@ export class NotifyProcessor implements OnModuleInit, OnModuleDestroy {
         // template is being sent rather than a card.
         allowOutsideWindow: true,
       });
+
+      // Deliberately still marked as owed. The template said mail arrived; it
+      // did not show it, and the user has yet to see the card.
+      await this.messages.markDeferred(userId, emailMessageId);
 
       this.logger.info(
         { event: 'notify.template_sent', emailMessageId, priority },
@@ -154,6 +257,8 @@ export class NotifyProcessor implements OnModuleInit, OnModuleDestroy {
       emailMessageId: message.id,
       lastInboundAt: state?.lastInboundAt ?? null,
     });
+
+    await this.messages.markNotified(userId, [message.id]);
 
     this.logger.info(
       { event: 'notify.sent', emailMessageId, priority },

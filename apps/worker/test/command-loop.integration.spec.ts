@@ -152,6 +152,7 @@ describeIfDb('command loop (real database)', () => {
         logger as never,
       ),
       inbox,
+      queue as never,
       logger as never,
     );
 
@@ -272,6 +273,14 @@ describeIfDb('command loop (real database)', () => {
         },
       },
     } as never);
+
+  /**
+   * Only the outbound-mail jobs.
+   *
+   * Every inbound message also queues a backlog digest, which is a different
+   * concern and would otherwise make every count here off by one.
+   */
+  const sends = () => enqueued.filter((job) => job.queue === 'send');
 
   const lastText = () => {
     const payload = sent.at(-1)!.payload;
@@ -556,10 +565,10 @@ describeIfDb('command loop (real database)', () => {
     it('queues the send exactly once, keyed on the draft', async () => {
       await deliver({ context: { id: deliveries.sarah! }, text: 'yes' });
 
-      expect(enqueued).toHaveLength(1);
-      expect(enqueued[0]!.queue).toBe('send');
-      expect(enqueued[0]!.opts.jobId).toMatch(/^send:/);
-      expect(enqueued[0]!.payload).toMatchObject({ userId, accountId });
+      expect(sends()).toHaveLength(1);
+      expect(sends()[0]!.queue).toBe('send');
+      expect(sends()[0]!.opts.jobId).toMatch(/^send:/);
+      expect(sends()[0]!.payload).toMatchObject({ userId, accountId });
     });
 
     it('stores the body encrypted, never in the clear', async () => {
@@ -605,7 +614,7 @@ describeIfDb('command loop (real database)', () => {
         },
       });
 
-      expect(enqueued).toHaveLength(0);
+      expect(sends()).toHaveLength(0);
       expect(lastText().toLowerCase()).toContain("couldn't find");
     });
   });
@@ -630,7 +639,7 @@ describeIfDb('command loop (real database)', () => {
         text: 'forward to colleague@acme.com',
       });
 
-      expect(enqueued).toHaveLength(0);
+      expect(sends()).toHaveLength(0);
       expect(await draft()).toBeNull();
       expect(sent.at(-1)!.kind).toBe('reply_confirmation');
     });
@@ -667,7 +676,7 @@ describeIfDb('command loop (real database)', () => {
       expect(composed!.kind).toBe('forward');
       expect(composed!.toAddresses).toEqual(['colleague@acme.com']);
       expect(composed!.subject).toBe('Fwd: Q3 report');
-      expect(enqueued).toHaveLength(1);
+      expect(sends()).toHaveLength(1);
     });
 
     it('starts a new conversation rather than threading onto the original', async () => {
@@ -713,7 +722,7 @@ describeIfDb('command loop (real database)', () => {
 
       await forwardTap(emails.sarah!);
 
-      expect(enqueued).toHaveLength(0);
+      expect(sends()).toHaveLength(0);
       expect(lastText().toLowerCase()).toContain('expired');
     });
 
@@ -722,7 +731,7 @@ describeIfDb('command loop (real database)', () => {
       // cannot be undone.
       await forwardTap(emails.sarah!);
 
-      expect(enqueued).toHaveLength(0);
+      expect(sends()).toHaveLength(0);
       expect(await draft()).toBeNull();
     });
 
@@ -731,7 +740,7 @@ describeIfDb('command loop (real database)', () => {
 
       await forwardTap(emails.tom!);
 
-      expect(enqueued).toHaveLength(0);
+      expect(sends()).toHaveLength(0);
       expect(await draft()).toBeNull();
     });
 
@@ -764,7 +773,7 @@ describeIfDb('command loop (real database)', () => {
       await deliver({ context: { id: deliveries.sarah! }, text: 'forward to colleague@acme.com' });
       await forwardTap(emails.sarah!);
 
-      expect(enqueued).toHaveLength(0);
+      expect(sends()).toHaveLength(0);
       expect(lastText().toLowerCase()).toContain('too large');
     });
 
@@ -782,7 +791,7 @@ describeIfDb('command loop (real database)', () => {
       await deliver({ context: { id: deliveries.sarah! }, text: 'forward to colleague@acme.com' });
       await forwardTap(emails.sarah!);
 
-      expect(enqueued).toHaveLength(1);
+      expect(sends()).toHaveLength(1);
     });
   });
 });

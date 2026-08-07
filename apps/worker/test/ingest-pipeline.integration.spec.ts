@@ -436,8 +436,10 @@ describeIfDb('ingest pipeline (real database)', () => {
   });
 
   describe('delivery', () => {
+    // The job name matters now that the notify worker dispatches on it: the
+    // same queue carries per-email notifications and digests.
     const notifyFor = async (emailMessageId: string, force = false) =>
-      notify.handle({ data: { userId, emailMessageId, force } } as never);
+      notify.handle({ name: 'notify.email', data: { userId, emailMessageId, force } } as never);
 
     const idOf = async (providerMessageId: string) => {
       const row = await withTenant((tx) =>
@@ -584,6 +586,163 @@ describeIfDb('ingest pipeline (real database)', () => {
 
         expect(sent[0]!.payload.kind).not.toBe('template');
         expect(sent[0]!.allowOutsideWindow).toBe(false);
+      });
+    });
+
+    describe('the digest', () => {
+      /**
+       * Deferral is only honest if the held mail eventually arrives. Before
+       * this existed, `defer` was a politer word for dropping it.
+       */
+      const closeWindow = () =>
+        withTenant((tx) =>
+          tx.conversationState.update({
+            where: { userId },
+            data: { lastInboundAt: new Date(Date.now() - 25 * 3_600_000) },
+          }),
+        );
+
+      const openWindow = () =>
+        withTenant((tx) =>
+          tx.conversationState.update({ where: { userId }, data: { lastInboundAt: new Date() } }),
+        );
+
+      const digest = () => notify.handle({ name: 'notify.digest', data: { userId } } as never);
+
+      // Earlier tests in this file leave a backlog behind on purpose — deferral
+      // is what they are asserting. These count exactly, so they start clean.
+      beforeEach(async () => {
+        await withTenant((tx) =>
+          tx.emailMessage.updateMany({ where: { userId }, data: { notifyDeferredAt: null } }),
+        );
+      });
+
+      const deferredCount = () =>
+        withTenant((tx) => tx.emailMessage.count({ where: { notifyDeferredAt: { not: null } } }));
+
+      it('records ordinary mail held back outside the window', async () => {
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        await notifyFor(await idOf(incoming.providerMessageId));
+        await openWindow();
+
+        expect(await deferredCount()).toBe(1);
+      });
+
+      it('does not record a suppressed message', async () => {
+        // A mute is the user saying they do not want to hear about it.
+        // Resurfacing it in a digest would override them.
+        await withTenant((tx) =>
+          tx.userPreference.update({
+            where: { userId },
+            data: { mutedSenders: ['sarah.chen@acme.com'] },
+          }),
+        );
+        const incoming = stageIncoming();
+        await runIngest();
+        await notifyFor(await idOf(incoming.providerMessageId));
+        await withTenant((tx) =>
+          tx.userPreference.update({ where: { userId }, data: { mutedSenders: [] } }),
+        );
+
+        expect(await deferredCount()).toBe(0);
+      });
+
+      it('delivers the backlog as a list once the window is open', async () => {
+        await closeWindow();
+        const first = stageIncoming({ subject: 'Q3 report' });
+        const second = stageIncoming({ subject: 'Standup notes' });
+        await runIngest();
+        await notifyFor(await idOf(first.providerMessageId));
+        await notifyFor(await idOf(second.providerMessageId));
+        await openWindow();
+        sent.length = 0;
+
+        await digest();
+
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.kind).toBe('digest');
+        expect(sent[0]!.payload.kind).toBe('list');
+        expect(sent[0]!.payload.sections[0].rows).toHaveLength(2);
+      });
+
+      it('clears the backlog for what it actually showed', async () => {
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        await notifyFor(await idOf(incoming.providerMessageId));
+        await openWindow();
+
+        await digest();
+
+        expect(await deferredCount()).toBe(0);
+      });
+
+      it('sends nothing when nothing is waiting', async () => {
+        sent.length = 0;
+        await digest();
+        expect(sent).toHaveLength(0);
+      });
+
+      it('sends the template — and keeps the backlog — when the window is shut', async () => {
+        // The template says mail is waiting; it does not show it. Clearing the
+        // backlog here would lose that mail for good.
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        await notifyFor(await idOf(incoming.providerMessageId));
+        sent.length = 0;
+
+        await digest();
+        await openWindow();
+
+        expect(sent[0]!.payload.kind).toBe('template');
+        expect(sent[0]!.payload.name).toBe('email_digest_notification');
+        expect(sent[0]!.payload.components[0].parameters[0].text).toBe('1');
+        expect(await deferredCount()).toBe(1);
+      });
+
+      it('does not offer mail the user has since archived', async () => {
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        const emailMessageId = await idOf(incoming.providerMessageId);
+        await notifyFor(emailMessageId);
+        await openWindow();
+        await withTenant((tx) =>
+          tx.emailMessage.update({ where: { id: emailMessageId }, data: { isArchived: true } }),
+        );
+        sent.length = 0;
+
+        await digest();
+
+        expect(sent).toHaveLength(0);
+      });
+
+      it('clears the flag when a message is delivered normally', async () => {
+        // Otherwise a message notified in the usual way would reappear in every
+        // later digest.
+        const incoming = stageIncoming();
+        await runIngest();
+        await notifyFor(await idOf(incoming.providerMessageId));
+
+        expect(await deferredCount()).toBe(0);
+      });
+
+      it('records when a digest went out, so the sweep does not repeat it', async () => {
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        await notifyFor(await idOf(incoming.providerMessageId));
+        await openWindow();
+
+        await digest();
+
+        const state = await withTenant((tx) =>
+          tx.conversationState.findUnique({ where: { userId } }),
+        );
+        expect((state as any).lastDigestAt).not.toBeNull();
       });
     });
 

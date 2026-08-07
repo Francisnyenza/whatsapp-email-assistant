@@ -8,7 +8,7 @@ Last updated: 2026-08-06.
 
 ## Verified working
 
-Everything below has tests that run and pass. **765 tests** (598 unit + 167 integration against
+Everything below has tests that run and pass. **789 tests** (613 unit + 176 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                 |
@@ -22,13 +22,13 @@ real Postgres), lint and typecheck clean across every package and app.
 | `apps/worker`   | 118 + 115 (int.) | Ingest, notify, resolution ladder, planner, mailbox actions, reply + forward, send, watch renewal, retention |
 
 ```bash
-pnpm -r test          # 598 unit tests
+pnpm -r test          # 613 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
 ### Verified against real infrastructure
 
-- All seven migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
+- All eight migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
 - Row-level security isolates tenants: no context → no rows; scoped → own rows only;
   cross-tenant read → empty; cross-tenant write → refused by policy.
 - The watch-renewal sweep reads every tenant's routes without gaining read access to any
@@ -60,6 +60,10 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
 - Mail arriving outside the 24-hour window is delivered as an approved template rather than
   a free-form message Meta would silently drop; ordinary mail defers instead of paying for
   one; and the window exception refuses to carry anything that is not a template.
+- Deferred mail is recorded, and delivered as a digest the moment the user next messages us
+  — or on their own scheduled times, in their own timezone. A suppressed message is never
+  resurfaced; an archived one is not offered; and the backlog is cleared only for what was
+  actually shown, so the out-of-window template does not lose the mail it announced.
 
 ---
 
@@ -69,18 +73,13 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **The digest.** With templates in place, high-priority mail now reaches a user outside
-   the messaging window — but ordinary mail is deferred to a digest, and nothing consumes
-   `notify.digest`. So that mail is still not delivered; it is merely deferred correctly
-   now instead of dropped silently. This is the other half of the window problem and the
-   next thing to build.
-2. **The AI layer.** Notifications deliver without a summary today, which is by design —
+1. **The AI layer.** Notifications deliver without a summary today, which is by design —
    but the card is noticeably thinner than the product intends.
-3. **The polling fallback.** `pollingSince` is written when a watch cannot be established
+2. **The polling fallback.** `pollingSince` is written when a watch cannot be established
    or renewed, and the renewal sweep now retries those accounts every hour — but nothing
    yet polls on their behalf in the meantime. An account in that state receives nothing
    until a watch succeeds.
-4. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+3. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
 ### After that
@@ -135,6 +134,15 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**"Deferred" is a politer word for "dropped" until something delivers it.** `decideDelivery`
+had returned `defer` since the beginning and nothing recorded the decision, so afterwards
+"held back" and "delivered" were indistinguishable and the mail was simply gone. The fix is
+a timestamp per message and two triggers: the moment the user next messages us, because
+that is when the window reopens and is the path that actually matters; and their own
+scheduled times, as a backstop for someone who never texts. The backlog is cleared only for
+what was actually shown — the out-of-window template announces waiting mail without showing
+it, so clearing there would lose exactly the mail it just promised.
 
 **Outside the messaging window, the API lies to you.** Meta accepts a free-form message sent
 past the 24-hour customer service window, returns a message id, and never delivers it. There

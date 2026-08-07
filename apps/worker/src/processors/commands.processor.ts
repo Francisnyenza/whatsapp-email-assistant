@@ -4,6 +4,7 @@ import type { Logger } from 'pino';
 import {
   AppError,
   QUEUE,
+  JOB,
   decodeActionPayload,
   fromWhatsAppFormat,
   type ActionPayload,
@@ -22,6 +23,7 @@ import { ReplyComposer } from '../services/reply-composer.js';
 import { ForwardComposer } from '../services/forward-composer.js';
 import { interpretTap, type TapEffect } from '../services/tap-interpreter.js';
 import { InboxRepository } from '../repositories/inbox.repository.js';
+import { QueueProducer } from '../queue/queue.producer.js';
 import { startWorker } from './base.processor.js';
 
 /**
@@ -60,6 +62,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly replies: ReplyComposer,
     private readonly forwards: ForwardComposer,
     private readonly inbox: InboxRepository,
+    private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
@@ -105,6 +108,12 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     // understood it.
     await this.inbox.touchConversation(user.id, message.timestamp);
 
+    // And with it open, whatever was held back can finally be delivered. This
+    // is the moment that makes deferral honest rather than a politer word for
+    // dropping mail — the scheduled sweep is a backstop for users who never
+    // message us, not the main path.
+    await this.flushDeferred(user.id, message.timestamp);
+
     const tap = message.interactive?.id ? decodeActionPayload(message.interactive.id) : null;
     if (tap) {
       await this.handleTap(user.id, phoneNumber, message, tap);
@@ -112,6 +121,34 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.handleText(user.id, phoneNumber, message);
+  }
+
+  /**
+   * Asks for a digest of anything held back while the window was shut.
+   *
+   * Bucketed by the hour so a conversational burst — "archive", "yes",
+   * "thanks" — produces at most one digest rather than one per message. The
+   * handler itself returns early when nothing is waiting, so enqueueing
+   * unconditionally costs a job and no message.
+   *
+   * Failure is swallowed on purpose: the user asked us to do something else,
+   * and a digest that could not be queued must not take their actual request
+   * down with it.
+   */
+  private async flushDeferred(userId: string, at: Date): Promise<void> {
+    try {
+      await this.queue.enqueue(
+        QUEUE.NOTIFY,
+        JOB.SEND_DIGEST,
+        { userId },
+        { jobId: `digest:${userId}:reopen:${Math.floor(at.getTime() / 3_600_000)}` },
+      );
+    } catch (err) {
+      this.logger.warn(
+        { event: 'command.digest_flush_failed', err },
+        'Could not queue the backlog digest',
+      );
+    }
   }
 
   /* ------------------------------- taps ---------------------------------- */

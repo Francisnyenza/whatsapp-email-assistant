@@ -36,6 +36,48 @@ export class RetentionRepository {
   }
 
   /**
+   * What the digest sweep needs to decide whether this user is due.
+   *
+   * Tenant-scoped, so it runs once per user rather than as one cross-tenant
+   * query. That is the cost of `email_messages` being under row-level security,
+   * and it is the right cost: the alternative is a scheduled job that can read
+   * every mailbox. The count is a single indexed lookup against the partial
+   * index on the backlog, and users with nothing waiting are skipped before any
+   * of it happens.
+   */
+  async digestCandidate(userId: string): Promise<{
+    deferred: number;
+    timezone: string;
+    digestTimes: string[];
+    lastDigestAt: Date | null;
+  } | null> {
+    return this.prisma.forUser(userId, async (tx) => {
+      const deferred = await tx.emailMessage.count({
+        where: {
+          notifyDeferredAt: { not: null },
+          isArchived: false,
+          isSpam: false,
+          deletedAt: null,
+        },
+      });
+      if (deferred === 0) return null;
+
+      const [user, preferences, state] = await Promise.all([
+        tx.user.findUnique({ where: { id: userId }, select: { timezone: true } }),
+        tx.userPreference.findUnique({ where: { userId }, select: { digestTimes: true } }),
+        tx.conversationState.findUnique({ where: { userId }, select: { lastDigestAt: true } }),
+      ]);
+
+      return {
+        deferred,
+        timezone: user?.timezone ?? 'UTC',
+        digestTimes: preferences?.digestTimes ?? [],
+        lastDigestAt: state?.lastDigestAt ?? null,
+      };
+    });
+  }
+
+  /**
    * Erases message bodies past the retention window for one user.
    *
    * `bodyPurgedAt` is set in the same statement, so a body that is gone is

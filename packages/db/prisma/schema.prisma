@@ -462,6 +462,11 @@ model EmailMessage {
   /// their next reply has to outlive it.
   deletedAt DateTime? @map("deleted_at")
 
+  /// Set when notification was held back — closed window, digest mode, quiet
+  /// hours — and cleared when it is finally delivered. Suppressed mail never
+  /// gets this: a mute is the user saying they do not want to hear about it.
+  notifyDeferredAt DateTime? @map("notify_deferred_at")
+
   labels    String[]
   sizeBytes Int      @default(0) @map("size_bytes")
 
@@ -492,6 +497,7 @@ model EmailMessage {
   @@index([contentHash])
   @@index([messageIdHeader])
   @@index([userId, deletedAt])
+  @@index([userId, notifyDeferredAt])
   @@map("email_messages")
 }
 
@@ -749,6 +755,8 @@ model ConversationState {
   /// free-form message hangs off this (architecture §6.3).
   lastInboundAt  DateTime? @map("last_inbound_at")
   lastOutboundAt DateTime? @map("last_outbound_at")
+  /// Without this the scheduled sweep re-sends a digest at every tick.
+  lastDigestAt   DateTime? @map("last_digest_at")
 
   expiresAt DateTime @map("expires_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
