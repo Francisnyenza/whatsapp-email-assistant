@@ -183,7 +183,11 @@ export class AuthService {
     const accessToken = await this.tokens.sign({
       userId: user.id,
       sessionId: rotated.sessionId,
-      mfaSatisfied: !user.twoFactorEnabled,
+      // Carried across the rotation. Deriving this from `twoFactorEnabled`
+      // alone — as it did before — meant every refresh handed back a token
+      // saying mfa: false, so a 2FA user was asked for a code every fifteen
+      // minutes forever. That is how people turn 2FA off.
+      mfaSatisfied: !user.twoFactorEnabled || rotated.mfaSatisfiedAt !== null,
     });
 
     return {
@@ -192,6 +196,44 @@ export class AuthService {
       expiresIn: this.tokens.accessTtlSeconds,
       user: { id: user.id, email: user.email, twoFactorRequired: user.twoFactorEnabled },
     };
+  }
+
+  /**
+   * A fresh access token for a session whose standing has changed.
+   *
+   * Used after the second factor is satisfied: the token the client holds still
+   * says `mfa: false`, and it has nothing else to present. Reads the session
+   * rather than trusting the caller, so this cannot be used to mint an upgraded
+   * token for a session that never verified.
+   */
+  async reissueForSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<{ accessToken: string; expiresIn: number }> {
+    const [user, session] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { twoFactorEnabled: true },
+      }),
+      this.prisma.session.findUnique({
+        where: { id: sessionId },
+        select: { userId: true, revokedAt: true, mfaSatisfiedAt: true },
+      }),
+    ]);
+
+    if (!user || !session || session.userId !== userId || session.revokedAt) {
+      throw new AppError('UNAUTHENTICATED', 'Session is no longer valid', {
+        publicMessage: 'Please sign in again.',
+      });
+    }
+
+    const accessToken = await this.tokens.sign({
+      userId,
+      sessionId,
+      mfaSatisfied: !user.twoFactorEnabled || session.mfaSatisfiedAt !== null,
+    });
+
+    return { accessToken, expiresIn: this.tokens.accessTtlSeconds };
   }
 
   async signOut(userId: string, refreshToken: string): Promise<void> {

@@ -180,6 +180,12 @@ model User {
   twoFactorSecretKeyVer  Int?     @map("two_factor_secret_key_ver")
   /// SHA-256 of each single-use recovery code; entries are removed as they're used.
   twoFactorRecoveryCodes String[] @map("two_factor_recovery_codes")
+  /// The last TOTP step redeemed. Anything at or below it is refused, which is
+  /// what makes a one-time password one-time.
+  twoFactorLastUsedStep  BigInt?  @map("two_factor_last_used_step")
+  /// Set when enrolment was completed by proving a code works. A secret without
+  /// this is enrolled but unconfirmed, and must not gate sign-in.
+  twoFactorConfirmedAt   DateTime? @map("two_factor_confirmed_at")
 
   /// Set on password change and forced logout; tokens issued before it are refused.
   tokensValidFrom DateTime @default(now()) @map("tokens_valid_from")
@@ -234,6 +240,10 @@ model Session {
   ipAddress String? @map("ip_address")
   /// Coarse location for the "active sessions" list. Never used for access control.
   location  String?
+
+  /// When this session satisfied the second factor. Per-session on purpose:
+  /// verifying on a laptop must not authorize a session opened elsewhere.
+  mfaSatisfiedAt DateTime? @map("mfa_satisfied_at")
 
   expiresAt  DateTime  @map("expires_at")
   revokedAt  DateTime? @map("revoked_at")

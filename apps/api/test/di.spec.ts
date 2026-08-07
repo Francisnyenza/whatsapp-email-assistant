@@ -30,6 +30,8 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
     ],
     ['HealthController', 'health/health.controller.js', 'HealthController', 3],
     ['QueueProducer', 'queue/queue.producer.js', 'QueueProducer', 1],
+    ['TwoFactorService', 'auth/two-factor.service.js', 'TwoFactorService', 4],
+    ['AuthController', 'auth/auth.controller.js', 'AuthController', 3],
   ];
 
   for (const [name, file, exported, expectedCount] of cases) {

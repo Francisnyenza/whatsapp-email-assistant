@@ -26,3 +26,16 @@ export {
   signPayload,
   verifyPayloadSignature,
 } from './signatures.js';
+
+export {
+  generateTotpSecret,
+  totpCode,
+  stepFor,
+  verifyTotp,
+  otpauthUri,
+  base32Encode,
+  base32Decode,
+  TOTP_STEP_SECONDS,
+  TOTP_WINDOW,
+  type TotpVerification,
+} from './totp.js';

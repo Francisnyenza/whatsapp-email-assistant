@@ -8,27 +8,27 @@ Last updated: 2026-08-06.
 
 ## Verified working
 
-Everything below has tests that run and pass. **670 tests** (535 unit + 135 integration against
+Everything below has tests that run and pass. **732 tests** (571 unit + 161 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests            | What it does                                                                                                    |
-| --------------- | ---------------- | --------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 40               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization         |
-| `@wea/crypto`   | 74               | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes |
-| `@wea/db`       | 8 (integration)  | Prisma schema, six migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
-| `@wea/whatsapp` | 115              | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
-| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification               |
-| `apps/api`      | 58 + 12 (int.)   | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling        |
-| `apps/worker`   | 118 + 115 (int.) | Ingest, notify, resolution ladder, planner, mailbox actions, reply + forward, send, watch renewal, retention    |
+| Package         | Tests            | What it does                                                                                                 |
+| --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------ |
+| `@wea/shared`   | 40               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization      |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes |
+| `@wea/db`       | 8 (integration)  | Prisma schema, seven migrations, seed. RLS verified against real Postgres 16 + pgvector                      |
+| `@wea/whatsapp` | 115              | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser         |
+| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification            |
+| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors     |
+| `apps/worker`   | 118 + 115 (int.) | Ingest, notify, resolution ladder, planner, mailbox actions, reply + forward, send, watch renewal, retention |
 
 ```bash
-pnpm -r test          # 535 unit tests
+pnpm -r test          # 571 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
 ### Verified against real infrastructure
 
-- All six migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
+- All seven migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
 - Row-level security isolates tenants: no context → no rows; scoped → own rows only;
   cross-tenant read → empty; cross-tenant write → refused by policy.
 - The watch-renewal sweep reads every tenant's routes without gaining read access to any
@@ -51,6 +51,12 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
 - The retention sweep erases bodies past `RETENTION_BODY_DAYS` across every user, records
   `body_purged_at`, is idempotent, and — asserted as `wea_app` — still cannot read or erase
   a body belonging to anyone but the tenant it is scoped to.
+- TOTP matches the RFC 6238 published vectors, so it interoperates with real authenticator
+  apps rather than only with itself.
+- Two-factor enrolment stores a secret without enabling anything, and enables only once a
+  working code is produced; a replayed code is refused; recovery codes work once each and
+  are not spent by a mistyped TOTP; the factor survives a refresh rotation but does not
+  leak to a session that never verified.
 
 ---
 
@@ -60,20 +66,16 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
-   and a 2FA-enabled account correctly receives a token with `mfa: false` — but there is no
-   endpoint to verify a code and upgrade it, and no guard that requires `mfa: true`. So
-   enabling 2FA today would lock an account out rather than protect it.
-2. **Template sending.** Outside the 24-hour window the notify processor logs and stops,
+1. **Template sending.** Outside the 24-hour window the notify processor logs and stops,
    because the approved-template catalogue does not exist. So mail arriving when a user has
    not messaged recently is currently dropped rather than delivered.
-3. **The AI layer.** Notifications deliver without a summary today, which is by design —
+2. **The AI layer.** Notifications deliver without a summary today, which is by design —
    but the card is noticeably thinner than the product intends.
-4. **The polling fallback.** `pollingSince` is written when a watch cannot be established
+3. **The polling fallback.** `pollingSince` is written when a watch cannot be established
    or renewed, and the renewal sweep now retries those accounts every hour — but nothing
    yet polls on their behalf in the meantime. An account in that state receives nothing
    until a watch succeeds.
-5. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+4. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
 ### After that
@@ -128,6 +130,21 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**A parameter order that fails closed still fails.** `verifyPassword(hash, password)` takes
+the stored hash first, and returns false on any error rather than throwing — so calling it
+the other way round produces no crash, no log line, and no failing type check. It simply
+tells the user their password is wrong, forever. It reached the disable-2FA path and was
+caught only because an integration test tried to actually turn the factor off. Fail-closed
+is the right default and it is not a substitute for getting the call right.
+
+**Enabling a second factor is the moment you can lock someone out.** Two things follow, and
+neither is obvious until it has happened to someone. Enrolment has to be two steps — store
+the secret, then enable only once the user produces a working code from it — because a
+secret that never reached an authenticator app is an account nobody can sign in to. And the
+session that completed enrolment has to be marked as having satisfied the factor, because
+the code it just used is now spent and the next one is up to thirty seconds away: without
+that, turning 2FA on locks you out of the page you turned it on from.
 
 **Storing something is half a decision; erasing it is the other half.** Ingest stored only
 a 300-character snippet, which left `body_text_cipher` and the envelope encryption the

@@ -31,6 +31,14 @@ export interface IssuedSession {
   refreshToken: string;
   familyId: string;
   expiresAt: Date;
+  /**
+   * When this session satisfied the second factor, carried across rotations.
+   *
+   * Without it every refresh would hand back a token with `mfa: false` and a
+   * 2FA user would be asked for a code every fifteen minutes, forever — which
+   * is how people turn 2FA off.
+   */
+  mfaSatisfiedAt: Date | null;
 }
 
 /** 30 days. Long enough that a phone is not constantly signing in. */
@@ -75,6 +83,7 @@ export class SessionService {
         expiresAt: true,
         revokedAt: true,
         replacedById: true,
+        mfaSatisfiedAt: true,
       },
     });
 
@@ -105,7 +114,14 @@ export class SessionService {
       throw this.rejected('expired refresh token');
     }
 
-    const issued = await this.issue(session.userId, session.familyId, context);
+    // The replacement inherits the second factor. It is still per-session:
+    // rotating a session that never verified produces one that still has not.
+    const issued = await this.issue(
+      session.userId,
+      session.familyId,
+      context,
+      session.mfaSatisfiedAt,
+    );
 
     // Mark the presented token as rotated. Doing this *after* issuing means a
     // crash between the two leaves the old token valid — an inconvenience —
@@ -182,10 +198,29 @@ export class SessionService {
     );
   }
 
+  /**
+   * Records that this session has satisfied the second factor.
+   *
+   * Scoped to one session on purpose. Marking the user would mean verifying on
+   * a laptop silently authorized a session someone else opened with a stolen
+   * password.
+   */
+  async markMfaSatisfied(userId: string, sessionId: string): Promise<Date> {
+    const at = new Date();
+    await this.prisma.forUser(userId, async (tx) => {
+      await tx.session.updateMany({
+        where: { id: sessionId, revokedAt: null },
+        data: { mfaSatisfiedAt: at },
+      });
+    });
+    return at;
+  }
+
   private async issue(
     userId: string,
     familyId: string,
     context: { userAgent?: string; ipAddress?: string },
+    mfaSatisfiedAt: Date | null = null,
   ): Promise<IssuedSession> {
     const { token, hash } = generateToken('wea_rt');
     const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
@@ -199,12 +234,13 @@ export class SessionService {
           expiresAt,
           userAgent: context.userAgent ?? null,
           ipAddress: context.ipAddress ?? null,
+          mfaSatisfiedAt,
         },
         select: { id: true },
       }),
     );
 
-    return { sessionId: session.id, refreshToken: token, familyId, expiresAt };
+    return { sessionId: session.id, refreshToken: token, familyId, expiresAt, mfaSatisfiedAt };
   }
 
   /**
