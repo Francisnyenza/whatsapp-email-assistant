@@ -29,11 +29,13 @@ export {
   buildSendConfirmation,
   buildDeleteConfirmation,
   buildDisambiguation,
+  buildSearchResults,
   buildText,
   enforceLimits,
   clamp,
   type EmailNotificationInput,
   type DigestItem,
+  type SearchResultItem,
 } from './builders.js';
 
 export { WhatsAppClient, serializePayload, type WhatsAppClientOptions } from './client.js';

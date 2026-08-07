@@ -8,6 +8,8 @@ import { ResponsePlanner } from '../src/services/response-planner.js';
 import { MailboxActionService } from '../src/services/mailbox-action.service.js';
 import { ReplyComposer } from '../src/services/reply-composer.js';
 import { ForwardComposer } from '../src/services/forward-composer.js';
+import { MailboxQueryService } from '../src/services/mailbox-query.service.js';
+import { SearchRepository } from '../src/repositories/search.repository.js';
 import { CommandsProcessor } from '../src/processors/commands.processor.js';
 import { encodeActionPayload, type InboundWhatsAppMessage, type MailOperation } from '@wea/shared';
 
@@ -149,6 +151,14 @@ describeIfDb('command loop (real database)', () => {
         accounts as never,
         new DraftRepository(service as never),
         queue as never,
+        logger as never,
+      ),
+      new MailboxQueryService(
+        new SearchRepository(service as never),
+        // No model provider: search still has to work, on keyword and trigram
+        // alone. That is the ordinary state of a deployment without an API key.
+        { provider: () => null, isOverBudget: async () => false } as never,
+        { recordUsage: vi.fn() } as never,
         logger as never,
       ),
       inbox,
@@ -367,6 +377,61 @@ describeIfDb('command loop (real database)', () => {
   it('answers help without needing a resolved email', async () => {
     await deliver({ text: 'help' });
     expect(lastText().toLowerCase()).toContain('own email address');
+  });
+
+  describe('mailbox reads', () => {
+    // These never reach the resolution ladder or the planner — there is no
+    // email to resolve. What is checked here is that the whole loop still
+    // produces a tappable answer, against real rows and with no model provider
+    // configured, which is the ordinary state of a self-hosted deployment.
+
+    const rows = () =>
+      (sent.at(-1)!.payload as { sections?: Array<{ rows: unknown[] }> }).sections?.[0]?.rows ?? [];
+
+    it('searches the mailbox and answers with real matches', async () => {
+      await deliver({ text: 'search Q3 report' });
+
+      expect(rows()).toHaveLength(1);
+      expect(lastText()).toContain('Q3 report');
+    });
+
+    it('finds mail by a half-remembered sender name', async () => {
+      await deliver({ text: 'find emails from Sara Chen' });
+
+      expect(rows().length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('says so plainly when nothing matches, rather than going quiet', async () => {
+      await deliver({ text: 'search zzzznonexistent' });
+
+      expect(lastText()).toContain('zzzznonexistent');
+    });
+
+    it('lists unread mail', async () => {
+      await deliver({ text: 'unread' });
+      expect(rows()).toHaveLength(2);
+    });
+
+    it('records the intent against the inbound message', async () => {
+      await deliver({ text: 'search Q3 report' });
+
+      const stored = await withTenant(userId, (tx) =>
+        tx.whatsAppInboundMessage.findFirst({
+          where: { resolvedIntent: 'search' },
+          orderBy: { receivedAt: 'desc' },
+        }),
+      );
+      expect(stored).not.toBeNull();
+      expect(stored!.handlerError).toBeNull();
+    });
+
+    it('mutates nothing — a read is a read', async () => {
+      await deliver({ text: 'search Q3 report' });
+      await deliver({ text: 'unread' });
+
+      expect(mutations).toHaveLength(0);
+      expect(sends()).toHaveLength(0);
+    });
   });
 
   it('records how each message was interpreted', async () => {

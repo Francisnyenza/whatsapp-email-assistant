@@ -38,6 +38,8 @@ const USAGE = {
   costMicros: 45,
 };
 
+const VECTOR = Array.from({ length: 1536 }, (_, i) => i / 1536);
+
 describe('the analysis step', () => {
   let processor: AiProcessor;
   let enqueue: ReturnType<typeof vi.fn>;
@@ -62,18 +64,26 @@ describe('the analysis step', () => {
 
   let findForAnalysis: ReturnType<typeof vi.fn>;
   let decryptMessageBody: ReturnType<typeof vi.fn>;
+  let embed: ReturnType<typeof vi.fn>;
+  let saveEmbedding: ReturnType<typeof vi.fn>;
+  let hasEmbedding: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     enqueue = vi.fn().mockResolvedValue(undefined);
     save = vi.fn().mockResolvedValue(undefined);
     recordUsage = vi.fn().mockResolvedValue(undefined);
     complete = vi.fn().mockResolvedValue({ text: JSON.stringify(ANALYSIS), usage: USAGE });
+    embed = vi
+      .fn()
+      .mockResolvedValue({ vector: VECTOR, usage: { ...USAGE, model: 'text-embedding-3-small' } });
+    saveEmbedding = vi.fn().mockResolvedValue(true);
+    hasEmbedding = vi.fn().mockResolvedValue(false);
     findForAnalysis = vi.fn().mockResolvedValue(message);
     decryptMessageBody = vi.fn().mockResolvedValue('Could you send the Q3 report before Friday?');
     overBudget = false;
     logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
-    const provider = { name: 'stub', complete };
+    const provider = { name: 'stub', complete, embed };
     providerFor = () => provider;
 
     processor = new AiProcessor(
@@ -84,6 +94,7 @@ describe('the analysis step', () => {
       } as never,
       { save, recordUsage, tokensUsedToday: vi.fn() } as never,
       { findForAnalysis } as never,
+      { saveEmbedding, hasEmbedding } as never,
       { decryptMessageBody } as never,
       { enqueue } as never,
       logger,
@@ -92,9 +103,18 @@ describe('the analysis step', () => {
 
   const run = (attemptsMade = 0, attempts = 3) =>
     processor.handle({
+      name: 'ai.analyzeEmail',
       data: { userId: 'user-1', emailMessageId: 'email-1' },
       attemptsMade,
       opts: { attempts },
+    } as never);
+
+  const runEmbed = () =>
+    processor.handle({
+      name: 'ai.embedEmail',
+      data: { userId: 'user-1', emailMessageId: 'email-1' },
+      attemptsMade: 0,
+      opts: { attempts: 3 },
     } as never);
 
   const notified = () => enqueue.mock.calls.filter((call) => call[0] === 'notify');
@@ -240,6 +260,95 @@ describe('the analysis step', () => {
 
       expect(save).toHaveBeenCalled();
       expect(notified()).toHaveLength(1);
+    });
+  });
+
+  describe('the embedding step', () => {
+    it('is queued after the notification, never before it', async () => {
+      await run();
+
+      const order = enqueue.mock.calls.map((call) => call[1]);
+      expect(order).toEqual(['notify.email', 'ai.embedEmail']);
+    });
+
+    it('is queued once per email, so a replayed job does not re-bill', async () => {
+      await run();
+      expect(enqueue.mock.calls.find((c) => c[1] === 'ai.embedEmail')![3]).toMatchObject({
+        jobId: 'embed:email-1',
+      });
+    });
+
+    it('does not take the notification down with it when the queue is unreachable', async () => {
+      // The card has already been queued by this point; failing here would
+      // retry the whole analysis and send a second one.
+      enqueue.mockImplementation((queue: string) =>
+        queue === 'ai' ? Promise.reject(new Error('redis gone')) : Promise.resolve(undefined),
+      );
+
+      await expect(run()).resolves.toBeUndefined();
+      expect(notified()).toHaveLength(1);
+    });
+
+    it('stores the vector and meters it', async () => {
+      await runEmbed();
+
+      expect(saveEmbedding).toHaveBeenCalledWith(
+        'user-1',
+        'email-1',
+        VECTOR,
+        'text-embedding-3-small',
+      );
+      expect(recordUsage).toHaveBeenCalledWith('user-1', 'embedding', expect.anything());
+    });
+
+    it('embeds the sender and subject alongside the body, because that is how people search', async () => {
+      await runEmbed();
+
+      const text = embed.mock.calls[0]![0].text as string;
+      expect(text).toContain('Sarah Chen <sarah@acme.com>');
+      expect(text).toContain('Q3 report');
+    });
+
+    it('skips a message that already has one', async () => {
+      hasEmbedding.mockResolvedValue(true);
+
+      await runEmbed();
+
+      expect(embed).not.toHaveBeenCalled();
+      expect(saveEmbedding).not.toHaveBeenCalled();
+    });
+
+    it('skips when the budget is spent', async () => {
+      overBudget = true;
+
+      await runEmbed();
+
+      expect(embed).not.toHaveBeenCalled();
+    });
+
+    it('does nothing at all with no provider configured', async () => {
+      providerFor = () => null;
+
+      await expect(runEmbed()).resolves.toBeUndefined();
+      expect(saveEmbedding).not.toHaveBeenCalled();
+    });
+
+    it('never notifies — that already happened on the analysis job', async () => {
+      await runEmbed();
+      expect(notified()).toHaveLength(0);
+    });
+
+    it('meters a call whose row could not be stored, because the call still happened', async () => {
+      saveEmbedding.mockResolvedValue(false);
+
+      await expect(runEmbed()).resolves.toBeUndefined();
+      expect(recordUsage).toHaveBeenCalledWith('user-1', 'embedding', expect.anything());
+    });
+
+    it('lets a provider failure retry, because nothing downstream is waiting', async () => {
+      embed.mockRejectedValue(new AppError('AI_UNAVAILABLE', 'down', { retryable: true }));
+
+      await expect(runEmbed()).rejects.toThrow();
     });
   });
 

@@ -101,21 +101,32 @@ export class ResponsePlanner {
           followUp: 'none',
         };
 
-      case 'list_today':
-      case 'list_unread':
-      case 'list_urgent':
       case 'list_deadlines':
-      case 'search':
-      case 'question':
-        // These are reads over the mailbox rather than actions on one email.
-        // The handlers are not built yet; saying so plainly beats silence.
         return {
           payload: buildText(
-            "I can't search your mail yet — that part isn't finished. " +
-              'Reply to a specific email and I will handle it.',
+            "I can't pull out deadlines yet — that part isn't finished. " +
+              'Try *urgent* to see what needs attention.',
           ),
           followUp: 'none',
         };
+
+      case 'question':
+        return {
+          payload: buildText(
+            "I can't answer questions about your mailbox yet. " +
+              'Try *search <words>*, *unread*, or *urgent*.',
+          ),
+          followUp: 'none',
+        };
+
+      // `search`, `list_today`, `list_unread` and `list_urgent` are deliberately
+      // absent. They are reads over the whole mailbox rather than actions on one
+      // email, so they are answered by MailboxQueryService before the processor
+      // ever calls the planner — this class stays pure and target-oriented, and
+      // never grows a database dependency to serve four intents.
+      //
+      // If one reaches here it means that interception was removed, so it falls
+      // through to the default rather than being silently mishandled.
 
       default:
         return null;

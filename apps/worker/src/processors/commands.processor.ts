@@ -21,6 +21,7 @@ import { OutboundService } from '../services/outbound.service.js';
 import { MailboxActionService } from '../services/mailbox-action.service.js';
 import { ReplyComposer } from '../services/reply-composer.js';
 import { ForwardComposer } from '../services/forward-composer.js';
+import { MailboxQueryService } from '../services/mailbox-query.service.js';
 import { interpretTap, type TapEffect } from '../services/tap-interpreter.js';
 import { InboxRepository } from '../repositories/inbox.repository.js';
 import { QueueProducer } from '../queue/queue.producer.js';
@@ -61,6 +62,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly mailbox: MailboxActionService,
     private readonly replies: ReplyComposer,
     private readonly forwards: ForwardComposer,
+    private readonly queries: MailboxQueryService,
     private readonly inbox: InboxRepository,
     private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
@@ -327,6 +329,15 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     const parsed = parseCommand(message.text ?? '');
     const namedTarget = namedTargetOf(parsed.intent);
 
+    // A read over the whole mailbox — "search invoices", "what's unread" —
+    // concerns no particular email, so the resolution ladder has nothing to
+    // resolve and the planner has nothing to plan. Answering it here, before
+    // either runs, is what keeps the planner pure.
+    if (this.queries.handles(parsed.intent)) {
+      await this.answerQuery(userId, phoneNumber, message, parsed);
+      return;
+    }
+
     // Step 2 — which email.
     const [state, recent] = await Promise.all([
       this.inbox.findConversationState(userId),
@@ -414,6 +425,47 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
         failed,
       },
       'Inbound command processed',
+    );
+  }
+
+  /**
+   * Search and the standing lists.
+   *
+   * Failure produces a sentence rather than a thrown job: a search that could
+   * not run is a disappointment, and a retried job would answer a question the
+   * user has already given up on. The resolution record still gets written, so
+   * "I searched and nothing happened" remains answerable.
+   */
+  private async answerQuery(
+    userId: string,
+    phoneNumber: string,
+    message: InboundWhatsAppMessage,
+    parsed: { intent: CommandIntent; source: string },
+  ): Promise<void> {
+    const { payload, failed } = await this.attempt(
+      () => this.queries.answer(userId, parsed.intent),
+      (result) => result ?? buildText(GENERIC_FAILURE),
+    );
+
+    await this.inbox.recordResolution(
+      userId,
+      message.id,
+      parsed.intent.intent,
+      parsed.source,
+      failed ?? undefined,
+    );
+
+    await this.outbound.reply({
+      userId,
+      phoneNumber,
+      payload,
+      kind: 'command_response',
+      lastInboundAt: message.timestamp,
+    });
+
+    this.logger.info(
+      { event: 'command.handled', intent: parsed.intent.intent, source: parsed.source, failed },
+      'Mailbox query processed',
     );
   }
 

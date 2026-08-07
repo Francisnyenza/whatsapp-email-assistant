@@ -5,6 +5,7 @@ import {
   buildSendConfirmation,
   buildDeleteConfirmation,
   buildDisambiguation,
+  buildSearchResults,
   enforceLimits,
   clamp,
   serializePayload,
@@ -239,6 +240,70 @@ describe('disambiguation', () => {
       'm1',
       'm2',
     ]);
+  });
+});
+
+describe('search results', () => {
+  const hit = (id: string, subject: string) => ({
+    emailMessageId: id,
+    fromName: 'Sarah Chen',
+    fromAddress: 'sarah@acme.com',
+    subject,
+    isUnread: false,
+  });
+
+  it('renders matches as a tappable list carrying our own ids', () => {
+    // A row id is a server-minted target. That is what makes the tap that
+    // follows an authorization rather than a guess at what the user meant.
+    const payload = buildSearchResults('invoice', [
+      hit('m1', 'Invoice 4471'),
+      hit('m2', 'Receipt'),
+    ]);
+
+    expect(payload.kind).toBe('list');
+    const rows = (payload as { sections: Array<{ rows: Array<{ id: string }> }> }).sections[0]!
+      .rows;
+    expect(rows.map((r) => decodeActionPayload(r.id)?.targetId)).toEqual(['m1', 'm2']);
+    expect(rows.map((r) => decodeActionPayload(r.id)?.action)).toEqual([
+      'open_thread',
+      'open_thread',
+    ]);
+  });
+
+  it('says nothing was found, and suggests what to try instead', () => {
+    // An assistant that goes quiet reads as broken.
+    const payload = buildSearchResults('zzz', []);
+
+    expect(payload.kind).toBe('text');
+    expect((payload as { body: string }).body).toContain('zzz');
+    expect((payload as { body: string }).body.toLowerCase()).toContain('subject');
+  });
+
+  it('marks unread results so the list is scannable', () => {
+    const payload = buildSearchResults('invoice', [{ ...hit('m1', 'Invoice'), isUnread: true }]);
+    const rows = (payload as { sections: Array<{ rows: Array<{ title: string }> }> }).sections[0]!
+      .rows;
+
+    expect(rows[0]!.title.startsWith('•')).toBe(true);
+  });
+
+  it('never exceeds the row limit, and says so when it truncates', () => {
+    const many = Array.from({ length: 30 }, (_, i) => hit(`m${i}`, `Invoice ${i}`));
+    const payload = buildSearchResults('invoice', many) as {
+      body: string;
+      sections: Array<{ rows: unknown[] }>;
+    };
+
+    expect(payload.sections[0]!.rows).toHaveLength(WHATSAPP_LIMITS.listRowCount);
+    expect(payload.body).toContain('closest');
+  });
+
+  it('clamps a query long enough to blow the header limit', () => {
+    const payload = buildSearchResults('x'.repeat(500), [hit('m1', 'Invoice')]) as {
+      header: string;
+    };
+
+    expect(payload.header.length).toBeLessThanOrEqual(WHATSAPP_LIMITS.headerText);
   });
 });
 

@@ -2,12 +2,13 @@ import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@ne
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
 import { AppError, QUEUE, JOB, type AnalyzeEmailJob } from '@wea/shared';
-import { analyzeEmail } from '@wea/ai';
+import { analyzeEmail, embedEmail } from '@wea/ai';
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
 import { AiService } from '../services/ai.service.js';
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
 import { MessageRepository } from '../repositories/message.repository.js';
+import { SearchRepository } from '../repositories/search.repository.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 import { startWorker } from './base.processor.js';
 
@@ -35,6 +36,7 @@ export class AiProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly ai: AiService,
     private readonly analyses: AnalysisRepository,
     private readonly messages: MessageRepository,
+    private readonly search: SearchRepository,
     private readonly accounts: AccountService,
     private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
@@ -51,6 +53,11 @@ export class AiProcessor implements OnModuleInit, OnModuleDestroy {
 
   async handle(job: Job<AnalyzeEmailJob>): Promise<void> {
     const { userId, emailMessageId } = job.data;
+
+    if (job.name === JOB.EMBED_EMAIL) {
+      await this.embed(userId, emailMessageId);
+      return;
+    }
 
     try {
       await this.analyze(userId, emailMessageId);
@@ -79,6 +86,91 @@ export class AiProcessor implements OnModuleInit, OnModuleDestroy {
 
     // Always. See the class comment.
     await this.notify(userId, emailMessageId);
+
+    // And only then the embedding. It is queued rather than done inline because
+    // it is a second network call that nobody is waiting for: search works
+    // without it, and holding the notification behind it would trade the thing
+    // the user asked for against a thing they might ask for next week.
+    await this.queueEmbedding(userId, emailMessageId);
+  }
+
+  /**
+   * Vectorising one message so it can be found later.
+   *
+   * Runs on the same queue and the same handler entry point, distinguished by
+   * job name. Unlike analysis this one is allowed to fail loudly and retry —
+   * nothing downstream is waiting on it, so a retry costs a job rather than a
+   * delayed email.
+   */
+  private async embed(userId: string, emailMessageId: string): Promise<void> {
+    const provider = this.ai.provider();
+    if (!provider) return;
+
+    // Cheap, and it saves a paid call on every retry of a job whose later steps
+    // failed.
+    if (await this.search.hasEmbedding(userId, emailMessageId)) return;
+
+    if (await this.ai.isOverBudget(userId)) {
+      this.logger.warn(
+        { event: 'ai.budget_exhausted', userId, emailMessageId },
+        'Daily token budget spent; skipping the embedding',
+      );
+      return;
+    }
+
+    const message = await this.messages.findForAnalysis(userId, emailMessageId);
+    if (!message) return;
+
+    const result = await embedEmail(provider, {
+      subject: message.subject,
+      ...(message.fromName ? { fromName: message.fromName } : {}),
+      fromAddress: message.fromAddress,
+      bodyText: await this.body(userId, message),
+    });
+
+    const stored = await this.search.saveEmbedding(
+      userId,
+      emailMessageId,
+      result.data,
+      result.usage.model,
+    );
+
+    // The call was made either way, so it is metered either way.
+    await this.analyses.recordUsage(userId, 'embedding', result.usage);
+
+    if (!stored) {
+      // The message went between the read above and the write. Not retryable —
+      // it will be just as gone next time.
+      this.logger.info(
+        { event: 'ai.embed_target_gone', emailMessageId },
+        'Message disappeared before its embedding could be stored',
+      );
+      return;
+    }
+
+    this.logger.info(
+      { event: 'ai.embedded', emailMessageId, dimensions: result.data.length },
+      'Email embedded',
+    );
+  }
+
+  private async queueEmbedding(userId: string, emailMessageId: string): Promise<void> {
+    try {
+      await this.queue.enqueue(
+        QUEUE.AI,
+        JOB.EMBED_EMAIL,
+        { userId, emailMessageId },
+        { jobId: `embed:${emailMessageId}` },
+      );
+    } catch (err) {
+      // Swallowed on purpose. The email has already been queued for delivery;
+      // an unsearchable message is a smaller problem than a job that fails
+      // after the notification went out and retries the whole analysis.
+      this.logger.warn(
+        { event: 'ai.embed_queue_failed', emailMessageId, err },
+        'Could not queue the embedding',
+      );
+    }
   }
 
   private async analyze(userId: string, emailMessageId: string): Promise<void> {

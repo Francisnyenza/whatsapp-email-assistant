@@ -9,8 +9,16 @@ export {
   type UntrustedBlock,
 } from './envelope.js';
 
-export type { AiProvider, CompletionRequest, CompletionResponse } from './provider.js';
+export type {
+  AiProvider,
+  CompletionRequest,
+  CompletionResponse,
+  EmbeddingRequest,
+  EmbeddingResponse,
+} from './provider.js';
 
 export { analyzeEmail, extractJson, type AnalysisInput } from './analysis.js';
+
+export { embedEmail, embedQuery, embeddableText } from './embedding.js';
 
 export { OpenAiProvider, type OpenAiOptions } from './providers/openai.js';

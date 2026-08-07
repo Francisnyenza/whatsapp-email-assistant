@@ -215,6 +215,64 @@ export function buildDigest(items: DigestItem[], title = 'Your emails'): WhatsAp
   };
 }
 
+export interface SearchResultItem {
+  emailMessageId: string;
+  fromName?: string;
+  fromAddress: string;
+  subject: string;
+  isUnread: boolean;
+}
+
+/**
+ * Search results.
+ *
+ * A list rather than free text, because the useful next step is almost always
+ * "that one" — and a row id is a server-minted target, so the tap that follows
+ * is an authorization rather than a guess at what the user meant (ADR 0004).
+ *
+ * The row title is the sender and the description is the subject, matching the
+ * digest exactly. Search results and the morning digest are the same gesture
+ * from the user's side, and two layouts for one gesture is a small cruelty.
+ */
+export function buildSearchResults(
+  query: string,
+  items: SearchResultItem[],
+): WhatsAppOutboundPayload {
+  if (items.length === 0) {
+    return buildText(
+      `I couldn't find anything matching “${clamp(query, 100)}”. ` +
+        'Try a sender’s name, or a word from the subject.',
+    );
+  }
+
+  const rows = items.slice(0, WHATSAPP_LIMITS.listRowCount).map((item) => ({
+    id: encodeActionPayload({ action: 'open_thread', targetId: item.emailMessageId }),
+    title: clamp(
+      `${item.isUnread ? '• ' : ''}${item.fromName ?? item.fromAddress}`,
+      WHATSAPP_LIMITS.listRowTitle,
+    ),
+    description: clamp(item.subject || '(no subject)', WHATSAPP_LIMITS.listRowDescription),
+  }));
+
+  const overflow = items.length - rows.length;
+
+  return {
+    kind: 'list',
+    header: clamp(`Results for “${query}”`, WHATSAPP_LIMITS.headerText),
+    body: clamp(
+      [
+        `Found *${items.length}* email${items.length === 1 ? '' : 's'}.`,
+        ...(overflow > 0 ? [`Showing the closest ${rows.length}.`] : []),
+        '',
+        'Pick one to reply, archive or delete it.',
+      ].join('\n'),
+      WHATSAPP_LIMITS.interactiveBody,
+    ),
+    buttonText: clamp('View results', WHATSAPP_LIMITS.listButtonText),
+    sections: [{ title: 'Matches', rows }],
+  };
+}
+
 /** Confirmation before a reply is actually sent. */
 export function buildSendConfirmation(
   draftId: string,

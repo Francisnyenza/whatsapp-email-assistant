@@ -2,34 +2,34 @@
 
 Honest accounting of what exists, what is verified, and what remains.
 
-Last updated: 2026-08-06.
+Last updated: 2026-08-07.
 
 ---
 
 ## Verified working
 
-Everything below has tests that run and pass. **884 tests** (696 unit + 188 integration against
+Everything below has tests that run and pass. **979 tests** (763 unit + 216 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests            | What it does                                                                                                 |
-| --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------ |
-| `@wea/shared`   | 40               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization      |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes |
-| `@wea/db`       | 8 (integration)  | Prisma schema, eight migrations, seed. RLS verified against real Postgres 16 + pgvector                      |
-| `@wea/whatsapp` | 138              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser      |
-| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification            |
-| `@wea/ai`       | 58               | Prompt-injection envelope, instruction detection, structured analysis with schema discard, OpenAI provider   |
-| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors     |
-| `apps/worker`   | 162 + 142 (int.) | Ingest, analysis, notify + templates + digest, resolution ladder, planner, actions, reply + forward, sweeps  |
+| Package         | Tests            | What it does                                                                                                           |
+| --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 40               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes           |
+| `@wea/db`       | 8 (integration)  | Prisma schema, nine migrations, seed. RLS verified against real Postgres 16 + pgvector                                 |
+| `@wea/whatsapp` | 143              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                |
+| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                      |
+| `@wea/ai`       | 83               | Prompt-injection envelope, instruction detection, structured analysis with schema discard, embeddings, OpenAI provider |
+| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors               |
+| `apps/worker`   | 199 + 170 (int.) | Ingest, analysis, embeddings, hybrid search, notify + digest, resolution ladder, planner, actions, sweeps              |
 
 ```bash
-pnpm -r test          # 696 unit tests
+pnpm -r test          # 763 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
 ### Verified against real infrastructure
 
-- All eight migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
+- All nine migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
 - Row-level security isolates tenants: no context → no rows; scoped → own rows only;
   cross-tenant read → empty; cross-tenant write → refused by policy.
 - The watch-renewal sweep reads every tenant's routes without gaining read access to any
@@ -74,6 +74,17 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
 - A mailbox with no push subscription is polled every two minutes and stops being polled the
   moment a watch is established — asserted across tenants, and in both directions as a watch
   is gained and lost.
+- Every email is embedded after it is notified, never before: search is built on the back of
+  delivery rather than in front of it, and a queue failure on the embedding cannot delay a
+  card or re-send one.
+- Search is hybrid and degrades rather than fails. A query is answered by cosine distance
+  over pgvector, `tsquery` over subject and snippet, and trigram similarity over subject and
+  sender, fused by reciprocal rank — and with no model provider configured the semantic arm
+  simply contributes nothing while the other two still find the mail. Asserted against real
+  rows: an exact subject word, a word from the snippet, a misspelled sender name, an address
+  fragment, and a message only the vector can reach.
+- Search and the standing lists never cross a tenant boundary on either arm, asserted as
+  `wea_app`, including a write attempt against another user's message.
 - Deferred mail is recorded, and delivered as a digest the moment the user next messages us
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
@@ -87,12 +98,17 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Embeddings and search.** `@wea/ai` covers analysis; `ai.embedEmail` and the pgvector
-   search over `message_embeddings` are not built, so "find the invoice from Tom" still
-   answers that it cannot search yet.
-2. **A Gemini provider.** `AI_PRIMARY_PROVIDER` accepts `gemini` and `anthropic` and only
+1. **A Gemini provider.** `AI_PRIMARY_PROVIDER` accepts `gemini` and `anthropic` and only
    `openai` is implemented, so selecting either silently disables summaries rather than
    failing at boot.
+2. **Backfilling embeddings.** Only mail that arrives from now on is embedded. An account
+   connected today has an unsearchable history until a sweep walks it, and there is no such
+   sweep — `hasEmbedding` exists so one can be added without re-billing what is done.
+3. **`list_deadlines`, `summarize`, `translate`, `read_aloud` and free-form questions.**
+   Each says plainly that it is not built. The first needs the action items an analysis
+   already extracts to be surfaced; the rest need the composition path.
+4. **`today` means UTC midnight, not the user's.** The timezone is on the user row and is
+   not threaded into the list query, so "today" is quietly wrong for anyone far from UTC.
 
 ### After that
 
@@ -193,6 +209,42 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**Row-level security does not check a foreign key.** Storing an embedding wrote
+`(user_id, email_message_id)` from literal values. RLS checks the row being _written_ —
+`user_id` was ours, so every policy passed — but Postgres runs referential-integrity
+triggers as the table owner and exempts them from policies entirely, so nothing objected to
+Alice writing a row pointing at Bob's message. It leaks nothing, because the read path joins
+`email_messages` and that join is scoped. The damage is the unique constraint on
+`email_message_id`: Alice's row squats on the one Bob's own job needs, and his embedding
+never lands. A cross-tenant denial of service through a column nobody would think to check.
+The insert now sources the id from a scoped `SELECT` over `email_messages`, so another
+tenant's message produces no row at all. The integration test asserted a rejection, got a
+success, and that is how this was found — the assertion was written expecting RLS to be
+enough.
+
+**Three search scores are three different units.** Cosine distance, `ts_rank` and trigram
+similarity cannot be added, and any weighting that makes them comparable is a constant
+someone tuned once against one corpus and nobody can defend afterwards. Reciprocal rank
+fusion sidesteps it: each list contributes `1/(60 + rank)`, ranks are comparable by
+construction, and a result two arms agree on outranks one that only a single arm found —
+which is the property the whole hybrid exists for, and is asserted rather than assumed.
+
+**An embedding gets no envelope, and that is a decision.** Untrusted email content is
+wrapped in a nonce-delimited envelope everywhere it reaches a model — except here. An
+embedding model receives no instructions, so there is no system prompt for injected text to
+argue with, and the output is 1536 numbers rather than a sentence anyone acts on. Stripping
+instruction-like text would be worse than useless: it would change the email's meaning and
+therefore where it sits in the vector space, making a message harder to find because of what
+someone else wrote in it. What does carry over is neutralisation — control characters
+stripped, length bounded — because that is about what we are willing to put on the wire.
+
+**A pure class earns its purity by not being extended.** `search` and the standing lists are
+reads over the whole mailbox, and the obvious move was a branch in the response planner. That
+would have given a class whose entire value is that it touches no database a repository, for
+four intents out of twenty-three. They are answered before the planner is called instead, and
+the planner's switch now documents the absence so removing the interception falls through to
+a visible default rather than a silent mishandling.
 
 **"Deferred" is a politer word for "dropped" until something delivers it.** `decideDelivery`
 had returned `defer` since the beginning and nothing recorded the decision, so afterwards
@@ -325,7 +377,10 @@ Each of these has a test. They are the load-bearing ones.
 10. **A reply is sent at most once.** The draft claim is a conditional write, so two
     workers racing on one draft means exactly one send. Tested with genuinely concurrent
     claims against Postgres, not two calls to a mock.
-11. **Webhooks verify before parsing and acknowledge before working.** Both the WhatsApp
+11. **Search results carry server-minted ids.** Every row in a search or list payload is an
+    `open_thread` action over an email read from the user's own mailbox under RLS, so nothing
+    a search returns can widen what the tap after it is allowed to touch.
+12. **Webhooks verify before parsing and acknowledge before working.** Both the WhatsApp
     and Gmail endpoints reject unauthenticated requests before touching the payload, respond
     before doing work, and always return 2xx once authentic — so a bug on our side cannot
     make a provider redeliver forever. Missing raw bytes

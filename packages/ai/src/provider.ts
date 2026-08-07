@@ -24,6 +24,27 @@ export interface AiProvider {
    *   could plausibly work — a rate limit can, a malformed request cannot.
    */
   complete(request: CompletionRequest): Promise<CompletionResponse>;
+
+  /**
+   * One embedding.
+   *
+   * Separate from `complete` because it is a different endpoint, a different
+   * model tier and a different price — and because an embedding is a vector,
+   * not text, so folding it into the text path would mean parsing numbers back
+   * out of a string.
+   */
+  embed(request: EmbeddingRequest): Promise<EmbeddingResponse>;
+}
+
+export interface EmbeddingRequest {
+  text: string;
+  signal?: AbortSignal;
+}
+
+export interface EmbeddingResponse {
+  /** Unit-normalized by the provider; cosine distance is what the index uses. */
+  vector: number[];
+  usage: AiUsage;
 }
 
 export interface CompletionRequest {

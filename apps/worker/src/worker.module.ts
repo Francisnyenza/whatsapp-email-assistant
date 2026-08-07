@@ -23,6 +23,8 @@ import { RetentionRepository } from './repositories/retention.repository.js';
 import { AnalysisRepository } from './repositories/analysis.repository.js';
 import { AiService } from './services/ai.service.js';
 import { AiProcessor } from './processors/ai.processor.js';
+import { SearchRepository } from './repositories/search.repository.js';
+import { MailboxQueryService } from './services/mailbox-query.service.js';
 
 @Module({
   imports: [ConfigModule],
@@ -41,7 +43,9 @@ import { AiProcessor } from './processors/ai.processor.js';
     WatchRepository,
     RetentionRepository,
     AnalysisRepository,
+    SearchRepository,
     AiService,
+    MailboxQueryService,
     QueueProducer,
     SyncScheduler,
     CommandsProcessor,

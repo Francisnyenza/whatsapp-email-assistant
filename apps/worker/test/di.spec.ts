@@ -41,6 +41,8 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
       // Without the scheduler nothing ever fires the sweep, and every Gmail
       // watch lapses seven days after it was created.
       'SyncScheduler',
+      // Without it, `search` and the standing lists have nothing to answer them.
+      'MailboxQueryService',
     ]) {
       expect(names, `${required} is not registered in WorkerModule`).toContain(required);
     }
@@ -48,9 +50,9 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
 
   const cases: Array<[string, string, number]> = [
     ['processors/sync.processor.js', 'SyncProcessor', 6],
-    ['processors/commands.processor.js', 'CommandsProcessor', 10],
+    ['processors/commands.processor.js', 'CommandsProcessor', 11],
     ['processors/notify.processor.js', 'NotifyProcessor', 4],
-    ['processors/ai.processor.js', 'AiProcessor', 7],
+    ['processors/ai.processor.js', 'AiProcessor', 8],
     ['services/ai.service.js', 'AiService', 3],
     ['repositories/analysis.repository.js', 'AnalysisRepository', 1],
     ['queue/sync.scheduler.js', 'SyncScheduler', 2],
@@ -59,6 +61,8 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
     ['services/forward-composer.js', 'ForwardComposer', 4],
     ['processors/ingest.processor.js', 'IngestProcessor', 5],
     ['queue/queue.producer.js', 'QueueProducer', 1],
+    ['repositories/search.repository.js', 'SearchRepository', 1],
+    ['services/mailbox-query.service.js', 'MailboxQueryService', 4],
   ];
 
   for (const [file, exported, expectedCount] of cases) {

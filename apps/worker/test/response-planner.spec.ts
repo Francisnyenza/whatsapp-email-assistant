@@ -201,10 +201,16 @@ describe('unbuilt features say so plainly', () => {
     expect(textOf(plan({ intent: 'read_aloud' }, resolved()))).toContain('aloud');
   });
 
-  it('explains that search is unavailable and suggests what does work', () => {
-    const text = textOf(plan({ intent: 'search', query: 'invoices' }, resolved()));
-    expect(text).toContain("can't search");
-    expect(text.toLowerCase()).toContain('reply');
+  it('points a mailbox question at the commands that do work', () => {
+    const text = textOf(plan({ intent: 'question', question: 'who emailed me?' }, resolved()));
+    expect(text.toLowerCase()).toContain('search');
+    expect(text.toLowerCase()).toContain('unread');
+  });
+
+  it('says deadlines are not built rather than answering with something else', () => {
+    const text = textOf(plan({ intent: 'list_deadlines' }, resolved()));
+    expect(text).toContain("can't pull out deadlines");
+    expect(text.toLowerCase()).toContain('urgent');
   });
 
   it('does not apologise, blame the user, or hedge', () => {
