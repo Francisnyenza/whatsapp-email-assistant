@@ -30,7 +30,12 @@ describeIfDb('ingest pipeline (real database)', () => {
   let notify: NotifyProcessor;
 
   let enqueued: Array<{ queue: string; payload: any; opts: any }>;
-  let sent: Array<{ kind: string; emailMessageId?: string; payload: any }>;
+  let sent: Array<{
+    kind: string;
+    emailMessageId?: string;
+    payload: any;
+    allowOutsideWindow?: boolean;
+  }>;
   let providerMessages: Map<string, NormalizedMessage>;
   let changes: Array<{ type: string; providerMessageId: string }>;
   let fetchChangesImpl: (() => AsyncIterable<any>) | null;
@@ -129,6 +134,7 @@ describeIfDb('ingest pipeline (real database)', () => {
           kind: input.kind,
           emailMessageId: input.emailMessageId,
           payload: input.payload,
+          allowOutsideWindow: input.allowOutsideWindow === true,
         });
       }),
     };
@@ -461,6 +467,124 @@ describeIfDb('ingest pipeline (real database)', () => {
       await notifyFor(emailMessageId);
 
       expect(sent[0]!.emailMessageId).toBe(emailMessageId);
+    });
+
+    describe('outside the messaging window', () => {
+      /**
+       * The 24-hour window is the whole reason templates exist. A free-form
+       * message sent past it is accepted by the API and then never delivered —
+       * no error anywhere, and a user who simply stops hearing from us.
+       */
+      const closeWindow = () =>
+        withTenant((tx) =>
+          tx.conversationState.update({
+            where: { userId },
+            data: { lastInboundAt: new Date(Date.now() - 25 * 3_600_000) },
+          }),
+        );
+
+      /**
+       * A template send costs money, so it is reserved for mail the user said
+       * they want immediately; anything ordinary waits for the digest. These
+       * tests are about the template path, so the message is marked high.
+       */
+      const markHighPriority = (emailMessageId: string) =>
+        withTenant((tx) =>
+          tx.messageAnalysis.create({
+            data: {
+              userId,
+              emailMessageId,
+              summary: 'Needs an answer today',
+              priority: 'high',
+              modelProvider: 'test',
+              model: 'test',
+            },
+          }),
+        );
+
+      const openWindow = () =>
+        withTenant((tx) =>
+          tx.conversationState.update({ where: { userId }, data: { lastInboundAt: new Date() } }),
+        );
+
+      it('sends an approved template instead of a card', async () => {
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        const emailMessageId = await idOf(incoming.providerMessageId);
+        await markHighPriority(emailMessageId);
+        await notifyFor(emailMessageId);
+        await openWindow();
+
+        expect(sent).toHaveLength(1);
+        expect(sent[0]!.payload.kind).toBe('template');
+        expect(sent[0]!.payload.name).toBe('new_email_notification');
+      });
+
+      it('carries the sender and subject as parameters', async () => {
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        const emailMessageId = await idOf(incoming.providerMessageId);
+        await markHighPriority(emailMessageId);
+        await notifyFor(emailMessageId);
+        await openWindow();
+
+        expect(sent[0]!.payload.components[0].parameters.map((p: any) => p.text)).toEqual([
+          'Sarah Chen',
+          'Q3 sales report',
+        ]);
+      });
+
+      it('names the window exception explicitly', async () => {
+        // The flag is what lets this past the outbound window check, and it is
+        // only ever set for a template.
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        const emailMessageId = await idOf(incoming.providerMessageId);
+        await markHighPriority(emailMessageId);
+        await notifyFor(emailMessageId);
+        await openWindow();
+
+        expect(sent[0]!.allowOutsideWindow).toBe(true);
+      });
+
+      it('still records which email it was about', async () => {
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        const emailMessageId = await idOf(incoming.providerMessageId);
+        await markHighPriority(emailMessageId);
+        await notifyFor(emailMessageId);
+        await openWindow();
+
+        expect(sent[0]!.emailMessageId).toBe(emailMessageId);
+      });
+
+      it('defers ordinary mail rather than paying for a template', async () => {
+        // A template send is billable, so it is reserved for mail the user said
+        // they want immediately. Everything else waits for the digest they get
+        // when they next message us.
+        await closeWindow();
+        const incoming = stageIncoming();
+        await runIngest();
+        await notifyFor(await idOf(incoming.providerMessageId));
+        await openWindow();
+
+        expect(sent).toHaveLength(0);
+      });
+
+      it('sends the card, not a template, once the window is open', async () => {
+        const incoming = stageIncoming();
+        await runIngest();
+        const emailMessageId = await idOf(incoming.providerMessageId);
+        await markHighPriority(emailMessageId);
+        await notifyFor(emailMessageId);
+
+        expect(sent[0]!.payload.kind).not.toBe('template');
+        expect(sent[0]!.allowOutsideWindow).toBe(false);
+      });
     });
 
     it('honours a muted sender', async () => {

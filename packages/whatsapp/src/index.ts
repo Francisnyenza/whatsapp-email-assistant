@@ -39,3 +39,13 @@ export {
 export { WhatsAppClient, serializePayload, type WhatsAppClientOptions } from './client.js';
 
 export { parseCommand, needsConfirmation, type ParseResult } from './command-parser.js';
+
+export {
+  TEMPLATES,
+  buildTemplate,
+  buildNewEmailTemplate,
+  buildDigestTemplate,
+  templateParameter,
+  resolveTemplateLanguage,
+  type TemplateDefinition,
+} from './templates.js';

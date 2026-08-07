@@ -2,7 +2,12 @@ import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@ne
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
 import { QUEUE, type NotifyEmailJob, type EmailPriority } from '@wea/shared';
-import { buildEmailNotification, evaluateWindow, decideDelivery } from '@wea/whatsapp';
+import {
+  buildEmailNotification,
+  buildNewEmailTemplate,
+  evaluateWindow,
+  decideDelivery,
+} from '@wea/whatsapp';
 import { ConfigService } from '../config/config.service.js';
 import { MessageRepository } from '../repositories/message.repository.js';
 import { OutboundService } from '../services/outbound.service.js';
@@ -95,12 +100,31 @@ export class NotifyProcessor implements OnModuleInit, OnModuleDestroy {
     }
 
     if (action.action === 'send_template') {
-      // Outside the messaging window only an approved template will be
-      // delivered, and the template catalogue is not built yet. Logging it
-      // rather than sending a free-form message that Meta would silently drop.
-      this.logger.warn(
-        { event: 'notify.template_required', emailMessageId, priority },
-        'Outside the messaging window; template sending is not yet implemented',
+      // Outside the messaging window a free-form message is accepted by the API
+      // and then never delivered, so this is the only shape that reaches the
+      // user at all. It is a nudge rather than the card: the text is fixed at
+      // approval time, so all it can do is prompt a reply — which reopens the
+      // window, after which the real notification can be sent.
+      await this.outbound.reply({
+        userId,
+        phoneNumber: user.phoneNumber,
+        payload: buildNewEmailTemplate({
+          ...(message.fromName ? { fromName: message.fromName } : {}),
+          fromAddress: message.fromAddress,
+          subject: message.subject,
+          locale: user.locale,
+        }),
+        kind: 'notification',
+        emailMessageId: message.id,
+        lastInboundAt: state?.lastInboundAt ?? null,
+        // The window is closed by definition here — that is the whole reason a
+        // template is being sent rather than a card.
+        allowOutsideWindow: true,
+      });
+
+      this.logger.info(
+        { event: 'notify.template_sent', emailMessageId, priority },
+        'Sent an out-of-window template notification',
       );
       return;
     }

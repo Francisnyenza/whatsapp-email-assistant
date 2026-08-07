@@ -8,7 +8,7 @@ Last updated: 2026-08-06.
 
 ## Verified working
 
-Everything below has tests that run and pass. **732 tests** (571 unit + 161 integration against
+Everything below has tests that run and pass. **765 tests** (598 unit + 167 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                 |
@@ -22,7 +22,7 @@ real Postgres), lint and typecheck clean across every package and app.
 | `apps/worker`   | 118 + 115 (int.) | Ingest, notify, resolution ladder, planner, mailbox actions, reply + forward, send, watch renewal, retention |
 
 ```bash
-pnpm -r test          # 571 unit tests
+pnpm -r test          # 598 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -57,6 +57,9 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   working code is produced; a replayed code is refused; recovery codes work once each and
   are not spent by a mistyped TOTP; the factor survives a refresh rotation but does not
   leak to a session that never verified.
+- Mail arriving outside the 24-hour window is delivered as an approved template rather than
+  a free-form message Meta would silently drop; ordinary mail defers instead of paying for
+  one; and the window exception refuses to carry anything that is not a template.
 
 ---
 
@@ -66,9 +69,11 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Template sending.** Outside the 24-hour window the notify processor logs and stops,
-   because the approved-template catalogue does not exist. So mail arriving when a user has
-   not messaged recently is currently dropped rather than delivered.
+1. **The digest.** With templates in place, high-priority mail now reaches a user outside
+   the messaging window — but ordinary mail is deferred to a digest, and nothing consumes
+   `notify.digest`. So that mail is still not delivered; it is merely deferred correctly
+   now instead of dropped silently. This is the other half of the window problem and the
+   next thing to build.
 2. **The AI layer.** Notifications deliver without a summary today, which is by design —
    but the card is noticeably thinner than the product intends.
 3. **The polling fallback.** `pollingSince` is written when a watch cannot be established
@@ -130,6 +135,16 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**Outside the messaging window, the API lies to you.** Meta accepts a free-form message sent
+past the 24-hour customer service window, returns a message id, and never delivers it. There
+is no error to catch and no bounce to observe — just a user who stops hearing from us. Only
+a pre-approved template gets through, and a template's text is fixed at approval time, so it
+cannot carry a summary or a working button. It can only be a nudge: get the user to reply,
+which reopens the window, after which the real card can be sent. The one code path allowed
+past the window check takes an explicit `allowOutsideWindow` flag and throws if the payload
+is anything but a template — because a general escape hatch here fails silently by
+construction.
 
 **A parameter order that fails closed still fails.** `verifyPassword(hash, password)` takes
 the stored hash first, and returns false on any error rather than throwing — so calling it

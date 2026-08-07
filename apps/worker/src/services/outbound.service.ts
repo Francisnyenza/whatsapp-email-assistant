@@ -47,10 +47,28 @@ export class OutboundService {
     kind: 'command_response' | 'reply_confirmation' | 'error' | 'notification' | 'digest';
     emailMessageId?: string;
     lastInboundAt: Date | null;
+    /**
+     * Set only for an approved template, which is the one shape Meta delivers
+     * outside the window. Every other payload must stay behind the check —
+     * naming the exception explicitly is what keeps it from becoming a general
+     * escape hatch.
+     */
+    allowOutsideWindow?: boolean;
   }): Promise<void> {
     const window = evaluateWindow({ lastInboundAt: input.lastInboundAt });
 
-    if (window.mode !== 'free_form') {
+    if (input.allowOutsideWindow && input.payload.kind !== 'template') {
+      // The flag exists for templates. Anything else sent under it would be
+      // accepted by the API and silently dropped, which is worse than an error
+      // because nothing anywhere records that the user was never told.
+      throw new AppError(
+        'BAD_REQUEST',
+        'Only a template may be sent outside the messaging window',
+        { retryable: false },
+      );
+    }
+
+    if (!input.allowOutsideWindow && window.mode !== 'free_form') {
       // Nothing useful to do: a template cannot carry an arbitrary answer, and
       // inventing one would be worse than staying quiet. Log it loudly instead
       // — this should be unreachable, and if it fires something upstream is
