@@ -2,16 +2,18 @@ import { Injectable, Inject, type OnModuleInit } from '@nestjs/common';
 import type { Logger } from 'pino';
 import { QUEUE, JOB } from '@wea/shared';
 import { QueueProducer } from './queue.producer.js';
-import { SWEEP_INTERVAL_MS } from '../services/watch-schedule.js';
+import { SWEEP_INTERVAL_MS, PURGE_INTERVAL_MS } from '../services/watch-schedule.js';
 
-/** The scheduler's identity. Stable, because changing it would leave the old schedule running. */
+/** Scheduler identities. Stable, because changing one leaves the old schedule running. */
 const WATCH_SWEEP_ID = 'watch-renewal-sweep';
+const RETENTION_SWEEP_ID = 'retention-sweep';
 
 /**
  * The clock.
  *
- * Registers the recurring work the system does on its own behalf. Today that is
- * one job: sweeping for Gmail watches about to lapse.
+ * Registers the recurring work the system does on its own behalf: sweeping for
+ * Gmail watches about to lapse, and erasing message bodies past their retention
+ * window.
  *
  * It lives in the worker rather than the API because the API is meant to be
  * stateless and horizontally trivial — a scheduler there would tie the timer's
@@ -31,23 +33,43 @@ export class SyncScheduler implements OnModuleInit {
   ) {}
 
   async onModuleInit(): Promise<void> {
+    await this.register(
+      WATCH_SWEEP_ID,
+      SWEEP_INTERVAL_MS,
+      JOB.SWEEP_WATCHES,
+      'mailbox subscriptions will lapse',
+    );
+
+    await this.register(
+      RETENTION_SWEEP_ID,
+      PURGE_INTERVAL_MS,
+      JOB.PURGE_EXPIRED,
+      'message bodies will be kept past their retention window',
+    );
+  }
+
+  /**
+   * `consequence` is what goes in the log when registration fails, because
+   * "scheduler.registration_failed" on its own tells an operator nothing about
+   * what is now quietly not happening.
+   */
+  private async register(
+    id: string,
+    everyMs: number,
+    job: (typeof JOB)[keyof typeof JOB],
+    consequence: string,
+  ): Promise<void> {
     try {
-      await this.queue.schedule(
-        QUEUE.SYNC,
-        WATCH_SWEEP_ID,
-        SWEEP_INTERVAL_MS,
-        JOB.SWEEP_WATCHES,
-        {},
-      );
+      await this.queue.schedule(QUEUE.SYNC, id, everyMs, job, {});
 
       this.logger.info(
-        { event: 'scheduler.registered', schedule: WATCH_SWEEP_ID, everyMs: SWEEP_INTERVAL_MS },
-        'Watch renewal sweep scheduled',
+        { event: 'scheduler.registered', schedule: id, everyMs },
+        'Recurring job scheduled',
       );
     } catch (err) {
       this.logger.error(
-        { event: 'scheduler.registration_failed', schedule: WATCH_SWEEP_ID, err },
-        'Could not register the watch renewal sweep; mailbox subscriptions will lapse',
+        { event: 'scheduler.registration_failed', schedule: id, err },
+        `Could not register ${id}; ${consequence}`,
       );
     }
   }

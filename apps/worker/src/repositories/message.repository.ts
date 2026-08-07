@@ -21,6 +21,18 @@ export interface PersistResult {
   isNew: boolean;
 }
 
+/**
+ * The message body, already encrypted.
+ *
+ * Sealed by the caller rather than here, so key material lives in one service
+ * and this repository never holds any (ADR 0002).
+ */
+export interface SealedBody {
+  ciphertext: Buffer;
+  wrappedKey: Buffer;
+  keyVersion: number;
+}
+
 @Injectable()
 export class MessageRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -37,6 +49,12 @@ export class MessageRepository {
     userId: string,
     accountId: string,
     message: NormalizedMessage,
+    /**
+     * Omitted when the body could not be sealed. Storing the message without it
+     * is the right trade: a notification the user receives beats a message
+     * dropped over an encryption failure, and the body can be re-fetched.
+     */
+    body?: SealedBody,
   ): Promise<PersistResult> {
     return this.prisma.forUser(userId, async (tx) => {
       const existing = await tx.emailMessage.findUnique({
@@ -96,6 +114,16 @@ export class MessageRepository {
             sentAt: message.sentAt,
             receivedAt: message.receivedAt,
             snippet: message.snippet.slice(0, 300),
+            // Uint8Array rather than Buffer: Prisma's Bytes maps to
+            // Uint8Array<ArrayBuffer>, and Node's Buffer widens to
+            // ArrayBufferLike, which TypeScript rejects.
+            ...(body
+              ? {
+                  bodyTextCipher: new Uint8Array(body.ciphertext),
+                  bodyDek: new Uint8Array(body.wrappedKey),
+                  bodyKeyVersion: body.keyVersion,
+                }
+              : {}),
             isUnread: message.isUnread,
             isStarred: message.isStarred,
             isDraft: message.isDraft,

@@ -5,7 +5,7 @@ import { AppError, QUEUE, JOB, type ProcessChangeJob } from '@wea/shared';
 import { isHistoryExpired } from '@wea/mail';
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
-import { MessageRepository } from '../repositories/message.repository.js';
+import { MessageRepository, type SealedBody } from '../repositories/message.repository.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 import { startWorker } from './base.processor.js';
 
@@ -81,7 +81,8 @@ export class IngestProcessor implements OnModuleInit, OnModuleDestroy {
 
         if (!message) continue;
 
-        const stored = await this.messages.persist(userId, accountId, message);
+        const sealed = await this.sealBody(userId, message.bodyText);
+        const stored = await this.messages.persist(userId, accountId, message, sealed);
 
         if (!stored.isNew) continue;
 
@@ -135,7 +136,54 @@ export class IngestProcessor implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /**
+   * Encrypts a body for storage, or gives up and stores the message without it.
+   *
+   * Two judgements are made here, both deliberate.
+   *
+   * The body is **truncated** past a fixed budget. A multi-megabyte body is
+   * almost always a newsletter carrying inline base64 images, and the parts of
+   * a message anything downstream reads — a summary, an embedding, a search
+   * snippet — are at the top. Storing the whole thing would multiply the
+   * database's size for content nobody reads. The marker is left in the text so
+   * the truncation is visible rather than inferred from a message that seems to
+   * stop mid-sentence.
+   *
+   * A failure to encrypt **does not fail ingest**. The alternative is dropping
+   * an email over an encryption error, and the user hearing nothing at all —
+   * which is worse than a notification whose body has to be re-fetched later.
+   */
+  private async sealBody(userId: string, bodyText: string): Promise<SealedBody | undefined> {
+    if (!bodyText) return undefined;
+
+    const truncated =
+      Buffer.byteLength(bodyText, 'utf8') > MAX_STORED_BODY_BYTES
+        ? `${Buffer.from(bodyText, 'utf8')
+            .subarray(0, MAX_STORED_BODY_BYTES)
+            .toString('utf8')
+            // The cut can land mid-character; the replacement char it produces
+            // is dropped rather than stored.
+            .replace(/�$/, '')}\n\n[Message truncated.]`
+        : bodyText;
+
+    try {
+      return await this.accounts.encryptMessageBody(userId, truncated);
+    } catch (err) {
+      this.logger.error(
+        { event: 'ingest.body_seal_failed', err },
+        'Could not encrypt a message body; storing the message without it',
+      );
+      return undefined;
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.worker?.close();
   }
 }
+
+/**
+ * How much of a body is kept. 256 KB of text is far more than any message a
+ * person actually wrote; beyond it is markup and inline images.
+ */
+export const MAX_STORED_BODY_BYTES = 256 * 1024;

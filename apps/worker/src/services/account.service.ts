@@ -193,6 +193,29 @@ export class AccountService {
     return this.crypto.encryptString(bodyText, { userId, field: 'draftBody' });
   }
 
+  /**
+   * Encrypts a received message body for storage.
+   *
+   * A different AAD field from a draft body, deliberately. The two are different
+   * things with different lifetimes — a received body is purged on the retention
+   * schedule, a draft is not — and binding each to its own field means
+   * ciphertext moved between the columns fails to decrypt rather than quietly
+   * surfacing somewhere it does not belong.
+   */
+  async encryptMessageBody(
+    userId: string,
+    bodyText: string,
+  ): Promise<{ ciphertext: Buffer; wrappedKey: Buffer; keyVersion: number }> {
+    return this.crypto.encryptString(bodyText, { userId, field: 'messageBody' });
+  }
+
+  decryptMessageBody(
+    userId: string,
+    sealed: { ciphertext: Buffer; wrappedKey: Buffer; keyVersion: number },
+  ): Promise<string> {
+    return this.crypto.decryptString(sealed, { userId, field: 'messageBody' });
+  }
+
   /** Marks an account as needing the user to reconnect. */
   async markReauthRequired(userId: string, accountId: string, reason: string): Promise<void> {
     await this.prisma.forUser(userId, async (tx) => {

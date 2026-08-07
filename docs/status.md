@@ -8,21 +8,21 @@ Last updated: 2026-08-06.
 
 ## Verified working
 
-Everything below has tests that run and pass. **650 tests** (533 unit + 117 integration against
+Everything below has tests that run and pass. **670 tests** (535 unit + 135 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests           | What it does                                                                                                    |
-| --------------- | --------------- | --------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 40              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization         |
-| `@wea/crypto`   | 74              | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes |
-| `@wea/db`       | 8 (integration) | Prisma schema, six migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
-| `@wea/whatsapp` | 115             | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
-| `@wea/mail`     | 130             | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification               |
-| `apps/api`      | 58 + 12 (int.)  | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling        |
-| `apps/worker`   | 116 + 97 (int.) | Ingest, notify, resolution ladder, planner, mailbox actions, reply + forward composition, send, watch renewal   |
+| Package         | Tests            | What it does                                                                                                    |
+| --------------- | ---------------- | --------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 40               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization         |
+| `@wea/crypto`   | 74               | Envelope encryption (AES-256-GCM + KMS), Argon2id, token hashing, webhook signature verification, blind indexes |
+| `@wea/db`       | 8 (integration)  | Prisma schema, six migrations, seed. RLS verified against real Postgres 16 + pgvector                           |
+| `@wea/whatsapp` | 115              | Session window, delivery policy, webhook parsing, message builders, Cloud API client, command parser            |
+| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification               |
+| `apps/api`      | 58 + 12 (int.)   | Auth with refresh rotation, WhatsApp + Gmail webhook ingress, OAuth connect flow, health, error handling        |
+| `apps/worker`   | 118 + 115 (int.) | Ingest, notify, resolution ladder, planner, mailbox actions, reply + forward, send, watch renewal, retention    |
 
 ```bash
-pnpm -r test          # 533 unit tests
+pnpm -r test          # 535 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -45,6 +45,12 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
 - A forward asks first, remembers the recipient server-side, and on confirmation writes a
   `Fwd: ` draft with no threading headers, the original quoted, and its attachments carried.
   A second tap on the same confirmation sends nothing.
+- Message bodies are stored encrypted and read back; ciphertext is bound to both the user
+  and the `messageBody` field, so another tenant's key and the draft-body field each fail
+  to open it. Ingest still delivers the email when sealing fails.
+- The retention sweep erases bodies past `RETENTION_BODY_DAYS` across every user, records
+  `body_purged_at`, is idempotent, and — asserted as `wea_app` — still cannot read or erase
+  a body belonging to anyone but the tenant it is scoped to.
 
 ---
 
@@ -54,26 +60,20 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Message bodies are never stored.** Ingest writes a 300-character snippet and nothing
-   else, so `email_messages.body_text_cipher` — and the envelope encryption the schema and
-   ADR 0002 describe for it — is dead weight today. Nothing depends on it yet: the forward
-   composer reads the original from the mailbox instead, which is better for privacy and
-   works for mail of any age. But summarisation and search both will, so this has to be
-   settled before the AI layer rather than after.
-2. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
+1. **Two-factor verification.** The schema, the TOTP crypto and the `mfa` claim all exist,
    and a 2FA-enabled account correctly receives a token with `mfa: false` — but there is no
    endpoint to verify a code and upgrade it, and no guard that requires `mfa: true`. So
    enabling 2FA today would lock an account out rather than protect it.
-3. **Template sending.** Outside the 24-hour window the notify processor logs and stops,
+2. **Template sending.** Outside the 24-hour window the notify processor logs and stops,
    because the approved-template catalogue does not exist. So mail arriving when a user has
    not messaged recently is currently dropped rather than delivered.
-4. **The AI layer.** Notifications deliver without a summary today, which is by design —
+3. **The AI layer.** Notifications deliver without a summary today, which is by design —
    but the card is noticeably thinner than the product intends.
-5. **The polling fallback.** `pollingSince` is written when a watch cannot be established
+4. **The polling fallback.** `pollingSince` is written when a watch cannot be established
    or renewed, and the renewal sweep now retries those accounts every hour — but nothing
    yet polls on their behalf in the meantime. An account in that state receives nothing
    until a watch succeeds.
-6. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
+5. **`@wea/ai`** — provider abstraction, the single structured analysis call, embeddings,
    budgets, and the prompt-injection envelope from ADR 0004.
 
 ### After that
@@ -128,6 +128,17 @@ tenant context is set, while leaving writes strictly owner-scoped — verified d
 `psql`. What it gives up is that an unscoped `SELECT * FROM sessions` returns rows rather
 than none; what those rows contain is a SHA-256 hash, a user agent and an IP, not a usable
 credential.
+
+**Storing something is half a decision; erasing it is the other half.** Ingest stored only
+a 300-character snippet, which left `body_text_cipher` and the envelope encryption the
+schema describes for it as dead weight — and would have left the AI layer with nothing to
+read. Bodies are now sealed at ingest, and the retention sweep that `RETENTION_BODY_DAYS`
+always implied now exists to erase them. Shipping the storage without the purge would have
+turned a stated retention policy into a comment, and the difference stays invisible until a
+breach makes it very visible. A body is truncated at 256 KB — past that it is markup and
+inline images, not something a person wrote — and a failure to encrypt stores the message
+without its body rather than dropping the email, because a notification the user receives
+beats mail they never hear about.
 
 **A confirmation must not carry what it authorizes.** A forward's recipient never travels
 on the button. WhatsApp echoes an interactive id straight back to us, so an address placed

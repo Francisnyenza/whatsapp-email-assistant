@@ -123,9 +123,12 @@ describe('the sync processor', () => {
     logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
     processor = new SyncProcessor(
-      { env: {} } as never,
+      { env: { RETENTION_BODY_DAYS: 30 } } as never,
       accounts as never,
       watches as never,
+      // The retention sweep has its own spec against a real database; here it
+      // only needs to exist so the constructor's shape is honest.
+      { findUserIds: vi.fn().mockResolvedValue([]), purgeBodies: vi.fn() } as never,
       { enqueue } as never,
       logger,
     );

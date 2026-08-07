@@ -5,10 +5,13 @@ import { AppError, QUEUE, JOB, type SweepWatchesJob, type RenewWatchJob } from '
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
 import { WatchRepository } from '../repositories/watch.repository.js';
+import { RetentionRepository } from '../repositories/retention.repository.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 import {
   RENEWAL_HORIZON_HOURS,
   SWEEP_BATCH_SIZE,
+  PURGE_USER_BATCH,
+  PURGE_ROWS_PER_USER,
   renewalJobId,
 } from '../services/watch-schedule.js';
 import { startWorker } from './base.processor.js';
@@ -16,7 +19,8 @@ import { startWorker } from './base.processor.js';
 type SyncJob = SweepWatchesJob | RenewWatchJob;
 
 /**
- * Keeping mailboxes subscribed.
+ * The work the system does on its own behalf: keeping mailboxes subscribed, and
+ * erasing what it promised not to keep.
  *
  * Gmail's `users.watch` expires after seven days, and its expiry is announced
  * nowhere: pushes just stop. A mailbox connected on Monday goes quiet the
@@ -35,6 +39,11 @@ type SyncJob = SweepWatchesJob | RenewWatchJob;
  * access to the table holding OAuth tokens. It also means one mailbox failing
  * to renew cannot stall the rest: each is its own job, its own retries, its own
  * dead letter.
+ *
+ * The retention purge is the third job, and it is here for the same reason: it
+ * runs on a timer with no tenant, and it solves that the same way — enumerate
+ * from a table with nothing secret in it, then do the erasing scoped, under the
+ * policy, exactly as a request would.
  */
 @Injectable()
 export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
@@ -44,6 +53,7 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly config: ConfigService,
     private readonly accounts: AccountService,
     private readonly watches: WatchRepository,
+    private readonly retention: RetentionRepository,
     private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
@@ -63,6 +73,8 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
         return this.sweep(job.data as SweepWatchesJob);
       case JOB.RENEW_WATCH:
         return this.renew(job.data as RenewWatchJob);
+      case JOB.PURGE_EXPIRED:
+        return this.purge();
       default:
         // Not retryable: an unknown job name will still be unknown on the
         // fourth attempt. Straight to the dead letter, where it is visible.
@@ -106,6 +118,49 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
         saturated: due.length === SWEEP_BATCH_SIZE,
       },
       'Watch renewal sweep completed',
+    );
+  }
+
+  /**
+   * Erases message bodies past their retention window.
+   *
+   * This is the other half of storing them at all. A body kept indefinitely is a
+   * body that will eventually be in a breach, and the promise the product makes
+   * — and that `RETENTION_BODY_DAYS` states — is that it is not kept. A purge
+   * that never runs turns that promise into a comment.
+   *
+   * Bounded per user and per run so one enormous mailbox cannot starve the rest
+   * and so a sweep cannot hold a transaction open for minutes. What is left over
+   * is caught by the next run, because the window only moves forward.
+   */
+  private async purge(): Promise<void> {
+    const olderThan = new Date(Date.now() - this.config.env.RETENTION_BODY_DAYS * 24 * 3_600_000);
+
+    let purged = 0;
+    let users = 0;
+    let cursor: string | undefined;
+
+    for (;;) {
+      const batch = await this.retention.findUserIds(PURGE_USER_BATCH, cursor);
+      if (batch.length === 0) break;
+
+      for (const userId of batch) {
+        purged += await this.retention.purgeBodies(userId, olderThan, PURGE_ROWS_PER_USER);
+        users++;
+      }
+
+      cursor = batch.at(-1);
+      if (batch.length < PURGE_USER_BATCH) break;
+    }
+
+    this.logger.info(
+      {
+        event: 'sync.purge_completed',
+        users,
+        purged,
+        retentionDays: this.config.env.RETENTION_BODY_DAYS,
+      },
+      'Retention sweep completed',
     );
   }
 

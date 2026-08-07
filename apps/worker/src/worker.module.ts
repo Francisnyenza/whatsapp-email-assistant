@@ -19,6 +19,7 @@ import { SyncScheduler } from './queue/sync.scheduler.js';
 import { CommandsProcessor } from './processors/commands.processor.js';
 import { SyncProcessor } from './processors/sync.processor.js';
 import { WatchRepository } from './repositories/watch.repository.js';
+import { RetentionRepository } from './repositories/retention.repository.js';
 
 @Module({
   imports: [ConfigModule],
@@ -35,6 +36,7 @@ import { WatchRepository } from './repositories/watch.repository.js';
     DraftRepository,
     MessageRepository,
     WatchRepository,
+    RetentionRepository,
     QueueProducer,
     SyncScheduler,
     CommandsProcessor,

@@ -23,6 +23,21 @@ export const SWEEP_INTERVAL_MS = 3_600_000;
 export const SWEEP_BATCH_SIZE = 500;
 
 /**
+ * The retention sweep's batching.
+ *
+ * Two separate bounds, because they guard different things: the user batch
+ * keeps the enumeration query small, and the per-user row cap keeps any one
+ * transaction short so an enormous mailbox cannot hold a connection for minutes
+ * or starve every other user behind it. Whatever is left over is caught by the
+ * next run — the retention window only moves forward.
+ */
+export const PURGE_USER_BATCH = 500;
+export const PURGE_ROWS_PER_USER = 1_000;
+
+/** Once a day is ample for a window measured in weeks. */
+export const PURGE_INTERVAL_MS = 24 * 3_600_000;
+
+/**
  * The id under which a renewal is enqueued.
  *
  * De-duplication is the point. The sweep runs hourly and the horizon is two

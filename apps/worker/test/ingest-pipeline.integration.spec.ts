@@ -4,7 +4,12 @@ import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { MessageRepository } from '../src/repositories/message.repository.js';
 import { IngestProcessor } from '../src/processors/ingest.processor.js';
 import { NotifyProcessor } from '../src/processors/notify.processor.js';
+import { MAX_STORED_BODY_BYTES } from '../src/processors/ingest.processor.js';
 import { AppError, type NormalizedMessage } from '@wea/shared';
+import { EnvelopeEncryption, LocalKmsProvider } from '@wea/crypto';
+import { randomBytes } from 'node:crypto';
+
+const bodyCrypto = new EnvelopeEncryption(new LocalKmsProvider(randomBytes(32)));
 
 /**
  * Email arriving, end to end, against a real database.
@@ -29,6 +34,8 @@ describeIfDb('ingest pipeline (real database)', () => {
   let providerMessages: Map<string, NormalizedMessage>;
   let changes: Array<{ type: string; providerMessageId: string }>;
   let fetchChangesImpl: (() => AsyncIterable<any>) | null;
+  /** Set to make sealing the body fail, so the fallback path can be exercised. */
+  let sealFailure: Error | null = null;
 
   const userId = randomUUID();
   const accountId = randomUUID();
@@ -97,6 +104,17 @@ describeIfDb('ingest pipeline (real database)', () => {
       }),
       providerFor: () => provider,
       markReauthRequired: vi.fn(),
+      // Real envelope encryption, so a stored body genuinely round-trips
+      // through the code path production uses — including the AAD binding it to
+      // this user and to the messageBody field.
+      encryptMessageBody: (id: string, body: string) => {
+        if (sealFailure) throw sealFailure;
+        return bodyCrypto.encryptString(body, { userId: id, field: 'messageBody' });
+      },
+      decryptMessageBody: (
+        id: string,
+        sealed: { ciphertext: Buffer; wrappedKey: Buffer; keyVersion: number },
+      ) => bodyCrypto.decryptString(sealed, { userId: id, field: 'messageBody' }),
     };
 
     const queue = {
@@ -166,6 +184,7 @@ describeIfDb('ingest pipeline (real database)', () => {
     changes.length = 0;
     providerMessages.clear();
     fetchChangesImpl = null;
+    sealFailure = null;
   });
 
   afterAll(async () => {
@@ -182,6 +201,26 @@ describeIfDb('ingest pipeline (real database)', () => {
     providerMessages.set(staged.providerMessageId, staged);
     changes.push({ type: 'messageAdded', providerMessageId: staged.providerMessageId });
     return staged;
+  }
+
+  /** Ingests one message and returns our own row id for it. */
+  async function ingestOne(staged: NormalizedMessage): Promise<string> {
+    providerMessages.set(staged.providerMessageId, staged);
+    changes.push({ type: 'messageAdded', providerMessageId: staged.providerMessageId });
+    await runIngest();
+
+    const stored = await withTenant((tx) =>
+      tx.emailMessage.findUnique({
+        where: {
+          accountId_providerMessageId: {
+            accountId,
+            providerMessageId: staged.providerMessageId,
+          },
+        },
+        select: { id: true },
+      }),
+    );
+    return (stored as { id: string }).id;
   }
 
   describe('persistence', () => {
@@ -501,6 +540,109 @@ describeIfDb('ingest pipeline (real database)', () => {
     it('does nothing when the email has since been deleted', async () => {
       await expect(notifyFor(randomUUID())).resolves.toBeUndefined();
       expect(sent).toHaveLength(0);
+    });
+  });
+
+  describe('the message body', () => {
+    /**
+     * Ingest stored only a snippet for a long time, which made the encryption
+     * the schema describes for `body_text_cipher` dead weight and would have
+     * left the AI layer with nothing to read. These pin the fix.
+     */
+    const bodyOf = async (emailMessageId: string) => {
+      const row = await withTenant((tx) =>
+        tx.emailMessage.findUnique({ where: { id: emailMessageId } }),
+      );
+      if (!row!.bodyTextCipher) return null;
+      return bodyCrypto.decryptString(
+        {
+          ciphertext: Buffer.from(row!.bodyTextCipher),
+          wrappedKey: Buffer.from(row!.bodyDek!),
+          keyVersion: row!.bodyKeyVersion!,
+        },
+        { userId, field: 'messageBody' },
+      );
+    };
+
+    it('is stored, encrypted, and reads back', async () => {
+      const msg = message({ bodyText: 'Could you send the Q3 report before Friday?' });
+      const id = await ingestOne(msg);
+
+      expect(await bodyOf(id)).toBe('Could you send the Q3 report before Friday?');
+    });
+
+    it('is not readable without decrypting', async () => {
+      const msg = message({ bodyText: 'Wire the deposit to account 4471.' });
+      const id = await ingestOne(msg);
+
+      const row = await withTenant((tx) => tx.emailMessage.findUnique({ where: { id } }));
+      expect(Buffer.from(row!.bodyTextCipher!).toString('utf8')).not.toContain('4471');
+    });
+
+    it('is bound to this user, so another tenant’s key cannot open it', async () => {
+      const msg = message({ bodyText: 'Confidential.' });
+      const id = await ingestOne(msg);
+      const row = await withTenant((tx) => tx.emailMessage.findUnique({ where: { id } }));
+
+      await expect(
+        bodyCrypto.decryptString(
+          {
+            ciphertext: Buffer.from(row!.bodyTextCipher!),
+            wrappedKey: Buffer.from(row!.bodyDek!),
+            keyVersion: row!.bodyKeyVersion!,
+          },
+          { userId: randomUUID(), field: 'messageBody' },
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('is bound to its field, so it cannot be opened as a draft body', async () => {
+      // The two have different lifetimes — a received body is purged on the
+      // retention schedule and a draft is not — so ciphertext moved between the
+      // columns must fail rather than quietly surface in the wrong place.
+      const msg = message({ bodyText: 'Confidential.' });
+      const id = await ingestOne(msg);
+      const row = await withTenant((tx) => tx.emailMessage.findUnique({ where: { id } }));
+
+      await expect(
+        bodyCrypto.decryptString(
+          {
+            ciphertext: Buffer.from(row!.bodyTextCipher!),
+            wrappedKey: Buffer.from(row!.bodyDek!),
+            keyVersion: row!.bodyKeyVersion!,
+          },
+          { userId, field: 'draftBody' },
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('is truncated rather than storing megabytes of inline markup', async () => {
+      const huge = 'x'.repeat(MAX_STORED_BODY_BYTES + 50_000);
+      const id = await ingestOne(message({ bodyText: huge }));
+
+      const stored = await bodyOf(id);
+      expect(stored!.length).toBeLessThan(huge.length);
+      // Visible, so a message that seems to stop mid-sentence is explained.
+      expect(stored).toContain('[Message truncated.]');
+    });
+
+    it('stores an empty body as no body rather than as ciphertext', async () => {
+      // Plenty of mail is subject-only. The pairing CHECK permits both columns
+      // NULL, and that is what an absent body should look like.
+      const id = await ingestOne(message({ bodyText: '' }));
+
+      expect(await bodyOf(id)).toBeNull();
+    });
+
+    it('still delivers the email when the body cannot be encrypted', async () => {
+      // A notification the user receives beats a message dropped over an
+      // encryption failure. The body can be re-fetched; the notification cannot.
+      sealFailure = new Error('kms unavailable');
+      const id = await ingestOne(message({ bodyText: 'Important.' }));
+
+      expect(await bodyOf(id)).toBeNull();
+      // Ingest's job is to persist and hand off; the notification is queued.
+      expect(enqueued.filter((e) => e.payload.emailMessageId === id)).toHaveLength(1);
     });
   });
 });
