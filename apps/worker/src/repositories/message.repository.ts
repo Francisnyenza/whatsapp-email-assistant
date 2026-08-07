@@ -196,6 +196,30 @@ export class MessageRepository {
     );
   }
 
+  /** Everything the analysis call needs, including the sealed body. */
+  async findForAnalysis(userId: string, emailMessageId: string) {
+    return this.prisma.forUser(userId, async (tx) => {
+      const [message, user] = await Promise.all([
+        tx.emailMessage.findUnique({
+          where: { id: emailMessageId },
+          select: {
+            id: true,
+            subject: true,
+            fromAddress: true,
+            fromName: true,
+            snippet: true,
+            bodyTextCipher: true,
+            bodyDek: true,
+            bodyKeyVersion: true,
+          },
+        }),
+        tx.user.findUnique({ where: { id: userId }, select: { locale: true } }),
+      ]);
+
+      return message ? { ...message, locale: user?.locale ?? null } : null;
+    });
+  }
+
   /** Advances the account's sync position. */
   async setCursor(userId: string, accountId: string, cursor: string): Promise<void> {
     await this.prisma.forUser(userId, async (tx) => {

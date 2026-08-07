@@ -87,13 +87,17 @@ export class IngestProcessor implements OnModuleInit, OnModuleDestroy {
         if (!stored.isNew) continue;
 
         notified++;
+        // Analysis first, and it is the analysis job that queues the
+        // notification — so a card can carry a summary. That handler always
+        // notifies, including when the model is absent, over budget or broken,
+        // so putting it in the path cannot cost an email its delivery.
         await this.queue.enqueue(
-          QUEUE.NOTIFY,
-          JOB.NOTIFY_EMAIL,
+          QUEUE.AI,
+          JOB.ANALYZE_EMAIL,
           { emailMessageId: stored.emailMessageId, userId },
           // Keyed on our own row id, so a redelivered ingest job cannot produce
           // a second notification for the same email.
-          { jobId: `notify:${stored.emailMessageId}` },
+          { jobId: `analyze:${stored.emailMessageId}` },
         );
 
         latestCursor = change.providerMessageId;

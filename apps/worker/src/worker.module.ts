@@ -20,6 +20,9 @@ import { CommandsProcessor } from './processors/commands.processor.js';
 import { SyncProcessor } from './processors/sync.processor.js';
 import { WatchRepository } from './repositories/watch.repository.js';
 import { RetentionRepository } from './repositories/retention.repository.js';
+import { AnalysisRepository } from './repositories/analysis.repository.js';
+import { AiService } from './services/ai.service.js';
+import { AiProcessor } from './processors/ai.processor.js';
 
 @Module({
   imports: [ConfigModule],
@@ -37,6 +40,8 @@ import { RetentionRepository } from './repositories/retention.repository.js';
     MessageRepository,
     WatchRepository,
     RetentionRepository,
+    AnalysisRepository,
+    AiService,
     QueueProducer,
     SyncScheduler,
     CommandsProcessor,
@@ -44,6 +49,7 @@ import { RetentionRepository } from './repositories/retention.repository.js';
     IngestProcessor,
     NotifyProcessor,
     SyncProcessor,
+    AiProcessor,
   ],
 })
 export class WorkerModule {}

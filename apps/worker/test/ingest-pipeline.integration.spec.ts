@@ -267,27 +267,38 @@ describeIfDb('ingest pipeline (real database)', () => {
       expect(count).toBe(1);
     });
 
-    it('notifies only for the first delivery', async () => {
+    it('hands each new message on exactly once', async () => {
       // The most visible bug this system could have is telling someone about
-      // the same email three times.
+      // the same email three times. Ingest now hands off to analysis, which
+      // queues the notification — but the property is unchanged.
       stageIncoming();
 
       await runIngest();
-      const afterFirst = enqueued.filter((e) => e.queue === 'notify').length;
+      const afterFirst = enqueued.filter((e) => e.queue === 'ai').length;
 
       await runIngest();
-      const afterSecond = enqueued.filter((e) => e.queue === 'notify').length;
+      const afterSecond = enqueued.filter((e) => e.queue === 'ai').length;
 
       expect(afterFirst).toBe(1);
       expect(afterSecond).toBe(1);
     });
 
-    it('keys the notify job on our own row id', async () => {
+    it('keys the handoff on our own row id', async () => {
       stageIncoming();
       await runIngest();
 
-      const job = enqueued.find((e) => e.queue === 'notify');
-      expect(job!.opts.jobId).toMatch(/^notify:/);
+      const job = enqueued.find((e) => e.queue === 'ai');
+      expect(job!.opts.jobId).toMatch(/^analyze:/);
+    });
+
+    it('does not notify directly, so a card can carry a summary', async () => {
+      // Analysis sits in the path deliberately. Its handler always notifies —
+      // including when the model is absent, over budget or broken — so this
+      // cannot cost an email its delivery.
+      stageIncoming();
+      await runIngest();
+
+      expect(enqueued.filter((e) => e.queue === 'notify')).toHaveLength(0);
     });
 
     it('groups messages in one conversation under one thread', async () => {

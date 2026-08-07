@@ -37,6 +37,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
       'SendProcessor',
       'CommandsProcessor',
       'SyncProcessor',
+      'AiProcessor',
       // Without the scheduler nothing ever fires the sweep, and every Gmail
       // watch lapses seven days after it was created.
       'SyncScheduler',
@@ -49,6 +50,9 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
     ['processors/sync.processor.js', 'SyncProcessor', 6],
     ['processors/commands.processor.js', 'CommandsProcessor', 10],
     ['processors/notify.processor.js', 'NotifyProcessor', 4],
+    ['processors/ai.processor.js', 'AiProcessor', 7],
+    ['services/ai.service.js', 'AiService', 3],
+    ['repositories/analysis.repository.js', 'AnalysisRepository', 1],
     ['queue/sync.scheduler.js', 'SyncScheduler', 2],
     ['repositories/watch.repository.js', 'WatchRepository', 1],
     ['repositories/retention.repository.js', 'RetentionRepository', 1],
