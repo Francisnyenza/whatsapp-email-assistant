@@ -167,6 +167,12 @@ describeIfDb('mailbox search (real database)', () => {
         await tx.emailThread.deleteMany({ where: { userId } });
       });
     }
+    // A completed backfill is the one piece of state that outlives a message,
+    // so it is reset here rather than leaking into the next test.
+    await prisma.user.updateMany({
+      where: { id: { in: [alice, bob] } },
+      data: { embeddingBackfilledAt: null },
+    });
   });
 
   afterAll(async () => {
@@ -369,6 +375,72 @@ describeIfDb('mailbox search (real database)', () => {
 
       expect(await search.saveEmbedding(bob, bobs, vectorOn(23), 'test-model')).toBe(true);
       expect(await search.hasEmbedding(bob, bobs)).toBe(true);
+    });
+  });
+
+  /* ------------------------------- backfill ------------------------------ */
+
+  describe('finding what has not been embedded', () => {
+    it('returns exactly the messages with no vector', async () => {
+      const embedded = await seed(alice, { subject: 'One', snippet: 'a' });
+      const bare = await seed(alice, { subject: 'Two', snippet: 'b' });
+      await search.saveEmbedding(alice, embedded, vectorOn(30), 'test-model');
+
+      const pending = await search.findUnembedded(alice, 50, new Date(0));
+
+      expect(pending).toEqual([bare]);
+    });
+
+    it('empties out as the backfill progresses', async () => {
+      // The property that lets the sweep use "returned nothing" as its
+      // completion signal, with no cursor to keep.
+      const ids = [
+        await seed(alice, { subject: 'One', snippet: 'a' }),
+        await seed(alice, { subject: 'Two', snippet: 'b' }),
+      ];
+
+      expect(await search.findUnembedded(alice, 50, new Date(0))).toHaveLength(2);
+
+      for (const id of ids) await search.saveEmbedding(alice, id, vectorOn(31), 'test-model');
+
+      expect(await search.findUnembedded(alice, 50, new Date(0))).toEqual([]);
+    });
+
+    it('respects the window, so an ancient mailbox is not embedded in full', async () => {
+      await seed(alice, { subject: 'Ancient', snippet: 'a', ageHours: 24 * 500 });
+      const recent = await seed(alice, { subject: 'Recent', snippet: 'b', ageHours: 2 });
+
+      const since = new Date(Date.now() - 365 * 24 * 3_600_000);
+
+      expect(await search.findUnembedded(alice, 50, since)).toEqual([recent]);
+    });
+
+    it('skips trashed mail', async () => {
+      await seed(alice, { subject: 'Gone', snippet: 'a', deleted: true });
+
+      expect(await search.findUnembedded(alice, 50, new Date(0))).toEqual([]);
+    });
+
+    it('is newest first, so an interrupted backfill leaves the useful window done', async () => {
+      const older = await seed(alice, { subject: 'Older', snippet: 'a', ageHours: 50 });
+      const newer = await seed(alice, { subject: 'Newer', snippet: 'b', ageHours: 2 });
+
+      expect(await search.findUnembedded(alice, 50, new Date(0))).toEqual([newer, older]);
+    });
+
+    it('never reaches another tenant’s mail', async () => {
+      await seed(bob, { subject: 'Bob’s', snippet: 'private' });
+
+      expect(await search.findUnembedded(alice, 50, new Date(0))).toEqual([]);
+    });
+
+    it('enumerates users owed a backfill, and stops listing one that is done', async () => {
+      expect(await search.findUsersNeedingBackfill(1000)).toContain(alice);
+
+      await search.markBackfilled(alice);
+
+      expect(await search.findUsersNeedingBackfill(1000)).not.toContain(alice);
+      expect(await search.findUsersNeedingBackfill(1000)).toContain(bob);
     });
   });
 

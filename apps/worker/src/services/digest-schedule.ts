@@ -115,3 +115,31 @@ function parseTime(value: string): number | null {
 
   return hour * 60 + minute;
 }
+
+/* --------------------------- embedding backfill ---------------------------- */
+
+/**
+ * How often the backfill sweep runs.
+ *
+ * Every ten minutes rather than every minute, because the work it queues is
+ * paced by `AI_MAX_TOKENS_PER_USER_DAY` anyway: a user whose allowance is spent
+ * gets skipped, and sweeping them ten times an hour instead of once changes
+ * nothing except the number of queries. And rather than every hour, because a
+ * newly connected account should become searchable in minutes, not overnight.
+ */
+export const BACKFILL_SWEEP_INTERVAL_MS = 10 * 60_000;
+
+/** Users examined per page of the sweep. */
+export const BACKFILL_USER_BATCH = 200;
+
+/**
+ * Messages queued per user per sweep.
+ *
+ * Deliberately small. This is the one job in the system that can spend real
+ * money on mail nobody asked about, so it drips rather than floods: fifty
+ * messages every ten minutes is ~7 000 a day per user, which the token budget
+ * will usually cut in well before. A backlog that takes a week to clear is a
+ * feature arriving gradually; one that clears in an hour is a bill arriving
+ * suddenly.
+ */
+export const BACKFILL_BATCH_PER_USER = 50;

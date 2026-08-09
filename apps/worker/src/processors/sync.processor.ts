@@ -6,6 +6,8 @@ import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
 import { WatchRepository } from '../repositories/watch.repository.js';
 import { RetentionRepository } from '../repositories/retention.repository.js';
+import { SearchRepository } from '../repositories/search.repository.js';
+import { AiService } from '../services/ai.service.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 import {
   RENEWAL_HORIZON_HOURS,
@@ -20,6 +22,8 @@ import {
   isDigestDue,
   DIGEST_USER_BATCH,
   DIGEST_SWEEP_INTERVAL_MS,
+  BACKFILL_USER_BATCH,
+  BACKFILL_BATCH_PER_USER,
 } from '../services/digest-schedule.js';
 import { startWorker } from './base.processor.js';
 
@@ -66,6 +70,8 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly accounts: AccountService,
     private readonly watches: WatchRepository,
     private readonly retention: RetentionRepository,
+    private readonly search: SearchRepository,
+    private readonly ai: AiService,
     private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
@@ -91,6 +97,8 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
         return this.sweepDigests();
       case JOB.SWEEP_POLLING:
         return this.sweepPolling();
+      case JOB.SWEEP_EMBEDDINGS:
+        return this.sweepEmbeddings();
       default:
         // Not retryable: an unknown job name will still be unknown on the
         // fourth attempt. Straight to the dead letter, where it is visible.
@@ -283,6 +291,79 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
     this.logger.info(
       { event: 'sync.digest_sweep_completed', examined, due },
       'Digest sweep completed',
+    );
+  }
+
+  /**
+   * Embedding the mail that arrived before search existed.
+   *
+   * Embedding runs after an email is notified, which means search only ever
+   * knew about mail that arrived while the feature was on. An account connected
+   * today had an unsearchable back catalogue and nothing that would ever fix
+   * it — the feature worked perfectly and was useless on exactly the mail people
+   * wanted to search.
+   *
+   * It queues the *same* `ai.embedEmail` job ingest does, with the same job id,
+   * so a message already waiting is not embedded twice and there is no second
+   * code path to keep in step with the first. Everything that makes that job
+   * safe — the budget check, the "already embedded" check, the tenant-scoped
+   * write — applies unchanged.
+   *
+   * Two guards keep this from being the job that spends money unnoticed. The
+   * per-user budget is checked here as well as in the handler, so an exhausted
+   * user costs one query rather than fifty jobs that each wake up and decline.
+   * And a user with nothing left is marked done, which is what stops the sweep
+   * asking the same question of the same mailbox forever.
+   */
+  private async sweepEmbeddings(): Promise<void> {
+    const days = this.config.env.EMBEDDING_BACKFILL_DAYS;
+    if (!days) return;
+
+    const since = new Date(Date.now() - days * 24 * 3_600_000);
+    let queued = 0;
+    let completed = 0;
+    let examined = 0;
+    let cursor: string | undefined;
+
+    for (;;) {
+      const batch = await this.search.findUsersNeedingBackfill(BACKFILL_USER_BATCH, cursor);
+      if (batch.length === 0) break;
+
+      for (const userId of batch) {
+        examined++;
+
+        // Checked before the query rather than after: an over-budget user is
+        // skipped entirely and reconsidered next sweep.
+        if (await this.ai.isOverBudget(userId)) continue;
+
+        const pending = await this.search.findUnembedded(userId, BACKFILL_BATCH_PER_USER, since);
+
+        if (pending.length === 0) {
+          // Nothing left inside the window. Done, and staying done is the
+          // point: mail arriving from now on is embedded by ingest.
+          await this.search.markBackfilled(userId);
+          completed++;
+          continue;
+        }
+
+        for (const emailMessageId of pending) {
+          await this.queue.enqueue(
+            QUEUE.AI,
+            JOB.EMBED_EMAIL,
+            { userId, emailMessageId },
+            { jobId: `embed:${emailMessageId}` },
+          );
+          queued++;
+        }
+      }
+
+      cursor = batch.at(-1);
+      if (batch.length < BACKFILL_USER_BATCH) break;
+    }
+
+    this.logger.info(
+      { event: 'sync.backfill_sweep_completed', examined, queued, completed },
+      'Embedding backfill sweep completed',
     );
   }
 

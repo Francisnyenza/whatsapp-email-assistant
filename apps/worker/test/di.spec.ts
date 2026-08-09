@@ -49,7 +49,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
   });
 
   const cases: Array<[string, string, number]> = [
-    ['processors/sync.processor.js', 'SyncProcessor', 6],
+    ['processors/sync.processor.js', 'SyncProcessor', 8],
     ['processors/commands.processor.js', 'CommandsProcessor', 11],
     ['processors/notify.processor.js', 'NotifyProcessor', 4],
     ['processors/ai.processor.js', 'AiProcessor', 8],

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@wea/db';
+import { Prisma, withoutTenantScope } from '@wea/db';
 import { AppError } from '@wea/shared';
 import { PrismaService } from '../common/prisma.service.js';
 
@@ -271,6 +271,76 @@ export class SearchRepository {
       // Recency is the whole ranking for a list; a score would be theatre.
       score: 0,
     }));
+  }
+
+  /* ------------------------------ backfill ------------------------------- */
+
+  /**
+   * Users who have never had their history embedded.
+   *
+   * Unscoped, and the same argument as the retention sweep: `users` carries no
+   * tenant policy because a user *is* the tenant, so enumerating ids costs one
+   * query and reveals nothing beyond how many accounts exist. Everything the
+   * sweep then does with an id happens inside that user's own transaction,
+   * under the policy, exactly as a request would.
+   *
+   * The `embeddingBackfilledAt` filter is what stops this being a query that
+   * gets slower forever: without it the sweep would ask every user on every
+   * run, including the ones with nothing left to do.
+   */
+  async findUsersNeedingBackfill(limit: number, afterId?: string): Promise<string[]> {
+    return withoutTenantScope(this.prisma, 'embedding-backfill', async (db) => {
+      const users = await db.user.findMany({
+        where: {
+          embeddingBackfilledAt: null,
+          deletedAt: null,
+          ...(afterId ? { id: { gt: afterId } } : {}),
+        },
+        // Keyset pagination on the primary key: a sweep that runs for minutes
+        // must not skip or repeat users because rows were inserted underneath
+        // it, which an OFFSET would do.
+        orderBy: { id: 'asc' },
+        take: limit,
+        select: { id: true },
+      });
+      return users.map((user) => user.id);
+    });
+  }
+
+  /**
+   * This user's mail that has no vector yet, oldest first.
+   *
+   * Oldest first so a backfill interrupted halfway leaves a contiguous
+   * *recent* window searchable rather than a random scatter — a user who
+   * searches during the backfill should find the mail they are most likely to
+   * be looking for.
+   */
+  async findUnembedded(userId: string, limit: number, since: Date): Promise<string[]> {
+    return this.prisma.forUser(userId, async (tx) => {
+      const rows = await tx.emailMessage.findMany({
+        where: {
+          deletedAt: null,
+          receivedAt: { gte: since },
+          // The anti-join. Prisma expresses it as a null relation filter, which
+          // compiles to `NOT EXISTS` rather than a `LEFT JOIN … IS NULL`.
+          embedding: { is: null },
+        },
+        orderBy: { receivedAt: 'desc' },
+        take: limit,
+        select: { id: true },
+      });
+      return rows.map((row) => row.id);
+    });
+  }
+
+  /** Records that there is nothing left to backfill for this user. */
+  async markBackfilled(userId: string): Promise<void> {
+    await withoutTenantScope(this.prisma, 'embedding-backfill', async (db) => {
+      await db.user.update({
+        where: { id: userId },
+        data: { embeddingBackfilledAt: new Date() },
+      });
+    });
   }
 }
 

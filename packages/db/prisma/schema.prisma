@@ -197,6 +197,11 @@ model User {
 
   isPlatformAdmin Boolean @default(false) @map("is_platform_admin")
 
+  /// Set once this mailbox's existing history has been embedded, so the sweep
+  /// stops asking. Null means still owed one — which is also the state of every
+  /// user who existed before search did.
+  embeddingBackfilledAt DateTime? @map("embedding_backfilled_at")
+
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @default(now()) @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")

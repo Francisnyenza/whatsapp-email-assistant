@@ -90,4 +90,5 @@ export type CrossTenantReason =
   | 'platform-analytics'
   | 'billing-reconciliation'
   | 'webhook-account-lookup'
+  | 'embedding-backfill'
   | 'migration';

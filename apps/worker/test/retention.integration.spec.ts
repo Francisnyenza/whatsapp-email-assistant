@@ -98,6 +98,8 @@ describeIfDb('retention (real database)', () => {
       {} as never,
       retention,
       {} as never,
+      {} as never,
+      {} as never,
       { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
     );
 

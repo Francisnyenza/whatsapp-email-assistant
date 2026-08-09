@@ -131,6 +131,13 @@ describe('the sync processor', () => {
       // The retention sweep has its own spec against a real database; here it
       // only needs to exist so the constructor's shape is honest.
       { findUserIds: vi.fn().mockResolvedValue([]), purgeBodies: vi.fn() } as never,
+      // Likewise the backfill sweep — its own spec, against a real database.
+      {
+        findUsersNeedingBackfill: vi.fn().mockResolvedValue([]),
+        findUnembedded: vi.fn(),
+        markBackfilled: vi.fn(),
+      } as never,
+      { isOverBudget: vi.fn().mockResolvedValue(false) } as never,
       { enqueue } as never,
       logger,
     );

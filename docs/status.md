@@ -2,34 +2,34 @@
 
 Honest accounting of what exists, what is verified, and what remains.
 
-Last updated: 2026-08-08.
+Last updated: 2026-08-09.
 
 ---
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 041 tests** (825 unit + 216 integration against
+Everything below has tests that run and pass. **1 059 tests** (836 unit + 223 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                       |
 | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                            |
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                       |
-| `@wea/db`       | 8 (integration)  | Prisma schema, nine migrations, seed. RLS verified against real Postgres 16 + pgvector                                             |
+| `@wea/db`       | 8 (integration)  | Prisma schema, ten migrations, seed. RLS verified against real Postgres 16 + pgvector                                              |
 | `@wea/whatsapp` | 143              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                            |
 | `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                                  |
 | `@wea/ai`       | 120              | Prompt-injection envelope, instruction detection, structured analysis with schema discard, embeddings, OpenAI + Gemini + Anthropic |
 | `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors                           |
-| `apps/worker`   | 220 + 170 (int.) | Ingest, analysis, embeddings, hybrid search, notify + digest, resolution ladder, planner, actions, sweeps                          |
+| `apps/worker`   | 231 + 177 (int.) | Ingest, analysis, embeddings, hybrid search, notify + digest, resolution ladder, planner, actions, sweeps                          |
 
 ```bash
-pnpm -r test          # 825 unit tests
+pnpm -r test          # 836 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
 ### Verified against real infrastructure
 
-- All nine migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
+- All ten migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
 - Row-level security isolates tenants: no context → no rows; scoped → own rows only;
   cross-tenant read → empty; cross-tenant write → refused by policy.
 - The watch-renewal sweep reads every tenant's routes without gaining read access to any
@@ -92,6 +92,11 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   out of an API with no JSON mode by prefilling the assistant turn, and puts the brace back.
 - A deployment can say it wants no AI at all, and one that does still delivers mail, still
   searches on keywords, and says so once at boot rather than per email.
+- A newly connected mailbox's _history_ becomes searchable, not only its future. The backfill
+  sweep pages over users owed one, queues the same `ai.embedEmail` job ingest does with the
+  same id, skips a user whose token allowance is spent before doing any work for them, and
+  records a mailbox as done so it is never asked again. Bounded by `EMBEDDING_BACKFILL_DAYS`
+  at one end and the per-user token budget at the other; `0` turns it off.
 - Deferred mail is recorded, and delivered as a digest the moment the user next messages us
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
@@ -105,13 +110,10 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Backfilling embeddings.** Only mail that arrives from now on is embedded. An account
-   connected today has an unsearchable history until a sweep walks it, and there is no such
-   sweep — `hasEmbedding` exists so one can be added without re-billing what is done.
-2. **`list_deadlines`, `summarize`, `translate`, `read_aloud` and free-form questions.**
+1. **`list_deadlines`, `summarize`, `translate`, `read_aloud` and free-form questions.**
    Each says plainly that it is not built. The first needs the action items an analysis
    already extracts to be surfaced; the rest need the composition path.
-3. **`today` means UTC midnight, not the user's.** The timezone is on the user row and is
+2. **`today` means UTC midnight, not the user's.** The timezone is on the user row and is
    not threaded into the list query, so "today" is quietly wrong for anyone far from UTC.
 
 ### After that
@@ -213,6 +215,25 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**A feature that works perfectly on none of the mail people want to search.** Embedding runs
+after an email is notified, so search only ever knew about mail that arrived while the
+feature was on. Connect a mailbox with ten years of history and every query returns nothing —
+not a bug in search, which was correct throughout, but the difference between shipping a
+capability and shipping a usable one. The backfill sweep queues the _same_ `ai.embedEmail`
+job ingest does, with the same id, so there is no second embedding path to keep in step with
+the first and everything that makes that job safe applies unchanged. What is new is only the
+restraint: a per-user batch of fifty, a budget check _before_ the query rather than fifty
+jobs that each wake up and decline, a bounded window, and a completion flag so the sweep
+stops asking a mailbox that has nothing left. Without that flag the sweep re-examines every
+user forever and gets slower the more the product succeeds.
+
+**Four flags that configured nothing.** `FEATURE_VOICE_NOTES`, `FEATURE_SEMANTIC_SEARCH`,
+`FEATURE_AUTOMATIONS` and `FEATURE_IMAP` were validated, documented in `.env.example`, and
+read by no code at all — the same failure as the AI provider that validated and did nothing,
+found while looking for somewhere to gate the backfill. Setting `FEATURE_SEMANTIC_SEARCH=false`
+did not disable semantic search; it did nothing whatsoever. They are gone. A flag arrives with
+the code that reads it, or it is a comment pretending to be configuration.
 
 **A setting that reads as on and behaves as off.** `AI_PRIMARY_PROVIDER` accepted `gemini`
 and `anthropic`; the env schema even refused to boot without the matching key, so selecting

@@ -120,6 +120,18 @@ export const envSchema = z
     AI_MAX_TOKENS_PER_USER_DAY: intFrom(200_000, 0),
     AI_MAX_TOKENS_PER_ORG_DAY: intFrom(5_000_000, 0),
     AI_REQUEST_TIMEOUT_MS: intFrom(20_000, 1000),
+    /**
+     * How far back the embedding backfill walks, so a newly connected account's
+     * history becomes searchable rather than only its future.
+     *
+     * Zero switches it off. The default is a year because the marginal value of
+     * searching mail older than that is low and the marginal cost is not — and
+     * because a number an operator can reason about beats an unbounded sweep
+     * whose bill arrives before its progress does. `AI_MAX_TOKENS_PER_USER_DAY`
+     * is the other end of the same guard: it paces the backfill regardless of
+     * this value.
+     */
+    EMBEDDING_BACKFILL_DAYS: intFrom(365, 0),
 
     // Speech & OCR
     SPEECH_TO_TEXT_PROVIDER: z.enum(['openai', 'google', 'azure']).default('openai'),
@@ -147,11 +159,14 @@ export const envSchema = z
     SENTRY_DSN: z.string().optional(),
     METRICS_ENABLED: booleanish,
 
-    // Feature flags
-    FEATURE_VOICE_NOTES: booleanish,
-    FEATURE_SEMANTIC_SEARCH: booleanish,
-    FEATURE_AUTOMATIONS: booleanish,
-    FEATURE_IMAP: booleanish,
+    // Deliberately no feature flags.
+    //
+    // There were four — FEATURE_VOICE_NOTES, FEATURE_SEMANTIC_SEARCH,
+    // FEATURE_AUTOMATIONS, FEATURE_IMAP — and nothing read any of them. That is
+    // the same failure as an AI provider that validates and does nothing: a
+    // setting an operator can set, and a behaviour that never changes. A flag
+    // arrives with the code that reads it, or it is a comment pretending to be
+    // configuration.
   })
   .superRefine((env, ctx) => {
     // A static master key in the process environment is fine for local work and
