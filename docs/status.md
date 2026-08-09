@@ -2,13 +2,13 @@
 
 Honest accounting of what exists, what is verified, and what remains.
 
-Last updated: 2026-08-09.
+Last updated: 2026-08-10.
 
 ---
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 128 tests** (897 unit + 231 integration against
+Everything below has tests that run and pass. **1 234 tests** (988 unit + 246 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                        |
@@ -17,13 +17,13 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes        |
 | `@wea/db`       | 8 (integration)  | Prisma schema, ten migrations, seed. RLS verified against real Postgres 16 + pgvector                               |
 | `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser             |
-| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                   |
+| `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                          |
 | `@wea/ai`       | 146              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors            |
-| `apps/worker`   | 263 + 197 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
+| `apps/api`      | 89 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail + Graph webhooks, OAuth connect, health, errors           |
+| `apps/worker`   | 265 + 197 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
 
 ```bash
-pnpm -r test          # 897 unit tests
+pnpm -r test          # 988 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -119,7 +119,6 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### After that
 
-- Microsoft Graph adapter (Phase 7)
 - Next.js dashboard (Phase 9)
 - E2E, load and security test suites; CI pipeline (Phase 10)
 - Dockerfiles, Kubernetes manifests, Terraform, monitoring (Phase 11)
@@ -216,6 +215,41 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**A second provider is where you find out whether the port was real.** Everything above
+`MailProvider` was written against Gmail and claimed to be provider-neutral. Adding Graph
+changed no caller, no processor and no query — which is the only evidence that claim was
+ever worth anything. What it did change is two things the port had quietly assumed: that a
+renewal returns the same subscription id it was given (Graph's can differ, because a PATCH
+that finds the subscription gone falls back to creating one), and that `watch` needs only an
+access token (Graph's delta walk can outlive one). Both were additions to existing signatures
+rather than new concepts, which is roughly the cost a good port should have.
+
+**The same verb, three incompatible meanings.** Gmail's `watch` is idempotent, so renewing it
+is re-issuing it. Graph's `POST /subscriptions` creates a _second_ subscription — a renewal
+written the Gmail way delivers every notification twice and leaks one more subscription every
+three days until the per-mailbox limit rejects the next. Gmail's cursor is a number that
+survives anything; Graph's is a URL, and the one that must be stored is the `@odata.deltaLink`
+from the final page rather than the `@odata.nextLink` that expires in minutes. Gmail preserves
+the `Message-ID` in an uploaded MIME; Graph replaces it, so storing ours would mean a reply to
+our reply quotes an id we never see again. None of these produces an error — each is a
+mailbox that looks connected and quietly stops working.
+
+**A field you do not ask for is a feature that silently does not exist.** Graph omits
+`internetMessageHeaders` entirely unless it is named in `$select`, and that is the only place
+`In-Reply-To` and `References` live. Without them the adapter still returns messages, still
+sends replies, and still passes every test that does not look at threading — while every reply
+starts a new conversation in the recipient's client. The `$select` list therefore lives next
+to the normalizer that depends on it, rather than in the client that issues it.
+
+**A webhook with a handshake before it has anything to authenticate with.** Graph POSTs a
+validation token to the notification URL _while creating the subscription_ and expects it
+echoed as `text/plain` within ten seconds. Get it wrong and the subscription is never created
+— and the error names the URL rather than the handshake. It is answered before any
+authentication because there is none yet: no subscription exists, so there is no `clientState`
+to compare. After that, `clientState` is the whole of the authentication, because Graph does
+not sign notifications — so it is compared in constant time, a missing configured secret
+refuses everything, and one valid entry in a batch does not authenticate the rest.
 
 **Two confirmations, one button, one slot.** A forward's confirmation and a drafted reply's
 confirmation are both buttons carrying `confirm_send` — so with a pending slot each, a tap on

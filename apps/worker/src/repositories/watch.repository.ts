@@ -101,6 +101,13 @@ export class WatchRepository {
     accountId: string,
     expiresAt: Date,
     cursor: string,
+    /**
+     * Graph's subscription id, which can change: a renewal that found the old
+     * subscription gone creates a new one, and the id has to move with it or
+     * the next renewal PATCHes something that no longer exists. Gmail sends
+     * none, so it is simply absent rather than a second concept.
+     */
+    subscriptionId?: string,
   ): Promise<void> {
     await this.prisma.forUser(userId, async (tx) => {
       const account = await tx.emailAccount.findUnique({
@@ -117,6 +124,7 @@ export class WatchRepository {
           pollingSince: null,
           consecutiveFailures: 0,
           ...(account?.syncCursor ? {} : { syncCursor: cursor }),
+          ...(subscriptionId ? { watchSubscriptionId: subscriptionId } : {}),
         },
       });
 

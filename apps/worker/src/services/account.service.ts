@@ -1,7 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { AppError } from '@wea/shared';
 import { EnvelopeEncryption, LocalKmsProvider, CachingKmsProvider } from '@wea/crypto';
-import { GmailProvider, type MailProvider, type ProviderAccount } from '@wea/mail';
+import { GmailProvider, GraphProvider, type MailProvider, type ProviderAccount } from '@wea/mail';
 import type { Logger } from 'pino';
 import { PrismaService } from '../common/prisma.service.js';
 import { ConfigService } from '../config/config.service.js';
@@ -85,6 +85,13 @@ export class AccountService {
       // from nowhere else — a cursor arriving on a job describes the mailbox
       // *now*, and walking history from "now" finds nothing.
       syncCursor: account.syncCursor,
+      // Graph renews a subscription by id; without this the renewal creates a
+      // second one instead of extending the first, and every notification
+      // arrives twice. Gmail's watch needs none, so the field is simply absent
+      // there rather than being a second concept.
+      ...(account.watchSubscriptionId
+        ? { config: { subscriptionId: account.watchSubscriptionId } }
+        : {}),
     };
   }
 
@@ -103,27 +110,59 @@ export class AccountService {
     return this.load(userId, message.accountId);
   }
 
-  /** The adapter for a provider, built once and reused. */
+  /**
+   * The adapter for a provider, built once and reused.
+   *
+   * `outlook` and `microsoft365` are the same API — the distinction is which
+   * kind of account signed in, which matters for the consent screen and not for
+   * a single call afterwards. They share one adapter rather than one each,
+   * because two identical adapters is two places for a fix to be applied once.
+   */
   providerFor(kind: string): MailProvider {
     const existing = this.providers.get(kind);
     if (existing) return existing;
 
-    if (kind !== 'gmail') {
-      throw new AppError('BAD_REQUEST', `No adapter for provider ${kind}`, { retryable: false });
-    }
-
-    const provider = new GmailProvider({
-      clientId: this.config.env.GOOGLE_CLIENT_ID ?? '',
-      clientSecret: this.config.env.GOOGLE_CLIENT_SECRET ?? '',
-      redirectUri: this.config.env.GOOGLE_REDIRECT_URI ?? '',
-      ...(this.config.env.GOOGLE_PUBSUB_TOPIC
-        ? { pubsubTopic: this.config.env.GOOGLE_PUBSUB_TOPIC }
-        : {}),
-      onTokenRefresh: (accountId, tokens) => this.persistRefreshedToken(accountId, tokens),
-    });
-
+    const provider = this.build(kind);
     this.providers.set(kind, provider);
     return provider;
+  }
+
+  private build(kind: string): MailProvider {
+    const env = this.config.env;
+    const onTokenRefresh = (accountId: string, tokens: RefreshedTokens) =>
+      this.persistRefreshedToken(accountId, tokens);
+
+    switch (kind) {
+      case 'gmail':
+        return new GmailProvider({
+          clientId: env.GOOGLE_CLIENT_ID ?? '',
+          clientSecret: env.GOOGLE_CLIENT_SECRET ?? '',
+          redirectUri: env.GOOGLE_REDIRECT_URI ?? '',
+          ...(env.GOOGLE_PUBSUB_TOPIC ? { pubsubTopic: env.GOOGLE_PUBSUB_TOPIC } : {}),
+          onTokenRefresh,
+        });
+
+      case 'outlook':
+      case 'microsoft365':
+        return new GraphProvider({
+          clientId: env.MICROSOFT_CLIENT_ID ?? '',
+          clientSecret: env.MICROSOFT_CLIENT_SECRET ?? '',
+          redirectUri: env.MICROSOFT_REDIRECT_URI ?? '',
+          tenantId: env.MICROSOFT_TENANT_ID,
+          ...(env.MICROSOFT_NOTIFICATION_URL
+            ? { notificationUrl: env.MICROSOFT_NOTIFICATION_URL }
+            : {}),
+          ...(env.MICROSOFT_WEBHOOK_CLIENT_STATE
+            ? { clientState: env.MICROSOFT_WEBHOOK_CLIENT_STATE }
+            : {}),
+          onTokenRefresh,
+        });
+
+      default:
+        // IMAP is the remaining one, and it is not built. Failing here beats a
+        // half-adapter that accepts a connection and then cannot sync it.
+        throw new AppError('BAD_REQUEST', `No adapter for provider ${kind}`, { retryable: false });
+    }
   }
 
   /**
@@ -229,4 +268,11 @@ export class AccountService {
       });
     });
   }
+}
+
+/** What a provider hands back when it refreshes a token mid-flight. */
+interface RefreshedTokens {
+  accessToken: string;
+  expiresAt: Date;
+  refreshToken?: string;
 }

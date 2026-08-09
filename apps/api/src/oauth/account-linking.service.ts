@@ -1,7 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { AppError } from '@wea/shared';
 import { EnvelopeEncryption, LocalKmsProvider, CachingKmsProvider } from '@wea/crypto';
-import { GmailProvider, GMAIL_SCOPES } from '@wea/mail';
+import { GmailProvider, GraphProvider, GMAIL_SCOPES, GRAPH_SCOPES } from '@wea/mail';
 import type { Logger } from 'pino';
 import { PrismaService } from '../common/prisma.service.js';
 import { ConfigService } from '../config/config.service.js';
@@ -18,6 +18,7 @@ import { ConfigService } from '../config/config.service.js';
 export class AccountLinkingService {
   private readonly crypto: EnvelopeEncryption;
   readonly gmail: GmailProvider;
+  readonly graph: GraphProvider;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -34,6 +35,19 @@ export class AccountLinkingService {
       redirectUri: config.env.GOOGLE_REDIRECT_URI ?? '',
       ...(config.env.GOOGLE_PUBSUB_TOPIC ? { pubsubTopic: config.env.GOOGLE_PUBSUB_TOPIC } : {}),
     });
+
+    this.graph = new GraphProvider({
+      clientId: config.env.MICROSOFT_CLIENT_ID ?? '',
+      clientSecret: config.env.MICROSOFT_CLIENT_SECRET ?? '',
+      redirectUri: config.env.MICROSOFT_REDIRECT_URI ?? '',
+      tenantId: config.env.MICROSOFT_TENANT_ID,
+      ...(config.env.MICROSOFT_NOTIFICATION_URL
+        ? { notificationUrl: config.env.MICROSOFT_NOTIFICATION_URL }
+        : {}),
+      ...(config.env.MICROSOFT_WEBHOOK_CLIENT_STATE
+        ? { clientState: config.env.MICROSOFT_WEBHOOK_CLIENT_STATE }
+        : {}),
+    });
   }
 
   consentUrl(state: string): string {
@@ -43,6 +57,30 @@ export class AccountLinkingService {
       });
     }
     return this.gmail.authorizationUrl(state, GMAIL_SCOPES);
+  }
+
+  microsoftConsentUrl(state: string): string {
+    if (!this.config.env.MICROSOFT_CLIENT_ID) {
+      throw new AppError('DEPENDENCY_UNAVAILABLE', 'Microsoft OAuth is not configured', {
+        publicMessage: 'Connecting Outlook is not available right now.',
+      });
+    }
+    return this.graph.authorizationUrl(state, GRAPH_SCOPES);
+  }
+
+  /**
+   * Completes a Microsoft connection.
+   *
+   * Deliberately the same `link` as Gmail's, parameterised on the adapter and
+   * the provider name. Two copies of this method would be two places to get
+   * token sealing right, and the second one is always the one that drifts.
+   */
+  async completeMicrosoftLink(
+    userId: string,
+    code: string,
+  ): Promise<{ accountId: string; emailAddress: string }> {
+    const tokens = await this.graph.exchangeCode(code);
+    return this.link({ userId, provider: 'outlook', adapter: this.graph, tokens });
   }
 
   /**
@@ -60,11 +98,21 @@ export class AccountLinkingService {
     code: string,
   ): Promise<{ accountId: string; emailAddress: string }> {
     const tokens = await this.gmail.exchangeCode(code);
+    return this.link({ userId, provider: 'gmail', adapter: this.gmail, tokens });
+  }
+
+  private async link(input: {
+    userId: string;
+    provider: 'gmail' | 'outlook';
+    adapter: { verifyAccess: GmailProvider['verifyAccess'] };
+    tokens: { accessToken: string; refreshToken?: string; expiresAt: Date; scopes: string[] };
+  }): Promise<{ accountId: string; emailAddress: string }> {
+    const { userId, provider, adapter, tokens } = input;
 
     // Confirm the grant works and learn which mailbox it is for, before storing
-    // anything. Google returns the address from the token, but asking the API is
-    // what proves the scopes were actually granted.
-    const identity = await this.gmail.verifyAccess({
+    // anything. Both providers return an address alongside the token, but asking
+    // the API is what proves the scopes were actually granted.
+    const identity = await adapter.verifyAccess({
       id: 'pending',
       userId,
       emailAddress: '',
@@ -85,13 +133,13 @@ export class AccountLinkingService {
         where: {
           userId_provider_providerAccountId: {
             userId,
-            provider: 'gmail',
+            provider,
             providerAccountId: identity.providerAccountId,
           },
         },
         create: {
           userId,
-          provider: 'gmail',
+          provider,
           emailAddress: identity.emailAddress,
           providerAccountId: identity.providerAccountId,
           status: 'connecting',
@@ -124,18 +172,19 @@ export class AccountLinkingService {
       });
     });
 
-    // The route is what lets an inbound Gmail push find this account. Written
-    // outside the tenant transaction because the table is deliberately not
-    // tenant-scoped — it is consulted to determine the tenant.
+    // The route is what lets an inbound push find this account — a Gmail
+    // Pub/Sub message or a Graph notification, neither of which carries a tenant.
+    // Written outside the tenant transaction because the table is deliberately
+    // not tenant-scoped: it is consulted to *determine* the tenant.
     await this.prisma.providerAccountRoute.upsert({
       where: {
         provider_providerAddress: {
-          provider: 'gmail',
+          provider,
           providerAddress: identity.emailAddress.toLowerCase(),
         },
       },
       create: {
-        provider: 'gmail',
+        provider,
         providerAddress: identity.emailAddress.toLowerCase(),
         userId,
         accountId: account.id,
@@ -151,7 +200,7 @@ export class AccountLinkingService {
     // Note the address is masked by the logger's redaction, so this line is safe
     // even though it names a mailbox.
     this.logger.info(
-      { event: 'account.linked', accountId: account.id, provider: 'gmail' },
+      { event: 'account.linked', accountId: account.id, provider },
       'Mailbox connected',
     );
 
@@ -182,11 +231,31 @@ export class AccountLinkingService {
         { userId, field: 'accessToken' },
       );
 
-      const handle = await this.gmail.watch({
+      // Graph's delta walk can outlive the access token, so the adapter needs
+      // the refresh token to keep going. Gmail's `watch` is one call and never
+      // reaches for it.
+      const refreshToken = account.refreshTokenCipher
+        ? await this.crypto.decryptString(
+            {
+              ciphertext: Buffer.from(account.refreshTokenCipher),
+              wrappedKey: Buffer.from(account.refreshTokenDek!),
+              keyVersion: account.tokenKeyVersion,
+            },
+            { userId, field: 'refreshToken' },
+          )
+        : undefined;
+
+      // Whichever adapter owns this mailbox. Watching a Graph account with the
+      // Gmail adapter would fail in a way that reads like a Google outage.
+      const adapter = account.provider === 'gmail' ? this.gmail : this.graph;
+
+      const handle = await adapter.watch({
         id: account.id,
         userId,
         emailAddress: account.emailAddress,
         accessToken,
+        ...(refreshToken ? { refreshToken } : {}),
+        ...(account.tokenExpiresAt ? { tokenExpiresAt: account.tokenExpiresAt } : {}),
       });
 
       await this.prisma.forUser(userId, async (tx) => {
@@ -198,6 +267,9 @@ export class AccountLinkingService {
             watchExpiresAt: handle.expiresAt,
             lastSyncedAt: new Date(),
             pollingSince: null,
+            // Graph renews by id. Without it stored, the first renewal creates a
+            // second subscription instead of extending this one.
+            ...(handle.subscriptionId ? { watchSubscriptionId: handle.subscriptionId } : {}),
           },
         });
 

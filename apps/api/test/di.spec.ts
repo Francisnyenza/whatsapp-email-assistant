@@ -32,6 +32,16 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
     ['QueueProducer', 'queue/queue.producer.js', 'QueueProducer', 1],
     ['TwoFactorService', 'auth/two-factor.service.js', 'TwoFactorService', 4],
     ['AuthController', 'auth/auth.controller.js', 'AuthController', 3],
+    ['GoogleOAuthController', 'oauth/google.controller.js', 'GoogleOAuthController', 3],
+    ['MicrosoftOAuthController', 'oauth/microsoft.controller.js', 'MicrosoftOAuthController', 3],
+    ['GmailWebhookController', 'webhooks/gmail.controller.js', 'GmailWebhookController', 5],
+    [
+      'MicrosoftWebhookController',
+      'webhooks/microsoft.controller.js',
+      'MicrosoftWebhookController',
+      4,
+    ],
+    ['AccountLinkingService', 'oauth/account-linking.service.js', 'AccountLinkingService', 3],
   ];
 
   for (const [name, file, exported, expectedCount] of cases) {

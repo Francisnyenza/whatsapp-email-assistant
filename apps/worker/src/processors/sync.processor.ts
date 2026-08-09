@@ -395,7 +395,13 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
 
     try {
       const handle = await provider.renewWatch(account);
-      await this.watches.recordRenewed(userId, accountId, handle.expiresAt, handle.cursor.value);
+      await this.watches.recordRenewed(
+        userId,
+        accountId,
+        handle.expiresAt,
+        handle.cursor.value,
+        handle.subscriptionId,
+      );
 
       this.logger.info(
         { event: 'sync.watch_renewed', accountId, expiresAt: handle.expiresAt },

@@ -202,6 +202,39 @@ describe('the sync processor', () => {
         'acct-1',
         handle.expiresAt,
         '99999',
+        handle.subscriptionId,
+      );
+    });
+
+    it('carries a changed subscription id through', async () => {
+      // Graph's renewal can return a *different* id: a PATCH that found the old
+      // subscription gone falls back to creating one. The id has to move with
+      // it, or the next renewal PATCHes something that no longer exists.
+      renewWatch.mockResolvedValue({ ...handle, subscriptionId: 'sub-2' });
+
+      await renew();
+
+      expect(watches.recordRenewed).toHaveBeenCalledWith(
+        'user-1',
+        'acct-1',
+        handle.expiresAt,
+        '99999',
+        'sub-2',
+      );
+    });
+
+    it('records none when the provider issues none, as Gmail does', async () => {
+      const { subscriptionId: _none, ...withoutSubscription } = handle;
+      renewWatch.mockResolvedValue(withoutSubscription);
+
+      await renew();
+
+      expect(watches.recordRenewed).toHaveBeenCalledWith(
+        'user-1',
+        'acct-1',
+        handle.expiresAt,
+        '99999',
+        undefined,
       );
     });
 

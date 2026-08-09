@@ -48,3 +48,20 @@ export {
 
 export { GmailProvider, GMAIL_SCOPES } from './providers/gmail.provider.js';
 export { mapGmailError, isHistoryExpired, type GmailApiError } from './providers/gmail-errors.js';
+
+export {
+  normalizeGraphMessage,
+  findGraphHeader,
+  toEmailAddress,
+  GRAPH_MESSAGE_SELECT,
+  type GraphMessage,
+  type GraphAttachment,
+  type GraphRecipient,
+} from './providers/graph-normalize.js';
+
+export { GraphProvider, GRAPH_SCOPES } from './providers/graph.provider.js';
+export {
+  mapGraphError,
+  isDeltaTokenExpired,
+  type GraphApiError,
+} from './providers/graph-errors.js';
