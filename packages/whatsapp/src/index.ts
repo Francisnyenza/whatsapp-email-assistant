@@ -28,6 +28,7 @@ export {
   buildDigest,
   buildSendConfirmation,
   buildDeleteConfirmation,
+  buildDraftConfirmation,
   buildDisambiguation,
   buildSearchResults,
   buildText,

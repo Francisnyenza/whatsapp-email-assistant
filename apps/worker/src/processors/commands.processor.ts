@@ -13,7 +13,13 @@ import {
   type CommandIntent,
   type WhatsAppOutboundPayload,
 } from '@wea/shared';
-import { parseCommand, needsConfirmation, buildText, buildDeleteConfirmation } from '@wea/whatsapp';
+import {
+  parseCommand,
+  needsConfirmation,
+  buildText,
+  buildDeleteConfirmation,
+  buildDraftConfirmation,
+} from '@wea/whatsapp';
 import { ConfigService } from '../config/config.service.js';
 import { ThreadResolver } from '../services/thread-resolver.js';
 import { ResponsePlanner, type PlannedEffect } from '../services/response-planner.js';
@@ -250,8 +256,8 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       case 'confirm':
         return { payload: buildDeleteConfirmation(emailMessageId, subject) };
 
-      case 'confirm_forward':
-        return this.carryOutForward(userId, emailMessageId);
+      case 'confirm_send':
+        return this.carryOutSend(userId, emailMessageId);
 
       case 'await_reply_text':
         return { payload: buildText('What would you like to say? Just type it here.') };
@@ -270,54 +276,80 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * The forward the user was asked to confirm.
+   * Whatever the user was asked to confirm sending.
    *
-   * The recipient comes from the pending action, written server-side when they
-   * typed the command — never from the button. Reading it also clears it, so a
-   * second tap on the same confirmation forwards nothing rather than sending a
-   * second copy.
+   * One pending slot for both a forward and a drafted reply, and that is not
+   * tidiness — it is the bug it prevents. Both confirmations are buttons
+   * carrying `confirm_send`, so two slots would mean a tap on the draft's
+   * confirmation reaching for the forward's, and the user watching their mail
+   * go to the wrong place for reasons they could never reconstruct. One slot,
+   * one discriminant, one branch.
+   *
+   * What is being confirmed — the recipient, the words — comes from that slot,
+   * written server-side when the user asked, never from the button. Reading it
+   * also clears it, so a second tap sends nothing rather than a second copy.
    */
-  private async carryOutForward(
+  private async carryOutSend(
     userId: string,
     emailMessageId: string,
   ): Promise<{ payload: WhatsAppOutboundPayload; failed?: string }> {
-    const pending = await this.inbox.takePendingAction(userId, PENDING_FORWARD);
+    const pending = await this.inbox.takePendingAction(userId, PENDING_SEND);
 
-    const recipient = typeof pending?.recipient === 'string' ? pending.recipient : null;
+    // Expired, already spent, or pointing at a different email. Never guess:
+    // sending someone's mail to the wrong address cannot be undone, and neither
+    // can sending words they did not read.
+    //
+    // A mismatch consumes the pending confirmation rather than leaving it,
+    // which costs the user one repeat of the command. That is the right way
+    // round: the alternative lets a stale or crafted tap probe for what is
+    // pending without spending it.
     const target = typeof pending?.emailMessageId === 'string' ? pending.emailMessageId : null;
-
-    if (!recipient || target !== emailMessageId) {
-      // Expired, already spent, or pointing somewhere else. Never guess a
-      // recipient — sending someone's mail to the wrong address cannot be
-      // undone.
-      //
-      // A mismatch consumes the pending confirmation rather than leaving it,
-      // which costs the user one repeat of the command. That is the right way
-      // round: the alternative lets a stale or crafted tap probe for what is
-      // pending without spending it.
+    if (!pending || target !== emailMessageId) {
       return {
         payload: buildText(
-          "That confirmation has expired. Tell me again who to forward it to and I'll ask once more.",
+          "That confirmation has expired. Ask me again and I'll set it up once more.",
         ),
-        failed: 'no pending forward',
+        failed: 'no pending send',
       };
     }
 
-    return this.attempt(
-      () =>
-        this.forwards.composeForward({
-          userId,
-          emailMessageId,
-          recipient,
-          ...(typeof pending?.note === 'string' ? { note: pending.note } : {}),
-        }),
-      (summary) =>
-        buildText(
-          summary.attachmentCount > 0
-            ? `Forwarding to ${recipient}, with ${describeAttachments(summary.attachmentCount)}…`
-            : `Forwarding to ${recipient}…`,
-        ),
-    );
+    if (pending.kind === 'forward') {
+      const recipient = typeof pending.recipient === 'string' ? pending.recipient : null;
+      if (!recipient) {
+        return { payload: buildText(GENERIC_FAILURE), failed: 'pending forward has no recipient' };
+      }
+
+      return this.attempt(
+        () =>
+          this.forwards.composeForward({
+            userId,
+            emailMessageId,
+            recipient,
+            ...(typeof pending.note === 'string' ? { note: pending.note } : {}),
+          }),
+        (summary) =>
+          buildText(
+            summary.attachmentCount > 0
+              ? `Forwarding to ${recipient}, with ${describeAttachments(summary.attachmentCount)}…`
+              : `Forwarding to ${recipient}…`,
+          ),
+      );
+    }
+
+    if (pending.kind === 'reply') {
+      const body = typeof pending.body === 'string' ? pending.body : null;
+      if (!body) {
+        // A blank email under the user's name is worse than an error.
+        return { payload: buildText(GENERIC_FAILURE), failed: 'pending reply has no body' };
+      }
+
+      return this.attempt(
+        () => this.replies.composeReply({ userId, emailMessageId, bodyText: body }),
+        () => buildText('Sending…'),
+      );
+    }
+
+    return { payload: buildText(GENERIC_FAILURE), failed: 'unknown pending kind' };
   }
 
   /* ------------------------------- typed --------------------------------- */
@@ -383,7 +415,8 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     // makes the tap safe: it can only re-authorize this forward, and cannot
     // redirect their mail to an address that arrived with the tap.
     if (parsed.intent.intent === 'forward' && resolution.outcome === 'resolved') {
-      await this.inbox.setPendingAction(userId, PENDING_FORWARD, {
+      await this.inbox.setPendingAction(userId, PENDING_SEND, {
+        kind: 'forward',
         emailMessageId: resolution.emailMessageId,
         recipient: parsed.intent.recipient,
       });
@@ -512,6 +545,33 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           () => this.assistant.translate(userId, emailMessageId, effect.language),
           (translated) => buildText(translated),
         );
+
+      // Composes and asks. The one effect whose output could leave the
+      // building, and the only one that ends in a button rather than an answer.
+      case 'draft':
+        return this.attempt(
+          async () => {
+            const body = await this.assistant.draftReply(
+              userId,
+              emailMessageId,
+              effect.instruction,
+            );
+
+            // Written down *before* the confirmation is offered, and never onto
+            // the button. WhatsApp echoes an interactive id straight back to us,
+            // so words carried there would be words the client could change —
+            // and the user would have approved one email and sent another. Same
+            // reasoning as the forward's recipient, same slot.
+            await this.inbox.setPendingAction(userId, PENDING_SEND, {
+              kind: 'reply',
+              emailMessageId,
+              body,
+            });
+
+            return body;
+          },
+          (body) => buildDraftConfirmation(emailMessageId, body),
+        );
     }
   }
 
@@ -554,8 +614,12 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
 
 const GENERIC_FAILURE = "Something went wrong and I couldn't do that. Please try again.";
 
-/** The pending-action key a forward confirmation is stored under. */
-const PENDING_FORWARD = 'awaiting_forward_confirmation';
+/**
+ * The one key a pending send confirmation is stored under — a forward or a
+ * drafted reply. Both are authorized by the same `confirm_send` tap, so they
+ * must share a slot or the wrong one gets sent.
+ */
+const PENDING_SEND = 'awaiting_send_confirmation';
 
 function describeAttachments(count: number): string {
   return count === 1 ? 'its attachment' : `its ${count} attachments`;

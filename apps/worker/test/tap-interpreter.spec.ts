@@ -82,12 +82,12 @@ describe('everything else', () => {
     expect(interpretTap(tap('cancel'))).toMatchObject({ kind: 'acknowledge' });
   });
 
-  it('routes the forward confirmation to the pending action, not the button', () => {
+  it('routes a send confirmation to the pending action, not the button', () => {
     // The effect carries no recipient. It cannot: an address arriving with the
     // tap would be an address an attacker could choose.
     const effect = interpretTap(tap('confirm_send'));
 
-    expect(effect).toEqual({ kind: 'confirm_forward' });
+    expect(effect).toEqual({ kind: 'confirm_send' });
     expect(JSON.stringify(effect)).not.toContain('@');
   });
 

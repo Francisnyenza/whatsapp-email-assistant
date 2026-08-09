@@ -8,22 +8,22 @@ Last updated: 2026-08-09.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 096 tests** (871 unit + 225 integration against
+Everything below has tests that run and pass. **1 128 tests** (897 unit + 231 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests            | What it does                                                                                                                         |
-| --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                              |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                         |
-| `@wea/db`       | 8 (integration)  | Prisma schema, ten migrations, seed. RLS verified against real Postgres 16 + pgvector                                                |
-| `@wea/whatsapp` | 143              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                              |
-| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                                    |
-| `@wea/ai`       | 132              | Prompt-injection envelope, instruction detection, analysis with schema discard, embeddings, translation, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors                             |
-| `apps/worker`   | 256 + 189 (int.) | Ingest, analysis, embeddings, hybrid search, summarise, translate, deadlines, notify, planner, actions, sweeps                       |
+| Package         | Tests            | What it does                                                                                                        |
+| --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization             |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes        |
+| `@wea/db`       | 8 (integration)  | Prisma schema, ten migrations, seed. RLS verified against real Postgres 16 + pgvector                               |
+| `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser             |
+| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                   |
+| `@wea/ai`       | 146              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, OpenAI + Gemini + Anthropic |
+| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors            |
+| `apps/worker`   | 263 + 197 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
 
 ```bash
-pnpm -r test          # 871 unit tests
+pnpm -r test          # 897 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -110,10 +110,8 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **`draft` and `read_aloud`.** Both still say plainly that they are not built. `draft` is
-   the interesting one: composing a reply with a model means a confirmation tap before
-   anything is sent, which is the ADR 0004 shape the forward path already has. `read_aloud`
-   needs a speech pipeline and media upload, which is a phase of its own.
+1. **`read_aloud`.** Says plainly that it is not built. It needs a speech pipeline and media
+   upload, which is a phase of its own.
 2. **Free-form questions.** "Did anyone reply about the invoice?" needs the model to reason
    over a _set_ of mail rather than one message, which is retrieval-augmented generation and
    a different security question — the retrieved mail is attacker-influenced content
@@ -218,6 +216,32 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**Two confirmations, one button, one slot.** A forward's confirmation and a drafted reply's
+confirmation are both buttons carrying `confirm_send` — so with a pending slot each, a tap on
+the draft would have reached for the forward's, and the user would have watched their mail go
+somewhere they never chose for reasons they could never reconstruct. It was not reachable
+before drafting existed, and would have become reachable the moment it did. There is one
+slot now, with a discriminant, and one branch. The lesson generalises past this instance:
+when two flows share an authorization token, they have to share the thing it authorizes.
+
+**The most dangerous output in the system is the one that reads most harmlessly.** Everything
+else a model produces here is _shown to_ the user. A drafted reply is _sent as_ the user —
+from their address, in their thread, indistinguishable from something they wrote. A wrong
+summary is annoying; a wrong reply is a thing their colleague now believes they said. So
+`draftReply` returns text and nothing else: no recipient, no subject, no headers, all of
+which are computed server-side from the original. Nothing it returns is sent without a tap,
+there is no "always send" to switch on, and the whole draft is shown rather than a preview —
+a confirmation is only meaningful if the user read what they approved, and an ellipsis
+mid-sentence is how someone sends a paragraph they never saw.
+
+**The instruction goes last.** The email being replied to sits inside the envelope; the
+user's instruction goes _after_ it. Models weight later tokens more heavily, and here that
+ordering is the difference between answering the user and answering the email. The
+instruction is also bounded — not for injection, since it is the user's own message on their
+own channel and they may say what they like to their own assistant, but because an
+instruction longer than the email would push the envelope out of attention. That is the one
+way a user can accidentally undermine the boundary that exists to protect them.
 
 **A summary you already paid for.** "Summarise this" looks like a model call and is not one.
 Every inbound email is analysed on arrival and that analysis holds the summary the

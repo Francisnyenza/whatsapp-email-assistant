@@ -57,7 +57,14 @@ export type PlannedEffect =
    * mean a summary that reads "Archived."
    */
   | { kind: 'summarize' }
-  | { kind: 'translate'; language: string };
+  | { kind: 'translate'; language: string }
+  /**
+   * Compose a reply and *ask*. The only effect here that produces words which
+   * could leave the building — so unlike the two above, its result is not sent
+   * to the correspondent, it is shown to the user with a confirmation button
+   * (ADR 0004).
+   */
+  | { kind: 'draft'; instruction?: string };
 
 export interface PlannedResponse {
   payload: WhatsAppOutboundPayload;
@@ -251,12 +258,25 @@ export class ResponsePlanner {
           emailMessageId,
         };
 
-      case 'read_aloud':
       case 'draft':
+        // Composes, then asks. There is no branch here that sends a drafted
+        // reply, for the same reason there is none that deletes: the model
+        // wrote it, so the user authorizes it (ADR 0004).
+        return {
+          payload: buildText('Writing something…'),
+          followUp: 'queue_query',
+          effect: {
+            kind: 'draft',
+            ...(intent.instruction ? { instruction: intent.instruction } : {}),
+          },
+          emailMessageId,
+        };
+
+      case 'read_aloud':
         // Still unbuilt. Naming the specific missing capability is more useful
         // than a generic apology.
         return {
-          payload: buildText(`I can't ${describeAiVerb(intent)} yet — that part isn't finished.`),
+          payload: buildText("I can't read emails aloud yet — that part isn't finished."),
           followUp: 'none',
           emailMessageId,
         };
@@ -326,10 +346,6 @@ function toOption(candidate: ResolutionCandidate) {
   };
 }
 
-function describeAiVerb(intent: CommandIntent): string {
-  return intent.intent === 'read_aloud' ? 'read emails aloud' : 'draft replies for you';
-}
-
 const HELP_TEXT = [
   "Here's what I understand:",
   '',
@@ -347,6 +363,9 @@ const HELP_TEXT = [
   '• _search invoices from Tom_',
   '• _unread_ · _today_ · _urgent_ · _deadlines_',
   '• _summarise_ · _translate to swahili_',
+  '',
+  '*Writing*',
+  '• _draft a polite no_ — I write it, you approve it',
   '',
   'Your replies go out from your own email address, threaded normally. ' +
     'Nobody can tell you answered from WhatsApp.',

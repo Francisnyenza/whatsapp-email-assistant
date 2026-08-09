@@ -26,6 +26,8 @@ export { embedEmail, embedQuery, embeddableText } from './embedding.js';
 
 export { translateEmail, type TranslationInput, type Translation } from './translate.js';
 
+export { draftReply, type DraftInput } from './draft.js';
+
 export { OpenAiProvider, type OpenAiOptions } from './providers/openai.js';
 export { GeminiProvider, type GeminiOptions } from './providers/gemini.js';
 export { AnthropicProvider, type AnthropicOptions } from './providers/anthropic.js';

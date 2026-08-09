@@ -4,6 +4,7 @@ import {
   buildDigest,
   buildSendConfirmation,
   buildDeleteConfirmation,
+  buildDraftConfirmation,
   buildDisambiguation,
   buildSearchResults,
   enforceLimits,
@@ -224,6 +225,45 @@ describe('confirmations', () => {
     );
     expect(decodeActionPayload(confirm!.id)?.targetId).toBe('msg-9');
     expect(card.body).toContain('Invoice #INV-2291');
+  });
+});
+
+describe('draft confirmation', () => {
+  const DRAFT = 'Thanks — I will have the report with you by Thursday.';
+
+  it('shows the whole draft, not a preview', () => {
+    // A confirmation only means something if the user read what they approved,
+    // and "…" mid-sentence is how someone sends a paragraph they never saw.
+    const payload = buildDraftConfirmation('m1', DRAFT);
+    expect(payload.body).toBe(DRAFT);
+  });
+
+  it('carries our own id and never the words', () => {
+    // WhatsApp echoes an interactive id straight back, so text placed there is
+    // text the client could change — the user would approve one email and send
+    // another.
+    const payload = buildDraftConfirmation('m1', DRAFT);
+
+    for (const button of payload.buttons) {
+      expect(button.id).not.toContain('Thursday');
+      expect(decodeActionPayload(button.id)?.targetId).toBe('m1');
+    }
+  });
+
+  it('offers send, write-my-own and cancel', () => {
+    const actions = buildDraftConfirmation('m1', DRAFT).buttons.map(
+      (b) => decodeActionPayload(b.id)?.action,
+    );
+    expect(actions).toEqual(['confirm_send', 'reply', 'cancel']);
+  });
+
+  it('says where it will be sent from, because that is the whole promise', () => {
+    expect(buildDraftConfirmation('m1', DRAFT).footer).toContain('own address');
+  });
+
+  it('clamps a draft that would exceed the body limit', () => {
+    const payload = buildDraftConfirmation('m1', 'x'.repeat(5_000));
+    expect(payload.body.length).toBeLessThanOrEqual(WHATSAPP_LIMITS.interactiveBody);
   });
 });
 

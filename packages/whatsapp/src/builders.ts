@@ -296,6 +296,49 @@ export function buildSendConfirmation(
 }
 
 /**
+ * Confirmation before sending words a model wrote.
+ *
+ * The whole draft goes in the body, never a preview: the confirmation is only
+ * meaningful if the user has read what they are approving, and "…" in the middle
+ * of a sentence is how someone sends a paragraph they never saw. The composer
+ * bounds the draft to well under the interactive-body limit for exactly this
+ * reason.
+ *
+ * The text itself is *not* on the buttons. It is stored server-side against the
+ * conversation, and the button carries only our own message id — so a replayed
+ * or altered tap can re-authorize what the user read and nothing else
+ * (ADR 0004).
+ */
+export function buildDraftConfirmation(
+  emailMessageId: string,
+  body: string,
+): WhatsAppButtonsPayload {
+  return {
+    kind: 'buttons',
+    header: 'Send this reply?',
+    body: clamp(body, WHATSAPP_LIMITS.interactiveBody),
+    footer: 'It goes from your own address, in your own thread',
+    buttons: [
+      {
+        id: encodeActionPayload({ action: 'confirm_send', targetId: emailMessageId }),
+        title: '✅ Send',
+      },
+      {
+        // Falls into the ordinary "type your reply" flow, which replaces the
+        // draft with the user's own words rather than trying to edit it in a
+        // chat window.
+        id: encodeActionPayload({ action: 'reply', targetId: emailMessageId }),
+        title: '✏️ Write my own',
+      },
+      {
+        id: encodeActionPayload({ action: 'cancel', targetId: emailMessageId }),
+        title: '✖️ Cancel',
+      },
+    ],
+  };
+}
+
+/**
  * Confirmation before a destructive action. The button carries the resolved
  * target id, so the tap authorizes exactly one action on exactly one message
  * (ADR 0004).

@@ -193,9 +193,8 @@ describe('unbuilt features say so plainly', () => {
   // An assistant that goes quiet reads as broken. Naming the specific missing
   // capability is more useful than a generic apology.
 
-  it('names the capability for the AI verbs that are still missing', () => {
+  it('names the capability for the AI verb that is still missing', () => {
     expect(textOf(plan({ intent: 'read_aloud' }, resolved()))).toContain('aloud');
-    expect(textOf(plan({ intent: 'draft' }, resolved()))).toContain('draft');
   });
 
   it('points a mailbox question at the commands that do work', () => {

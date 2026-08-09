@@ -23,8 +23,8 @@ export type TapEffect =
   | { kind: 'reply'; body: string }
   /** Ask before acting. The planner builds the prompt. */
   | { kind: 'confirm'; verb: 'delete' }
-  /** Carry out the forward the user was asked to confirm. */
-  | { kind: 'confirm_forward' }
+  /** Carry out whatever the user was asked to confirm sending. */
+  | { kind: 'confirm_send' }
   /** Wait for the user to type their reply. */
   | { kind: 'await_reply_text' }
   /** Nothing happens; say the given line. */
@@ -92,11 +92,13 @@ export function interpretTap(payload: ActionPayload): TapEffect {
       };
 
     case 'confirm_send':
-      // The recipient is deliberately not in this payload. It was written to
-      // the conversation's pending action when the user typed the command, so a
-      // replayed or crafted tap can only re-authorize the forward they already
-      // described — never redirect their mail somewhere new.
-      return { kind: 'confirm_forward' };
+      // What is being sent is deliberately not in this payload — not the
+      // recipient of a forward, not the words of a drafted reply. Both were
+      // written to the conversation's pending action when the user asked, so a
+      // replayed or crafted tap can only re-authorize what they already read.
+      // It cannot redirect their mail somewhere new, and it cannot put
+      // different words in their mouth.
+      return { kind: 'confirm_send' };
 
     // --- not built yet --------------------------------------------------------
     case 'forward':

@@ -1,7 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger } from 'pino';
 import { AppError, type EmailAnalysis } from '@wea/shared';
-import { analyzeEmail, translateEmail } from '@wea/ai';
+import { analyzeEmail, translateEmail, draftReply } from '@wea/ai';
 import { AiService } from './ai.service.js';
 import { AccountService } from './account.service.js';
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
@@ -9,12 +9,13 @@ import { MessageRepository } from '../repositories/message.repository.js';
 
 /**
  * The verbs that ask a model something about one email: "summarise this",
- * "translate it into Swahili".
+ * "translate it into Swahili", "reply saying I'll have it by Friday".
  *
- * Both are reads. Neither can send, move or delete anything — there is no path
- * from here to a mailbox mutation, which is the same guarantee ADR 0004 makes
- * everywhere else and is why these can answer immediately rather than through a
- * confirmation tap.
+ * None of them can send, move or delete anything — there is no path from this
+ * class to a mailbox mutation, which is the same guarantee ADR 0004 makes
+ * everywhere else. Summarise and translate are therefore answered immediately;
+ * `draftReply` is the one that produces words which *could* be sent, and it
+ * still only returns them. The caller stores them and asks.
  *
  * Summarising is deliberately not a model call in the common case. Every
  * inbound email is already analysed, and that analysis contains the summary the
@@ -75,6 +76,44 @@ export class AssistantService {
     return result.data.truncated
       ? `${result.data.text}\n\n_(translated the first part — the email is longer than fits here)_`
       : result.data.text;
+  }
+
+  /**
+   * A reply the user might send, in their voice.
+   *
+   * Returns text and nothing else — no recipient, no subject, no headers. Those
+   * are computed server-side from the original when the user confirms
+   * (ADR 0003), so nothing the model or the email says can redirect a reply.
+   * Nothing here sends anything; the caller stores the words and asks.
+   */
+  async draftReply(userId: string, emailMessageId: string, instruction?: string): Promise<string> {
+    const provider = this.ai.provider();
+    if (!provider) {
+      throw new AppError('AI_UNAVAILABLE', 'No model provider configured', { retryable: false });
+    }
+
+    await this.assertAffordable(userId);
+
+    const message = await this.messages.findForAnalysis(userId, emailMessageId);
+    if (!message) throw new AppError('NOT_FOUND', 'Message is gone', { retryable: false });
+
+    const result = await draftReply(provider, {
+      subject: message.subject,
+      ...(message.fromName ? { fromName: message.fromName } : {}),
+      fromAddress: message.fromAddress,
+      bodyText: await this.body(userId, message),
+      ...(instruction ? { instruction } : {}),
+      ...(message.locale ? { locale: message.locale } : {}),
+    });
+
+    await this.analyses.recordUsage(userId, 'composition', result.usage);
+
+    this.logger.info(
+      { event: 'assistant.drafted', emailMessageId, guided: Boolean(instruction) },
+      'Reply drafted for confirmation',
+    );
+
+    return result.data;
   }
 
   /**

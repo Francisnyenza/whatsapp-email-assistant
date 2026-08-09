@@ -231,6 +231,60 @@ describe('the assistant', () => {
     });
   });
 
+  describe('drafting a reply', () => {
+    beforeEach(() => {
+      complete.mockResolvedValue({ text: 'I will have it by Thursday.', usage: USAGE });
+    });
+
+    it('returns words and nothing else', async () => {
+      // No recipient, no subject, no headers. Those are computed server-side
+      // from the original when the user confirms, so nothing the model or the
+      // email says can redirect a reply.
+      const draft = await service.draftReply('user-1', 'email-1', 'say Thursday');
+
+      expect(draft).toBe('I will have it by Thursday.');
+    });
+
+    it('passes the user’s instruction through, since it is their own channel', async () => {
+      await service.draftReply('user-1', 'email-1', 'politely decline');
+
+      expect((complete.mock.calls[0]![0] as { user: string }).user).toContain('politely decline');
+    });
+
+    it('drafts without one, because "draft" alone is a reasonable thing to type', async () => {
+      await expect(service.draftReply('user-1', 'email-1')).resolves.toBeTruthy();
+    });
+
+    it('meters it as composition, which is the expensive tier', async () => {
+      await service.draftReply('user-1', 'email-1', 'say yes');
+      expect(recordUsage).toHaveBeenCalledWith('user-1', 'composition', expect.anything());
+    });
+
+    it('refuses without a provider rather than sending an empty reply', async () => {
+      providerFor = () => null;
+
+      await expect(service.draftReply('user-1', 'email-1')).rejects.toMatchObject({
+        code: 'AI_UNAVAILABLE',
+      });
+    });
+
+    it('refuses when the budget is spent', async () => {
+      overBudget = true;
+
+      await expect(service.draftReply('user-1', 'email-1')).rejects.toMatchObject({
+        code: 'QUOTA_EXCEEDED',
+      });
+    });
+
+    it('refuses when the email is gone', async () => {
+      findForAnalysis.mockResolvedValue(null);
+
+      await expect(service.draftReply('user-1', 'email-1')).rejects.toMatchObject({
+        code: 'NOT_FOUND',
+      });
+    });
+  });
+
   describe('the body', () => {
     it('is decrypted when we hold it', async () => {
       findForAnalysis.mockResolvedValue({

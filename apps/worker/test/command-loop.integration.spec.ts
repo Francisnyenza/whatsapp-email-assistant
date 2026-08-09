@@ -14,7 +14,12 @@ import { SearchRepository } from '../src/repositories/search.repository.js';
 import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
 import { MessageRepository } from '../src/repositories/message.repository.js';
 import { CommandsProcessor } from '../src/processors/commands.processor.js';
-import { encodeActionPayload, type InboundWhatsAppMessage, type MailOperation } from '@wea/shared';
+import {
+  encodeActionPayload,
+  decodeActionPayload,
+  type InboundWhatsAppMessage,
+  type MailOperation,
+} from '@wea/shared';
 
 /**
  * The whole command loop, against a real database.
@@ -52,6 +57,19 @@ describeIfDb('command loop (real database)', () => {
   const phone = `+2547${Math.floor(10_000_000 + Math.random() * 89_999_999)}`;
   const emails: Record<string, string> = {};
   const deliveries: Record<string, string> = {};
+
+  /** Swapped in by the drafting tests; null everywhere else. */
+  let drafting: { name: string; complete: (r: unknown) => Promise<unknown> } | null = null;
+
+  const STUB_USAGE = {
+    promptTokens: 100,
+    completionTokens: 40,
+    totalTokens: 140,
+    model: 'stub',
+    provider: 'stub',
+    latencyMs: 10,
+    costMicros: 1,
+  };
 
   const withTenant = <T>(id: string, fn: (tx: PrismaClient) => Promise<T>): Promise<T> =>
     scopedTx(prisma, id, fn as never) as Promise<T>;
@@ -165,10 +183,16 @@ describeIfDb('command loop (real database)', () => {
         logger as never,
       ),
       new AssistantService(
-        // No model provider here either: what is being checked is that a stored
-        // analysis answers "summarise" *without* one, and that the absence of
-        // one produces a sentence rather than silence when nothing is stored.
-        { provider: () => null, secondary: () => null, isOverBudget: async () => false } as never,
+        // A model only when a test asks for one. Most of these assert the
+        // *absence* of a provider still produces a sentence rather than
+        // silence; the drafting ones swap in a stub that returns fixed words,
+        // because what is being checked is the gap between writing and sending
+        // and not the writing.
+        {
+          provider: () => drafting,
+          secondary: () => null,
+          isOverBudget: async () => false,
+        } as never,
         accounts as never,
         // Real repositories, against the real rows the test writes. A stub here
         // would assert that the service calls a method, not that the method
@@ -274,6 +298,7 @@ describeIfDb('command loop (real database)', () => {
       // Analyses outlive a test's own writes, so a second one hits the unique
       // constraint on email_message_id and a list test sees the first's rows.
       await tx.messageAnalysis.deleteMany({ where: { userId } });
+      await tx.draft.deleteMany({ where: { userId } });
       await tx.emailMessage.updateMany({
         where: { userId },
         data: { isArchived: false, isStarred: false, isUnread: true, deletedAt: null },
@@ -546,6 +571,144 @@ describeIfDb('command loop (real database)', () => {
 
       expect(sends()).toHaveLength(0);
       expect(lastText()).not.toContain('Translating');
+    });
+  });
+
+  describe('drafting a reply', () => {
+    // The highest-stakes path in the product: a model writes words that go out
+    // under the user's name. Everything here is about the gap between writing
+    // and sending.
+
+    const DRAFT = 'Thanks Sarah — I will have the Q3 report with you by Thursday.';
+
+    /** Points the assistant at a stubbed model that returns `DRAFT`. */
+    const withModel = () => {
+      drafting = { name: 'stub', complete: async () => ({ text: DRAFT, usage: STUB_USAGE }) };
+    };
+
+    beforeEach(() => {
+      drafting = null;
+    });
+
+    it('shows the draft and asks, rather than sending it', async () => {
+      withModel();
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'draft a reply saying Thursday' });
+
+      // The whole draft, not a preview: a confirmation only means something if
+      // the user read what they approved.
+      expect(lastText()).toContain(DRAFT);
+      expect(sends()).toHaveLength(0);
+    });
+
+    it('offers a confirmation carrying only our own id', async () => {
+      withModel();
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'draft a reply' });
+
+      const buttons = (sent.at(-1)!.payload as any).buttons as Array<{ id: string }>;
+      const confirm = buttons.find((b) => decodeActionPayload(b.id)?.action === 'confirm_send');
+
+      expect(decodeActionPayload(confirm!.id)?.targetId).toBe(emails.sarah);
+      // The words are not on the button. WhatsApp echoes an interactive id
+      // straight back, so text carried there is text the client could change —
+      // and the user would have approved one email and sent another.
+      for (const button of buttons) {
+        expect(button.id).not.toContain('Thursday');
+      }
+    });
+
+    it('writes the words down server-side, where a tap cannot alter them', async () => {
+      withModel();
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'draft a reply' });
+
+      const state = await withTenant(userId, (tx) =>
+        tx.conversationState.findUnique({ where: { userId } }),
+      );
+      expect(state!.pendingAction).toBe('awaiting_send_confirmation');
+      expect(state!.pendingOptions).toMatchObject({ kind: 'reply', body: DRAFT });
+    });
+
+    it('sends exactly the drafted words once confirmed', async () => {
+      withModel();
+      await deliver({ context: { id: deliveries.sarah! }, text: 'draft a reply' });
+
+      await deliver({
+        interactive: {
+          id: encodeActionPayload({ action: 'confirm_send', targetId: emails.sarah! }),
+        },
+      });
+
+      expect(sends()).toHaveLength(1);
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { userId }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(Buffer.from(draft!.bodyTextCipher!).toString()).toContain('Thursday');
+      // Threaded onto the original, like any other reply.
+      expect(draft!.subject.startsWith('Re: ')).toBe(true);
+    });
+
+    it('sends nothing on a second tap of the same confirmation', async () => {
+      withModel();
+      await deliver({ context: { id: deliveries.sarah! }, text: 'draft a reply' });
+
+      const tap = {
+        interactive: {
+          id: encodeActionPayload({ action: 'confirm_send', targetId: emails.sarah! }),
+        },
+      };
+      await deliver(tap);
+      await deliver(tap);
+
+      expect(sends()).toHaveLength(1);
+      expect(lastText().toLowerCase()).toContain('expired');
+    });
+
+    it('sends nothing when the confirmation is cancelled', async () => {
+      withModel();
+      await deliver({ context: { id: deliveries.sarah! }, text: 'draft a reply' });
+
+      await deliver({
+        interactive: { id: encodeActionPayload({ action: 'cancel', targetId: emails.sarah! }) },
+      });
+
+      expect(sends()).toHaveLength(0);
+    });
+
+    it('does not let a forward confirmation send a draft, or the reverse', async () => {
+      // Both buttons carry `confirm_send`. One pending slot is what makes that
+      // safe — the second request overwrites the first rather than leaving two
+      // things a single tap could pick between.
+      withModel();
+      await deliver({ context: { id: deliveries.sarah! }, text: 'draft a reply' });
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'forward to colleague@acme.com',
+      });
+
+      await deliver({
+        interactive: {
+          id: encodeActionPayload({ action: 'confirm_send', targetId: emails.sarah! }),
+        },
+      });
+
+      // The forward was the last thing asked for, so the forward is what goes.
+      expect(sends()).toHaveLength(1);
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { userId }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.subject.startsWith('Fwd: ')).toBe(true);
+      expect(Buffer.from(draft!.bodyTextCipher!).toString()).not.toContain('Thursday');
+    });
+
+    it('says so plainly when there is no model to draft with', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'draft a reply' });
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText()).not.toContain('Writing something');
+      expect(lastText().length).toBeGreaterThan(0);
     });
   });
 
@@ -841,8 +1004,14 @@ describeIfDb('command loop (real database)', () => {
       const state = await withTenant(userId, (tx) =>
         tx.conversationState.findUnique({ where: { userId } }),
       );
-      expect(state!.pendingAction).toBe('awaiting_forward_confirmation');
-      expect(state!.pendingOptions).toMatchObject({ recipient: 'colleague@acme.com' });
+      // One slot for every pending send, discriminated by kind — a forward and
+      // a drafted reply are both authorized by the same `confirm_send` tap, so
+      // two slots would mean the wrong one could be sent.
+      expect(state!.pendingAction).toBe('awaiting_send_confirmation');
+      expect(state!.pendingOptions).toMatchObject({
+        kind: 'forward',
+        recipient: 'colleague@acme.com',
+      });
     });
 
     it('forwards to the remembered address once confirmed', async () => {
