@@ -39,6 +39,9 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
       2,
     ],
     ['GoogleOAuthController', 'oauth/google.controller.js', 'GoogleOAuthController', 3],
+    ['AccountsController', 'accounts/accounts.controller.js', 'AccountsController', 2],
+    ['AccountsService', 'accounts/accounts.service.js', 'AccountsService', 3],
+    ['PreferencesService', 'accounts/preferences.service.js', 'PreferencesService', 1],
     ['MicrosoftOAuthController', 'oauth/microsoft.controller.js', 'MicrosoftOAuthController', 3],
     ['GmailWebhookController', 'webhooks/gmail.controller.js', 'GmailWebhookController', 5],
     [

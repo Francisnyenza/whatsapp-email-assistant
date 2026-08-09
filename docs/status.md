@@ -8,7 +8,7 @@ Last updated: 2026-08-10.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 296 tests** (1 033 unit + 263 integration
+Everything below has tests that run and pass. **1 335 tests** (1 058 unit + 277 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                        |
@@ -19,11 +19,11 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser             |
 | `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                          |
 | `@wea/ai`       | 146              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 134 + 38 (int.)  | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail + Graph webhooks, OAuth connect, health, errors           |
+| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                |
 | `apps/worker`   | 265 + 207 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
 
 ```bash
-pnpm -r test          # 1 033 unit tests
+pnpm -r test          # 1 058 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -215,6 +215,17 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**A settings row that also holds a promise.** `user_preferences` carries `retentionBodyDays`
+alongside the notification settings — how long we keep someone's message bodies, which is a
+commitment rather than a preference. A `PATCH` that spread the request body onto the row would
+have let any client extend it, silently, and nothing would have surfaced that until somebody
+went looking. So the update is an allowlist rather than a spread, and the test that matters
+most in that file is the one asserting `retentionBodyDays` cannot be reached.
+
+The same file rejects rather than coerces, for a related reason: a malformed digest time that
+gets dropped is a digest that silently never arrives, and the user cannot tell that apart from
+the product being broken.
 
 **A column that reads as a safeguard and is not one — this time holding private mail.**
 `phone_verified` was in the first migration and read by no code. That made three things true
