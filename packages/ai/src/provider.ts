@@ -32,8 +32,32 @@ export interface AiProvider {
    * model tier and a different price — and because an embedding is a vector,
    * not text, so folding it into the text path would mean parsing numbers back
    * out of a string.
+   *
+   * **Optional, and the optionality is the honest part.** Anthropic publishes no
+   * embeddings API, so an implementation that satisfied this method could only
+   * throw — and a caller cannot tell "will always throw" from "might work"
+   * without making the call, paying a round trip and a log line to learn
+   * something knowable up front. Absent instead: `if (!provider.embed)` is a
+   * branch both call sites already have, because both must already handle a
+   * deployment with no provider configured at all.
    */
-  embed(request: EmbeddingRequest): Promise<EmbeddingResponse>;
+  embed?(request: EmbeddingRequest): Promise<EmbeddingResponse>;
+}
+
+/**
+ * A provider that actually embeds.
+ *
+ * Narrowing `embed` from optional to present in one named place, so every caller
+ * checks once and nothing downstream needs a non-null assertion on a method that
+ * genuinely may not exist.
+ */
+export type EmbeddingProvider = AiProvider & {
+  embed: NonNullable<AiProvider['embed']>;
+};
+
+/** Whether this provider can embed. The narrowing the callers branch on. */
+export function canEmbed(provider: AiProvider | null | undefined): provider is EmbeddingProvider {
+  return typeof provider?.embed === 'function';
 }
 
 export interface EmbeddingRequest {

@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger } from 'pino';
-import { embedQuery } from '@wea/ai';
+import { embedQuery, canEmbed } from '@wea/ai';
 import { buildSearchResults, buildDigest, buildText } from '@wea/whatsapp';
 import type { CommandIntent, WhatsAppOutboundPayload } from '@wea/shared';
 import { AiService } from './ai.service.js';
@@ -86,7 +86,12 @@ export class MailboxQueryService {
    * The log line records which arm ran, which is where that fact belongs.
    */
   private async queryVector(userId: string, text: string): Promise<number[] | null> {
-    const provider = this.ai.provider();
+    // The fallback is consulted for the same reason it is at write time: with
+    // Anthropic as the primary there are no embeddings at all, and a query
+    // embedded by a different provider than the documents were would land in a
+    // different vector space — so this must resolve to whatever
+    // `AiProcessor` used, and both ask in the same order.
+    const provider = [this.ai.provider(), this.ai.secondary()].find(canEmbed);
     if (!provider) return null;
 
     if (await this.ai.isOverBudget(userId)) {

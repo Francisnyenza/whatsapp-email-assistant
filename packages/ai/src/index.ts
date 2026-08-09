@@ -9,8 +9,11 @@ export {
   type UntrustedBlock,
 } from './envelope.js';
 
+export { canEmbed } from './provider.js';
+
 export type {
   AiProvider,
+  EmbeddingProvider,
   CompletionRequest,
   CompletionResponse,
   EmbeddingRequest,
@@ -22,3 +25,5 @@ export { analyzeEmail, extractJson, type AnalysisInput } from './analysis.js';
 export { embedEmail, embedQuery, embeddableText } from './embedding.js';
 
 export { OpenAiProvider, type OpenAiOptions } from './providers/openai.js';
+export { GeminiProvider, type GeminiOptions } from './providers/gemini.js';
+export { AnthropicProvider, type AnthropicOptions } from './providers/anthropic.js';

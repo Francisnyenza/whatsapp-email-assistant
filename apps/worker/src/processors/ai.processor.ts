@@ -2,7 +2,7 @@ import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@ne
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
 import { AppError, QUEUE, JOB, type AnalyzeEmailJob } from '@wea/shared';
-import { analyzeEmail, embedEmail } from '@wea/ai';
+import { analyzeEmail, embedEmail, canEmbed, type EmbeddingProvider } from '@wea/ai';
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
 import { AiService } from '../services/ai.service.js';
@@ -103,7 +103,7 @@ export class AiProcessor implements OnModuleInit, OnModuleDestroy {
    * delayed email.
    */
   private async embed(userId: string, emailMessageId: string): Promise<void> {
-    const provider = this.ai.provider();
+    const provider = this.embeddingProvider();
     if (!provider) return;
 
     // Cheap, and it saves a paid call on every retry of a job whose later steps
@@ -154,6 +154,18 @@ export class AiProcessor implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  /**
+   * A provider that can actually embed, or null.
+   *
+   * Anthropic publishes no embeddings API, so `embed` is genuinely absent on
+   * that adapter rather than present-and-throwing. The fallback is consulted
+   * because "Anthropic for analysis, OpenAI for vectors" is a reasonable thing
+   * to configure and costs one line to honour.
+   */
+  private embeddingProvider(): EmbeddingProvider | null {
+    return [this.ai.provider(), this.ai.secondary()].find(canEmbed) ?? null;
+  }
+
   private async queueEmbedding(userId: string, emailMessageId: string): Promise<void> {
     try {
       await this.queue.enqueue(
@@ -200,13 +212,41 @@ export class AiProcessor implements OnModuleInit, OnModuleDestroy {
 
     const bodyText = await this.body(userId, message);
 
-    const result = await analyzeEmail(provider, {
+    const input = {
       subject: message.subject,
       ...(message.fromName ? { fromName: message.fromName } : {}),
       fromAddress: message.fromAddress,
       bodyText,
       ...(message.locale ? { locale: message.locale } : {}),
-    });
+    };
+
+    let result;
+    try {
+      result = await analyzeEmail(provider, input);
+    } catch (err) {
+      // One immediate try on the configured fallback before the retry machinery
+      // gets involved. This is the case the fallback exists for: a provider
+      // outage that would otherwise leave every email plain for its duration,
+      // where a second provider answers in a couple of hundred milliseconds and
+      // there is a notification waiting on the result.
+      //
+      // Only for a failure a different provider could plausibly answer, which
+      // is what `retryable` already means. That includes malformed output: the
+      // analysis path marks it retryable because a re-roll can work, and a
+      // re-roll on a *different* model is at least as likely to as one on the
+      // model that just failed. What it excludes is a refused request or a
+      // rejected key — permanent by construction, and a second call is a second
+      // bill for the same answer.
+      const failover = this.ai.secondary();
+      const error = AppError.from(err);
+      if (!failover || !error.retryable) throw err;
+
+      this.logger.warn(
+        { event: 'ai.failover', emailMessageId, from: provider.name, to: failover.name },
+        'Primary provider failed; trying the fallback',
+      );
+      result = await analyzeEmail(failover, input);
+    }
 
     await this.analyses.save(userId, emailMessageId, result.data, result.usage, result.cached);
     await this.analyses.recordUsage(userId, 'analysis', result.usage, { cached: result.cached });

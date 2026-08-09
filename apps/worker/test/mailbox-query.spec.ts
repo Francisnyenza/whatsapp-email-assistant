@@ -43,6 +43,7 @@ describe('mailbox queries', () => {
   let embed: ReturnType<typeof vi.fn>;
   let recordUsage: ReturnType<typeof vi.fn>;
   let providerFor: () => unknown;
+  let secondaryFor: () => unknown;
   let overBudget: boolean;
   let logger: any;
 
@@ -56,10 +57,15 @@ describe('mailbox queries', () => {
 
     const provider = { name: 'stub', complete: vi.fn(), embed };
     providerFor = () => provider;
+    secondaryFor = () => null;
 
     service = new MailboxQueryService(
       { search, list } as never,
-      { provider: () => providerFor(), isOverBudget: async () => overBudget } as never,
+      {
+        provider: () => providerFor(),
+        secondary: () => secondaryFor(),
+        isOverBudget: async () => overBudget,
+      } as never,
       { recordUsage } as never,
       logger,
     );

@@ -157,7 +157,7 @@ describeIfDb('command loop (real database)', () => {
         new SearchRepository(service as never),
         // No model provider: search still has to work, on keyword and trigram
         // alone. That is the ordinary state of a deployment without an API key.
-        { provider: () => null, isOverBudget: async () => false } as never,
+        { provider: () => null, secondary: () => null, isOverBudget: async () => false } as never,
         { recordUsage: vi.fn() } as never,
         logger as never,
       ),

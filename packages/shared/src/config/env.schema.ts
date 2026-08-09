@@ -99,7 +99,13 @@ export const envSchema = z
     MICROSOFT_NOTIFICATION_URL: z.string().url().optional(),
 
     // AI
-    AI_PRIMARY_PROVIDER: z.enum(['openai', 'gemini', 'anthropic']).default('openai'),
+    // `none` is the way to run without AI at all. Without it the default of
+    // `openai` counts as a selection, the check below demands a key, and a
+    // deployment that never wanted summaries cannot boot — while the worker is
+    // written throughout to treat an absent provider as ordinary. The opt-out has
+    // to be sayable, and saying it explicitly is better than inferring it from a
+    // blank key.
+    AI_PRIMARY_PROVIDER: z.enum(['openai', 'gemini', 'anthropic', 'none']).default('openai'),
     AI_FALLBACK_PROVIDER: z.enum(['openai', 'gemini', 'anthropic', 'none']).default('none'),
     OPENAI_API_KEY: z.string().optional(),
     OPENAI_MODEL_FAST: z.string().default('gpt-4o-mini'),

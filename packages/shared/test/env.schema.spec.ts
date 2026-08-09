@@ -76,6 +76,24 @@ describe('environment validation', () => {
     ).not.toThrow();
   });
 
+  it('requires one for the fallback too', () => {
+    expect(() => loadEnv(baseEnv({ AI_FALLBACK_PROVIDER: 'anthropic' }))).toThrow(
+      /ANTHROPIC_API_KEY/,
+    );
+  });
+
+  it('lets a deployment say it wants no AI at all', () => {
+    // Without this, the default of `openai` counts as a selection and the check
+    // above demands a key — so the no-AI deployment the worker is written around
+    // could not boot. Running without summaries is supported; it just has to be
+    // stated rather than inferred from a blank key, which is far more often a
+    // mistake.
+    const env = baseEnv({ AI_PRIMARY_PROVIDER: 'none' });
+    delete env.OPENAI_API_KEY;
+
+    expect(() => loadEnv(env)).not.toThrow();
+  });
+
   it('refuses a static encryption key in production (ADR 0002)', () => {
     const env = baseEnv({ NODE_ENV: 'production', KMS_PROVIDER: 'local' });
     expect(() => loadEnv(env)).toThrow(/KMS_PROVIDER/);

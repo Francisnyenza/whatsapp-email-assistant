@@ -2,28 +2,28 @@
 
 Honest accounting of what exists, what is verified, and what remains.
 
-Last updated: 2026-08-07.
+Last updated: 2026-08-08.
 
 ---
 
 ## Verified working
 
-Everything below has tests that run and pass. **979 tests** (763 unit + 216 integration against
+Everything below has tests that run and pass. **1 041 tests** (825 unit + 216 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests            | What it does                                                                                                           |
-| --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 40               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes           |
-| `@wea/db`       | 8 (integration)  | Prisma schema, nine migrations, seed. RLS verified against real Postgres 16 + pgvector                                 |
-| `@wea/whatsapp` | 143              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                |
-| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                      |
-| `@wea/ai`       | 83               | Prompt-injection envelope, instruction detection, structured analysis with schema discard, embeddings, OpenAI provider |
-| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors               |
-| `apps/worker`   | 199 + 170 (int.) | Ingest, analysis, embeddings, hybrid search, notify + digest, resolution ladder, planner, actions, sweeps              |
+| Package         | Tests            | What it does                                                                                                                       |
+| --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                            |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                       |
+| `@wea/db`       | 8 (integration)  | Prisma schema, nine migrations, seed. RLS verified against real Postgres 16 + pgvector                                             |
+| `@wea/whatsapp` | 143              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                            |
+| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                                  |
+| `@wea/ai`       | 120              | Prompt-injection envelope, instruction detection, structured analysis with schema discard, embeddings, OpenAI + Gemini + Anthropic |
+| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors                           |
+| `apps/worker`   | 220 + 170 (int.) | Ingest, analysis, embeddings, hybrid search, notify + digest, resolution ladder, planner, actions, sweeps                          |
 
 ```bash
-pnpm -r test          # 763 unit tests
+pnpm -r test          # 825 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -85,6 +85,13 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   fragment, and a message only the vector can reach.
 - Search and the standing lists never cross a tenant boundary on either arm, asserted as
   `wea_app`, including a write attempt against another user's message.
+- All three model providers named in the environment are implemented, and a name with no
+  implementation refuses to start rather than disabling summaries quietly. Gemini asks for
+  the embedding dimension the column declares, joins a multi-part response, and treats a
+  safety block — which arrives as a 200 with no text — as invalid output. Anthropic gets JSON
+  out of an API with no JSON mode by prefilling the assistant turn, and puts the brace back.
+- A deployment can say it wants no AI at all, and one that does still delivers mail, still
+  searches on keywords, and says so once at boot rather than per email.
 - Deferred mail is recorded, and delivered as a digest the moment the user next messages us
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
@@ -98,16 +105,13 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **A Gemini provider.** `AI_PRIMARY_PROVIDER` accepts `gemini` and `anthropic` and only
-   `openai` is implemented, so selecting either silently disables summaries rather than
-   failing at boot.
-2. **Backfilling embeddings.** Only mail that arrives from now on is embedded. An account
+1. **Backfilling embeddings.** Only mail that arrives from now on is embedded. An account
    connected today has an unsearchable history until a sweep walks it, and there is no such
    sweep — `hasEmbedding` exists so one can be added without re-billing what is done.
-3. **`list_deadlines`, `summarize`, `translate`, `read_aloud` and free-form questions.**
+2. **`list_deadlines`, `summarize`, `translate`, `read_aloud` and free-form questions.**
    Each says plainly that it is not built. The first needs the action items an analysis
    already extracts to be surfaced; the rest need the composition path.
-4. **`today` means UTC midnight, not the user's.** The timezone is on the user row and is
+3. **`today` means UTC midnight, not the user's.** The timezone is on the user row and is
    not threaded into the list query, so "today" is quietly wrong for anyone far from UTC.
 
 ### After that
@@ -209,6 +213,37 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**A setting that reads as on and behaves as off.** `AI_PRIMARY_PROVIDER` accepted `gemini`
+and `anthropic`; the env schema even refused to boot without the matching key, so selecting
+one felt validated. Only OpenAI was implemented. The service's switch fell through to
+"no provider configured", logged one info line, and every email shipped without a summary —
+for as long as nobody looked. The fix is not a third adapter, it is that the fall-through no
+longer exists: an unrecognised name throws at construction. Adding the two adapters is what
+makes that throw survivable.
+
+The mirror image was in the same file. Because `AI_PRIMARY_PROVIDER` _defaults_ to `openai`,
+a defaulted value counted as a deliberate selection, so the schema demanded a key — and the
+"no AI configured" deployment the worker is carefully written around could not actually
+start. `none` is now sayable. A blank key is still an error, because a blank key is far more
+often a mistake than an intention.
+
+**Not every provider has every capability, and pretending otherwise costs a round trip.**
+Anthropic publishes no embeddings API. An `embed` that satisfied the port could only throw,
+and a caller cannot tell "will always throw" from "might work" without making the call —
+paying latency, a log line and possibly money to learn something knowable at construction.
+`embed` is optional on the port instead, and `canEmbed()` is the narrowing both call sites
+use. Selecting Anthropic gives full analysis and keyword-only search, which is a real
+configuration rather than a broken one, and the boot log says which it is.
+
+**Three APIs, three different ways to look successful while failing.** OpenAI returns a
+choice with no content. Gemini returns **HTTP 200** with no text and a `finishReason` of
+`SAFETY` — a success as far as `fetch` is concerned, and an empty analysis if nobody checks.
+Anthropic has no JSON mode at all, so JSON comes from prefilling the assistant's turn with
+`{` — which is not echoed back, so an adapter that forgets to put it on again produces valid
+JSON minus its opening brace, parses to nothing, and looks like a bad model rather than a bad
+adapter. Gemini also splits long responses across parts; taking the first silently truncates.
+Each of those is one test.
 
 **Row-level security does not check a foreign key.** Storing an embedding wrote
 `(user_id, email_message_id)` from literal values. RLS checks the row being _written_ —
