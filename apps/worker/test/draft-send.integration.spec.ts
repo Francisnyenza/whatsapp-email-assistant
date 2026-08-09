@@ -70,6 +70,10 @@ describeIfDb('draft sending (real database)', () => {
         email: `${userId.slice(0, 8)}@example.com`,
         status: 'active',
         phoneNumber: phone,
+        // Verified, because this fixture is a user we actually deliver to. An
+        // unverified number reads as no number at all — which is the point of
+        // the column, and was not true until it started being read.
+        phoneVerified: true,
       },
     });
 

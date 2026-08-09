@@ -1,4 +1,5 @@
 import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
 import {
@@ -105,12 +106,31 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     });
 
     if (!user) {
-      // An unknown number. Not an error — anyone can message a business number —
-      // but there is nothing to act on and no mailbox to expose.
-      this.logger.info(
-        { event: 'command.unknown_sender' },
-        'Message from a number with no connected account',
-      );
+      // An unknown number. Almost always someone who found the business number
+      // — but it is also how a phone gets verified, because the only way to
+      // prove possession without an approved template is to have the user send
+      // us something from it.
+      const verified = await this.verifyPhone(message, phoneNumber);
+      if (!verified) {
+        this.logger.info(
+          { event: 'command.unknown_sender' },
+          'Message from a number with no connected account',
+        );
+        return;
+      }
+
+      // Verified just now, so the rest of this message is not a command — it is
+      // the code. Confirm and stop; the window is open and the next message will
+      // be handled normally.
+      await this.outbound.reply({
+        userId: verified.id,
+        phoneNumber,
+        payload: buildText(
+          "You're connected. I'll send your email here — reply to any message to answer it.",
+        ),
+        kind: 'command_response',
+        lastInboundAt: message.timestamp,
+      });
       return;
     }
 
@@ -131,6 +151,42 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.handleText(user.id, phoneNumber, message);
+  }
+
+  /**
+   * Links a phone number to the account that asked for it.
+   *
+   * The direction is deliberate and is not the obvious one. We cannot send a
+   * free-form message to a number that has never messaged us — Meta's 24-hour
+   * window — so a code sent *outbound* would need an approved template. Having
+   * the user send us a code we showed them in the dashboard proves possession
+   * just as well, needs no template, and opens the window at the same moment,
+   * which is the window the first notification needs anyway.
+   *
+   * Nothing here trusts the message beyond the code: the account was chosen when
+   * the code was issued, to an authenticated session, and this only attaches the
+   * number it arrived from.
+   */
+  private async verifyPhone(
+    message: InboundWhatsAppMessage,
+    phoneNumber: string,
+  ): Promise<{ id: string } | null> {
+    const code = normalizeVerificationCode(message.text);
+    if (!code) return null;
+
+    try {
+      const user = await this.inbox.redeemPhoneCode(hashVerificationCode(code), phoneNumber);
+      if (user) {
+        this.logger.info({ event: 'command.phone_verified', userId: user.id }, 'Phone verified');
+      }
+      return user;
+    } catch (err) {
+      // A failure here must not take the message handler down. The user simply
+      // sees nothing and can try again, which is the same as any other
+      // unrecognised message from an unknown number.
+      this.logger.warn({ event: 'command.phone_verify_failed', err }, 'Could not verify a phone');
+      return null;
+    }
   }
 
   /**
@@ -613,6 +669,32 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
 }
 
 const GENERIC_FAILURE = "Something went wrong and I couldn't do that. Please try again.";
+
+/**
+ * The verification code as the user actually sent it.
+ *
+ * People add spaces, use lower case, and type O for 0 — which is why the
+ * alphabet the code is generated from excludes both O and 0, along with every
+ * other pair that is ambiguous on a phone screen. Anything that is not exactly
+ * eight characters from that alphabet is not a code, and is left to be handled
+ * as an ordinary message.
+ */
+function normalizeVerificationCode(text: string | undefined): string | null {
+  if (!text) return null;
+  const cleaned = text.trim().toUpperCase().replace(/[\s-]/g, '');
+  return /^[2-9A-HJ-NP-Z]{8}$/.test(cleaned) ? cleaned : null;
+}
+
+/**
+ * SHA-256, matching how the code was stored.
+ *
+ * Not Argon2id: this is 39 random bits with a ten-minute life, so a fast hash
+ * gives an offline attacker nothing — and it has to be looked up *by value*
+ * from an inbound message, which a salted hash cannot do.
+ */
+function hashVerificationCode(code: string): string {
+  return createHash('sha256').update(code).digest('hex');
+}
 
 /**
  * The one key a pending send confirmation is stored under — a forward or a

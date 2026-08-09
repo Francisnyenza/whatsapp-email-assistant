@@ -76,6 +76,12 @@ export const envSchema = z
 
     // WhatsApp Cloud API
     WHATSAPP_PHONE_NUMBER_ID: nonEmpty('WHATSAPP_PHONE_NUMBER_ID'),
+    /**
+     * The number in E.164 that users message. Cosmetic — it is shown on the
+     * "verify your phone" screen so nobody has to hunt for it — and separate
+     * from the id above, which is Meta's opaque handle and not dialable.
+     */
+    WHATSAPP_BUSINESS_NUMBER: z.string().optional(),
     WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().optional(),
     WHATSAPP_ACCESS_TOKEN: nonEmpty('WHATSAPP_ACCESS_TOKEN'),
     WHATSAPP_API_VERSION: z.string().default('v21.0'),

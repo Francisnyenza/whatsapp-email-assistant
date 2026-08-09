@@ -53,7 +53,10 @@ describeIfDb('inbox repository (real database)', () => {
           email: `${id.slice(0, 8)}@example.com`,
           status: 'active',
           timezone: 'Africa/Nairobi',
-          ...(number ? { phoneNumber: number } : {}),
+          // Verified, because these fixtures are users we actually deliver to.
+          // An unverified number reads as no number at all — which is the point
+          // of the column, and was not true until it started being read.
+          ...(number ? { phoneNumber: number, phoneVerified: true } : {}),
         },
       });
     }

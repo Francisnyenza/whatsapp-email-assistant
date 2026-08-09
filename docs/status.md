@@ -8,28 +8,28 @@ Last updated: 2026-08-10.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 262 tests** (1 016 unit + 246 integration
+Everything below has tests that run and pass. **1 296 tests** (1 033 unit + 263 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                        |
 | --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
 | `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization             |
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes        |
-| `@wea/db`       | 8 (integration)  | Prisma schema, ten migrations, seed. RLS verified against real Postgres 16 + pgvector                               |
+| `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                            |
 | `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser             |
 | `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                          |
 | `@wea/ai`       | 146              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 117 + 38 (int.)  | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail + Graph webhooks, OAuth connect, health, errors           |
-| `apps/worker`   | 265 + 197 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
+| `apps/api`      | 134 + 38 (int.)  | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail + Graph webhooks, OAuth connect, health, errors           |
+| `apps/worker`   | 265 + 207 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
 
 ```bash
-pnpm -r test          # 1 016 unit tests
+pnpm -r test          # 1 033 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
 ### Verified against real infrastructure
 
-- All ten migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
+- All eleven migrations apply to PostgreSQL 16 with pgvector; the seed is idempotent.
 - Row-level security isolates tenants: no context → no rows; scoped → own rows only;
   cross-tenant read → empty; cross-tenant write → refused by policy.
 - The watch-renewal sweep reads every tenant's routes without gaining read access to any
@@ -215,6 +215,31 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**A column that reads as a safeguard and is not one — this time holding private mail.**
+`phone_verified` was in the first migration and read by no code. That made three things true
+at once, and none of them theoretical. A typo at signup sent someone's inbox summaries to a
+stranger's phone, with nothing anywhere to catch it. Because `phone_number` is `UNIQUE`,
+claiming a number you did not own also _squatted_ it, so its real owner could never register.
+And an inbound WhatsApp message resolves by number, so the squatter's mailbox was the one a
+victim's commands acted on.
+
+The seal is one line in one place: `findDeliveryContext` returns null for an unverified
+number, and every notification path already guards on that being present. Adding a second
+check at each call site would have worked until somebody added a third call site.
+
+Four integration fixtures started failing the moment it landed, all of them users with a
+number nobody had verified — which is the check working, and is the most convincing evidence
+available that it was doing nothing before.
+
+**Verification runs inbound, and the obvious direction does not work.** Sending a code _to_
+the number needs an approved template, because Meta forbids free-form messages to anyone who
+has not messaged you in 24 hours. So the code goes the other way: the dashboard shows it, the
+user sends it from the phone they are claiming. That proves possession just as well, needs no
+template, and opens the messaging window at exactly the moment the first notification will
+need it. The code alphabet excludes every pair that is ambiguous on a phone screen — no O/0,
+no I/1/L — because a substitution the user makes reading it back would otherwise be a code
+that was never issued.
 
 **A guard that was written, exported, and never attached.** Both OAuth `start` endpoints read
 `req.user` and refused when it was absent, under a comment explaining that the auth guard was

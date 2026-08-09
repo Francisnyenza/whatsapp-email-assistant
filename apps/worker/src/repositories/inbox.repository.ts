@@ -34,6 +34,57 @@ export class InboxRepository {
   }
 
   /**
+   * Redeems a verification code sent from a number we do not recognise.
+   *
+   * Unscoped, and it has to be: the whole point is that we do not yet know whose
+   * number this is. The lookup is by code hash against a unique column, so it
+   * identifies exactly one user or none — and it reads nothing about anyone's
+   * mail, only the id it is establishing.
+   *
+   * @returns the user the number was just linked to, or null when the text was
+   *   not a live code, which is the ordinary case for a message from a stranger.
+   */
+  async redeemPhoneCode(
+    codeHash: string,
+    phoneNumber: string,
+  ): Promise<{ id: string; timezone: string } | null> {
+    return withoutTenantScope(this.prisma, 'webhook-account-lookup', async (db) => {
+      const user = await db.user.findFirst({
+        where: {
+          phoneVerificationCodeHash: codeHash,
+          phoneVerificationExpiresAt: { gt: new Date() },
+          deletedAt: null,
+        },
+        select: { id: true, timezone: true },
+      });
+
+      if (!user) return null;
+
+      try {
+        await db.user.update({
+          where: { id: user.id },
+          data: {
+            phoneNumber,
+            phoneVerified: true,
+            // Spent. A code that survived redemption could link a second
+            // account to this number the moment the first released it.
+            phoneVerificationCodeHash: null,
+            phoneVerificationExpiresAt: null,
+          },
+        });
+      } catch (err) {
+        // Already verified against another account. Refused rather than moved:
+        // silently reassigning would let anyone who can send one message take a
+        // number away from whoever currently holds it.
+        if ((err as { code?: string }).code === 'P2002') return null;
+        throw err;
+      }
+
+      return user;
+    });
+  }
+
+  /**
    * Rank 1 of the resolution ladder: the WhatsApp message the user replied to,
    * mapped back to the email it notified about.
    *

@@ -168,8 +168,15 @@ model User {
 
   /// E.164, with '+'. The user's identity on the messaging side, so it is unique
   /// across the whole system: two accounts cannot share a WhatsApp number.
+  /// Only ever written by the verification flow. A number nobody proved decides
+  /// where private mail is delivered, so an unverified one is not stored at all.
   phoneNumber   String?    @unique @map("phone_number")
   phoneVerified Boolean    @default(false) @map("phone_verified")
+
+  /// SHA-256 of the code the user must send us from the phone they are claiming.
+  /// Hashed because it is a bearer credential that binds a number to an account.
+  phoneVerificationCodeHash String?   @map("phone_verification_code_hash")
+  phoneVerificationExpiresAt DateTime? @map("phone_verification_expires_at")
   status        UserStatus @default(pending_verification)
   emailVerified Boolean    @default(false) @map("email_verified")
 

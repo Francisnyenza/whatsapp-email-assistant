@@ -4,6 +4,8 @@ import { AppError } from '@wea/shared';
 import { AuthService, type AuthResult } from './auth.service.js';
 import { SessionService } from './session.service.js';
 import { TwoFactorService } from './two-factor.service.js';
+import { PhoneVerificationService } from './phone-verification.service.js';
+import { ConfigService } from '../config/config.service.js';
 import { AuthGuard } from './auth.guard.js';
 import { MfaGuard } from './mfa.guard.js';
 
@@ -21,6 +23,8 @@ export class AuthController {
     private readonly auth: AuthService,
     private readonly sessions: SessionService,
     private readonly twoFactor: TwoFactorService,
+    private readonly phone: PhoneVerificationService,
+    private readonly config: ConfigService,
   ) {}
 
   @Post('signup')
@@ -30,9 +34,6 @@ export class AuthController {
       ...input,
       ...(typeof (body as { fullName?: unknown }).fullName === 'string'
         ? { fullName: (body as { fullName: string }).fullName }
-        : {}),
-      ...(typeof (body as { phoneNumber?: unknown }).phoneNumber === 'string'
-        ? { phoneNumber: (body as { phoneNumber: string }).phoneNumber }
         : {}),
       context: clientContext(req),
     });
@@ -168,6 +169,50 @@ export class AuthController {
     }
 
     await this.twoFactor.disable(req.user!.id, password, requireCode(body));
+  }
+
+  /* ---------------------------- phone number ---------------------------- */
+
+  /**
+   * Where the settings screen finds out whether a number is linked.
+   */
+  @Get('phone')
+  @UseGuards(AuthGuard)
+  phoneStatus(@Req() req: Request) {
+    return this.phone.status(req.user!.id);
+  }
+
+  /**
+   * Issues a code for the user to send us from the phone they are claiming.
+   *
+   * The code comes back in plaintext exactly once, to the authenticated user who
+   * asked for it. Verification then runs *inbound*: they send it to our WhatsApp
+   * number, which proves possession without an approved template and opens the
+   * 24-hour messaging window the first notification needs anyway.
+   *
+   * Behind the MFA guard as well as the auth guard. Linking a phone redirects
+   * where this account's mail is delivered, which puts it in the same class as
+   * changing a password — a stolen access token alone must not be enough.
+   */
+  @Post('phone/start')
+  @UseGuards(AuthGuard, MfaGuard)
+  async startPhoneVerification(@Req() req: Request) {
+    const { code, expiresAt } = await this.phone.start(req.user!.id);
+
+    return {
+      code,
+      expiresAt,
+      // The number to send it *to*, so the caller does not have to know it.
+      sendTo: this.config.env.WHATSAPP_BUSINESS_NUMBER ?? null,
+    };
+  }
+
+  /** Unlinks the number, so notifications stop and it can be claimed elsewhere. */
+  @Post('phone/unlink')
+  @UseGuards(AuthGuard, MfaGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async unlinkPhone(@Req() req: Request): Promise<void> {
+    await this.phone.unlink(req.user!.id);
   }
 }
 

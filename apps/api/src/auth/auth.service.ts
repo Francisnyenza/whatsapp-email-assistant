@@ -1,5 +1,5 @@
 import { Injectable, Inject } from '@nestjs/common';
-import { AppError, normalizePhone } from '@wea/shared';
+import { AppError } from '@wea/shared';
 import { hashPassword, verifyPassword, needsRehash } from '@wea/crypto';
 import type { Logger } from 'pino';
 import { PrismaService } from '../common/prisma.service.js';
@@ -37,17 +37,15 @@ export class AuthService {
     email: string;
     password: string;
     fullName?: string;
-    phoneNumber?: string;
     context: { userAgent?: string; ipAddress?: string };
   }): Promise<AuthResult> {
     const email = normalizeEmail(input.email);
 
-    const phoneNumber = input.phoneNumber ? normalizePhone(input.phoneNumber) : null;
-    if (input.phoneNumber && !phoneNumber) {
-      throw new AppError('VALIDATION_FAILED', 'Phone number could not be normalized', {
-        publicMessage: 'That phone number does not look right. Include the country code.',
-      });
-    }
+    // A phone number is deliberately *not* accepted here. It decides where this
+    // user's private email is delivered, and nothing at signup can prove they
+    // own it — a typo would send someone's inbox to a stranger, and a deliberate
+    // claim would squat the number under the UNIQUE constraint so its real owner
+    // could never register. It is set only by the verification flow.
 
     // Hash before the uniqueness check so a taken address and a free one take
     // the same time — otherwise response timing enumerates registered users.
@@ -67,7 +65,6 @@ export class AuthService {
         email,
         passwordHash,
         fullName: input.fullName ?? null,
-        phoneNumber,
         status: 'active',
       },
       select: { id: true, email: true },

@@ -6,6 +6,7 @@ import { TokenService } from './token.service.js';
 import { AuthGuard } from './auth.guard.js';
 import { MfaGuard } from './mfa.guard.js';
 import { TwoFactorService } from './two-factor.service.js';
+import { PhoneVerificationService } from './phone-verification.service.js';
 import { PrismaService } from '../common/prisma.service.js';
 
 @Module({
@@ -15,10 +16,11 @@ import { PrismaService } from '../common/prisma.service.js';
     SessionService,
     TokenService,
     TwoFactorService,
+    PhoneVerificationService,
     AuthGuard,
     MfaGuard,
     PrismaService,
   ],
-  exports: [TokenService, AuthGuard, MfaGuard, SessionService],
+  exports: [TokenService, AuthGuard, MfaGuard, SessionService, PhoneVerificationService],
 })
 export class AuthModule {}

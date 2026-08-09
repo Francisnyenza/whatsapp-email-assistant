@@ -341,10 +341,16 @@ export class MessageRepository {
         }),
         tx.user.findUnique({
           where: { id: userId },
-          select: { phoneNumber: true, timezone: true, locale: true },
+          select: { phoneNumber: true, phoneVerified: true, timezone: true, locale: true },
         }),
       ]);
-      return { preferences, state, user };
+
+      // An unverified number reads as no number at all. It decides where this
+      // user's private email is delivered, and nothing proved they own it — a
+      // typo would send someone's inbox summaries to a stranger's phone.
+      const deliverable = user?.phoneVerified ? user : user ? { ...user, phoneNumber: null } : user;
+
+      return { preferences, state, user: deliverable };
     });
   }
 }

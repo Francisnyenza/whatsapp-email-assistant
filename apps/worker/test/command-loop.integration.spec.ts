@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
-import { randomUUID } from 'node:crypto';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import { randomUUID, createHash } from 'node:crypto';
 import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { InboxRepository } from '../src/repositories/inbox.repository.js';
 import { DraftRepository } from '../src/repositories/draft.repository.js';
@@ -212,6 +212,10 @@ describeIfDb('command loop (real database)', () => {
         email: `${userId.slice(0, 8)}@example.com`,
         status: 'active',
         phoneNumber: phone,
+        // Verified, because this fixture is a user we actually deliver to. An
+        // unverified number reads as no number at all — which is the point of
+        // the column, and was not true until it started being read.
+        phoneVerified: true,
         timezone: 'Africa/Nairobi',
       },
     });
@@ -571,6 +575,121 @@ describeIfDb('command loop (real database)', () => {
 
       expect(sends()).toHaveLength(0);
       expect(lastText()).not.toContain('Translating');
+    });
+  });
+
+  describe('linking a phone number', () => {
+    // The direction is deliberate: we cannot send a free-form message to a
+    // number that has never messaged us, so a code sent *outbound* would need an
+    // approved template. Having the user send us one proves possession just as
+    // well and opens the 24-hour window at the same moment.
+
+    const CODE = 'ABCD2345';
+    const hashed = createHash('sha256').update(CODE).digest('hex');
+    const stranger = `+2547${Math.floor(10_000_000 + Math.random() * 89_999_999)}`;
+    let claimant: string;
+
+    /** A second user, holding a live code and no number yet. */
+    beforeEach(async () => {
+      claimant = randomUUID();
+      await prisma.user.create({
+        data: {
+          id: claimant,
+          email: `${claimant.slice(0, 8)}@example.com`,
+          status: 'active',
+          phoneVerificationCodeHash: hashed,
+          phoneVerificationExpiresAt: new Date(Date.now() + 600_000),
+        },
+      });
+    });
+
+    afterEach(async () => {
+      await prisma.user.deleteMany({ where: { id: claimant } });
+    });
+
+    const fromStranger = (text: string) =>
+      processor.handle({
+        data: {
+          whatsappMessageId: 'x',
+          phoneNumber: stranger.slice(1),
+          payload: {
+            id: `wamid.IN.${randomUUID().slice(0, 8)}`,
+            from: stranger.slice(1),
+            timestamp: new Date(),
+            type: 'text',
+            text,
+          },
+        },
+      } as never);
+
+    it('links the number the code arrived from', async () => {
+      await fromStranger(CODE);
+
+      const linked = await prisma.user.findUnique({ where: { id: claimant } });
+      expect(linked!.phoneNumber).toBe(stranger);
+      expect(linked!.phoneVerified).toBe(true);
+    });
+
+    it('spends the code, so a second message cannot link another account', async () => {
+      await fromStranger(CODE);
+
+      const linked = await prisma.user.findUnique({ where: { id: claimant } });
+      expect(linked!.phoneVerificationCodeHash).toBeNull();
+      expect(linked!.phoneVerificationExpiresAt).toBeNull();
+    });
+
+    it('confirms to the user rather than going quiet', async () => {
+      await fromStranger(CODE);
+
+      expect(lastText().toLowerCase()).toContain('connected');
+    });
+
+    it('ignores an ordinary message from a number nobody claimed', async () => {
+      const before = sent.length;
+
+      await fromStranger('hello?');
+
+      // Recorded, but nothing said and no mailbox exposed.
+      expect(sent).toHaveLength(before);
+      const untouched = await prisma.user.findUnique({ where: { id: claimant } });
+      expect(untouched!.phoneNumber).toBeNull();
+    });
+
+    it('ignores an expired code', async () => {
+      await prisma.user.update({
+        where: { id: claimant },
+        data: { phoneVerificationExpiresAt: new Date(Date.now() - 1_000) },
+      });
+
+      await fromStranger(CODE);
+
+      const untouched = await prisma.user.findUnique({ where: { id: claimant } });
+      expect(untouched!.phoneNumber).toBeNull();
+    });
+
+    it('will not move a number away from the account that already holds it', async () => {
+      // The existing user in this suite already holds `phone`. A code redeemed
+      // from *that* number must not take it, or anyone who can send one message
+      // could steal a number — and its notifications with it.
+      await processor.handle({
+        data: {
+          whatsappMessageId: 'x',
+          phoneNumber: phone.slice(1),
+          payload: {
+            id: `wamid.IN.${randomUUID().slice(0, 8)}`,
+            from: phone.slice(1),
+            timestamp: new Date(),
+            type: 'text',
+            text: CODE,
+          },
+        },
+      } as never);
+
+      const claimantRow = await prisma.user.findUnique({ where: { id: claimant } });
+      const owner = await prisma.user.findUnique({ where: { id: userId } });
+
+      expect(claimantRow!.phoneNumber).toBeNull();
+      expect(owner!.phoneNumber).toBe(phone);
     });
   });
 
