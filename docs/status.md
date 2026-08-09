@@ -8,8 +8,8 @@ Last updated: 2026-08-10.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 234 tests** (988 unit + 246 integration against
-real Postgres), lint and typecheck clean across every package and app.
+Everything below has tests that run and pass. **1 262 tests** (1 016 unit + 246 integration
+against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                        |
 | --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -19,11 +19,11 @@ real Postgres), lint and typecheck clean across every package and app.
 | `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser             |
 | `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                          |
 | `@wea/ai`       | 146              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 89 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail + Graph webhooks, OAuth connect, health, errors           |
+| `apps/api`      | 117 + 38 (int.)  | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail + Graph webhooks, OAuth connect, health, errors           |
 | `apps/worker`   | 265 + 197 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
 
 ```bash
-pnpm -r test          # 988 unit tests
+pnpm -r test          # 1 016 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -215,6 +215,26 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**A guard that was written, exported, and never attached.** Both OAuth `start` endpoints read
+`req.user` and refused when it was absent, under a comment explaining that the auth guard was
+not built yet. It had been built, and exported from `AuthModule`, and `OAuthModule` imported
+that module — and neither controller applied it. So `req.user` was never populated and the
+entire connect flow answered 401 forever: two providers, an adapter each, and no way to
+connect either. The comment had been true when it was written, which is the whole problem
+with comments that describe the state of the world rather than the reasoning.
+
+The fix is not only the decorator. A browser navigating to a redirect endpoint cannot send a
+bearer token, so `start` could be authenticated _or_ reachable, not both — it returns the
+consent URL as JSON now and the caller navigates. `callback` stays unguarded because the
+provider redirects a browser to it, which also carries no token; identity comes from the
+signed `state`, which is exactly what `state` is for.
+
+And the tests that would have caught it are a different kind from the ones that did not. Every
+existing test called the handler directly, which proves nothing about what runs in front of
+it. The guard is now asserted from the decorator metadata — the same trick as the DI spec,
+for the same reason: the thing that broke was invisible to every test that exercised
+behaviour.
 
 **A second provider is where you find out whether the port was real.** Everything above
 `MailProvider` was written against Gmail and claimed to be provider-neutral. Adding Graph

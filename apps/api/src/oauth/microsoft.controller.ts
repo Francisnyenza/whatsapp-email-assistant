@@ -1,8 +1,9 @@
-import { Controller, Get, Query, Req, Res, Inject } from '@nestjs/common';
+import { Controller, Get, Query, Req, Res, Inject, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import type { Logger } from 'pino';
 import { AppError } from '@wea/shared';
 import { ConfigService } from '../config/config.service.js';
+import { AuthGuard } from '../auth/auth.guard.js';
 import { AccountLinkingService } from './account-linking.service.js';
 import { createOAuthState, verifyOAuthState, safeReturnPath } from './oauth-state.js';
 
@@ -25,29 +26,36 @@ export class MicrosoftOAuthController {
   ) {}
 
   /**
-   * Redirects to Microsoft's consent screen.
+   * The consent URL for this user.
    *
-   * The user id comes from the authenticated session, not from the query — a
-   * `userId` parameter here would let anyone start a flow that attaches a
-   * mailbox to someone else's account.
+   * Returns it as JSON rather than redirecting, and that is the whole reason
+   * this endpoint can be guarded at all. A browser navigating here directly
+   * cannot send an `Authorization` header, so a redirect endpoint is either
+   * unauthenticated — which would let anyone start a flow that attaches a
+   * mailbox to someone else's account — or authenticated and unreachable. The
+   * caller navigates to what comes back.
+   *
+   * The user id comes from the verified token, never from the query.
    */
   @Get('start')
-  start(@Req() req: Request, @Res() res: Response, @Query('returnTo') returnTo?: string): void {
-    const userId = currentUserId(req);
-
+  @UseGuards(AuthGuard)
+  start(@Req() req: Request, @Query('returnTo') returnTo?: string): { url: string } {
     const state = createOAuthState(
-      { userId, provider: 'microsoft', ...(returnTo ? { returnTo } : {}) },
+      { userId: req.user!.id, provider: 'microsoft', ...(returnTo ? { returnTo } : {}) },
       this.config.env.JWT_ACCESS_SECRET,
     );
 
-    res.redirect(this.linking.microsoftConsentUrl(state));
+    return { url: this.linking.microsoftConsentUrl(state) };
   }
 
   /**
    * Handles Microsoft's redirect back.
    *
-   * Everything here arrives from a third party via the user's browser, so
-   * nothing is trusted until `state` verifies.
+   * Deliberately unguarded, and it has to be: Microsoft redirects a browser here,
+   * which carries no bearer token. Identity comes from the signed `state`
+   * instead — which is exactly what `state` is for, and why it is signed rather
+   * than being an opaque blob looked up in a session that a load balancer could
+   * have moved.
    */
   @Get('callback')
   async callback(
@@ -98,23 +106,4 @@ export class MicrosoftOAuthController {
 
     res.redirect(`${this.config.env.WEB_BASE_URL}${destination}?${query.toString()}`);
   }
-}
-
-/**
- * The authenticated user.
- *
- * The auth guard is not built yet, so this reads the header a future guard will
- * populate and refuses when it is absent. It fails closed: without a verified
- * identity there is nobody to attach a mailbox to, and guessing would be the
- * exact vulnerability `state` exists to prevent.
- */
-function currentUserId(req: Request): string {
-  const userId = (req as { user?: { id?: string } }).user?.id;
-
-  if (!userId) {
-    throw new AppError('UNAUTHENTICATED', 'OAuth flow started without an authenticated user', {
-      publicMessage: 'Please sign in before connecting a mailbox.',
-    });
-  }
-  return userId;
 }
