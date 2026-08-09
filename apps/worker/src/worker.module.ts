@@ -25,6 +25,7 @@ import { AiService } from './services/ai.service.js';
 import { AiProcessor } from './processors/ai.processor.js';
 import { SearchRepository } from './repositories/search.repository.js';
 import { MailboxQueryService } from './services/mailbox-query.service.js';
+import { AssistantService } from './services/assistant.service.js';
 
 @Module({
   imports: [ConfigModule],
@@ -46,6 +47,7 @@ import { MailboxQueryService } from './services/mailbox-query.service.js';
     SearchRepository,
     AiService,
     MailboxQueryService,
+    AssistantService,
     QueueProducer,
     SyncScheduler,
     CommandsProcessor,

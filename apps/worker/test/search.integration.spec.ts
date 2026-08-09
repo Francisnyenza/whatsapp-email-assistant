@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { SearchRepository, vectorLiteral } from '../src/repositories/search.repository.js';
+import { startOfLocalDay } from '../src/services/digest-schedule.js';
 
 /**
  * Hybrid search, against a real Postgres with pgvector and pg_trgm.
@@ -171,7 +172,7 @@ describeIfDb('mailbox search (real database)', () => {
     // so it is reset here rather than leaking into the next test.
     await prisma.user.updateMany({
       where: { id: { in: [alice, bob] } },
-      data: { embeddingBackfilledAt: null },
+      data: { embeddingBackfilledAt: null, timezone: 'UTC' },
     });
   });
 
@@ -490,6 +491,133 @@ describeIfDb('mailbox search (real database)', () => {
       await seed(bob, { subject: 'Bob’s mail', snippet: 'private' });
 
       expect(await search.list(alice, 'unread')).toEqual([]);
+    });
+
+    it('means "today" where the user is, not in UTC', async () => {
+      // Kiritimati is UTC+14. Mail that arrived eight hours ago is yesterday in
+      // UTC for most of the day and today for the person reading it — which is
+      // the whole reason this reads the timezone rather than assuming one.
+      await prisma.user.update({
+        where: { id: alice },
+        data: { timezone: 'Pacific/Kiritimati' },
+      });
+
+      const recent = await seed(alice, { subject: 'Recent', snippet: 'a', ageHours: 1 });
+      const localMidnight = startOfLocalDay('Pacific/Kiritimati')!;
+      const hoursIntoTheirDay = (Date.now() - localMidnight.getTime()) / 3_600_000;
+
+      const hits = await search.list(alice, 'today');
+
+      expect(hits.map((h) => h.emailMessageId)).toContain(recent);
+
+      // And something from before their midnight is excluded — only assertable
+      // when their day is far enough along to have a "before".
+      if (hoursIntoTheirDay > 3) {
+        const yesterday = await seed(alice, {
+          subject: 'Yesterday',
+          snippet: 'b',
+          ageHours: hoursIntoTheirDay + 2,
+        });
+        expect((await search.list(alice, 'today')).map((h) => h.emailMessageId)).not.toContain(
+          yesterday,
+        );
+      }
+    });
+
+    it('falls back to UTC on a timezone Intl does not know', async () => {
+      // A corrupt preference should cost accuracy, not the whole list.
+      await prisma.user.update({ where: { id: alice }, data: { timezone: 'Mars/Olympus_Mons' } });
+      const recent = await seed(alice, { subject: 'Recent', snippet: 'a', ageHours: 0 });
+
+      expect((await search.list(alice, 'today')).map((h) => h.emailMessageId)).toContain(recent);
+    });
+  });
+
+  /* ------------------------------- deadlines ----------------------------- */
+
+  describe('deadlines', () => {
+    /** Seeds a message whose analysis carries action items. */
+    async function seedWithItems(
+      userId: string,
+      items: Array<{ description: string; dueDate?: string; assignedToUser?: boolean }>,
+    ): Promise<string> {
+      const id = await seed(userId, { subject: 'Contract renewal', snippet: 'sign by' });
+
+      await withTenant(userId, async (tx) => {
+        await tx.messageAnalysis.create({
+          data: {
+            userId,
+            emailMessageId: id,
+            summary: 'Contract renewal',
+            bulletSummary: [],
+            category: 'legal',
+            priority: 'normal',
+            urgencyScore: 0.4,
+            spamScore: 0,
+            language: 'en',
+            sentiment: 'neutral',
+            requiresReply: false,
+            entities: [],
+            actionItems: items,
+            suggestedReplies: [],
+            modelProvider: 'test',
+            model: 'test',
+            tokensUsed: 0,
+          },
+        });
+      });
+
+      return id;
+    }
+
+    const inDays = (n: number) => new Date(Date.now() + n * 24 * 3_600_000).toISOString();
+
+    it('surfaces an action item that has a due date', async () => {
+      const id = await seedWithItems(alice, [
+        { description: 'Sign the renewal', dueDate: inDays(3) },
+      ]);
+
+      const deadlines = await search.deadlines(alice);
+
+      expect(deadlines).toHaveLength(1);
+      expect(deadlines[0]).toMatchObject({ emailMessageId: id, description: 'Sign the renewal' });
+    });
+
+    it('ignores an action item with no date, which is a task and not a deadline', async () => {
+      await seedWithItems(alice, [{ description: 'Think about it' }]);
+
+      expect(await search.deadlines(alice)).toEqual([]);
+    });
+
+    it('is soonest first, including things already overdue', async () => {
+      await seedWithItems(alice, [
+        { description: 'Later', dueDate: inDays(10) },
+        { description: 'Overdue', dueDate: inDays(-2) },
+        { description: 'Soon', dueDate: inDays(1) },
+      ]);
+
+      expect((await search.deadlines(alice)).map((d) => d.description)).toEqual([
+        'Overdue',
+        'Soon',
+        'Later',
+      ]);
+    });
+
+    it('drops a due date the model made up rather than sorting it arbitrarily', async () => {
+      // `new Date("next Tuesday")` is an Invalid Date, which compares false
+      // against everything and would land in an arbitrary position.
+      await seedWithItems(alice, [
+        { description: 'Nonsense', dueDate: 'next Tuesday' },
+        { description: 'Real', dueDate: inDays(2) },
+      ]);
+
+      expect((await search.deadlines(alice)).map((d) => d.description)).toEqual(['Real']);
+    });
+
+    it('never returns another tenant’s deadlines', async () => {
+      await seedWithItems(bob, [{ description: 'Bob’s task', dueDate: inDays(1) }]);
+
+      expect(await search.deadlines(alice)).toEqual([]);
     });
   });
 });

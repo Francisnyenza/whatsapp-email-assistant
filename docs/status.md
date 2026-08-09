@@ -8,22 +8,22 @@ Last updated: 2026-08-09.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 059 tests** (836 unit + 223 integration against
+Everything below has tests that run and pass. **1 096 tests** (871 unit + 225 integration against
 real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests            | What it does                                                                                                                       |
-| --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                            |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                       |
-| `@wea/db`       | 8 (integration)  | Prisma schema, ten migrations, seed. RLS verified against real Postgres 16 + pgvector                                              |
-| `@wea/whatsapp` | 143              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                            |
-| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                                  |
-| `@wea/ai`       | 120              | Prompt-injection envelope, instruction detection, structured analysis with schema discard, embeddings, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors                           |
-| `apps/worker`   | 231 + 177 (int.) | Ingest, analysis, embeddings, hybrid search, notify + digest, resolution ladder, planner, actions, sweeps                          |
+| Package         | Tests            | What it does                                                                                                                         |
+| --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                              |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                         |
+| `@wea/db`       | 8 (integration)  | Prisma schema, ten migrations, seed. RLS verified against real Postgres 16 + pgvector                                                |
+| `@wea/whatsapp` | 143              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                              |
+| `@wea/mail`     | 130              | Threading, forwarding, MIME composition, Gmail normalizer + provider, OAuth, error classification                                    |
+| `@wea/ai`       | 132              | Prompt-injection envelope, instruction detection, analysis with schema discard, embeddings, translation, OpenAI + Gemini + Anthropic |
+| `apps/api`      | 64 + 38 (int.)   | Auth with refresh rotation and TOTP 2FA, WhatsApp + Gmail webhook ingress, OAuth connect, health, errors                             |
+| `apps/worker`   | 256 + 189 (int.) | Ingest, analysis, embeddings, hybrid search, summarise, translate, deadlines, notify, planner, actions, sweeps                       |
 
 ```bash
-pnpm -r test          # 836 unit tests
+pnpm -r test          # 871 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -110,11 +110,14 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **`list_deadlines`, `summarize`, `translate`, `read_aloud` and free-form questions.**
-   Each says plainly that it is not built. The first needs the action items an analysis
-   already extracts to be surfaced; the rest need the composition path.
-2. **`today` means UTC midnight, not the user's.** The timezone is on the user row and is
-   not threaded into the list query, so "today" is quietly wrong for anyone far from UTC.
+1. **`draft` and `read_aloud`.** Both still say plainly that they are not built. `draft` is
+   the interesting one: composing a reply with a model means a confirmation tap before
+   anything is sent, which is the ADR 0004 shape the forward path already has. `read_aloud`
+   needs a speech pipeline and media upload, which is a phase of its own.
+2. **Free-form questions.** "Did anyone reply about the invoice?" needs the model to reason
+   over a _set_ of mail rather than one message, which is retrieval-augmented generation and
+   a different security question — the retrieved mail is attacker-influenced content
+   selected by an attacker-influenceable query.
 
 ### After that
 
@@ -215,6 +218,37 @@ detection can only ever _raise_ the warning — the model's "false" is not evide
 anything. Tuning is precision-first, because the flag becomes a warning on someone's phone
 and this is a warning rather than a filter. The first pass flagged "I act as the treasurer
 for the club", which is how a security feature becomes noise people learn to ignore.
+
+**A summary you already paid for.** "Summarise this" looks like a model call and is not one.
+Every inbound email is analysed on arrival and that analysis holds the summary the
+notification card showed, so asking again would be buying the same sentence twice. The model
+is reached only for a message that has none — and the result is stored, because the usual
+reason one is missing is that the provider was down or the budget was spent when the mail
+arrived, and both of those pass.
+
+**24 characters is a layout constraint, not a detail.** The first version of the deadline
+list put "in 3d — Send the Q3 report" in a row title. WhatsApp allows 24 characters there and
+truncates silently, so what shipped would have read "in 3d — Send the Q3…" — the due date
+crowding out the thing that needs doing. The task now takes the title and the date moves to
+the description, where 72 characters means both fit. The test that caught it was asserting
+on the wrong thing and was right to fail.
+
+**A due date the model invented sorts to an arbitrary position.** `new Date("next Tuesday")`
+is an Invalid Date rather than a throw, and an Invalid Date compares false against
+everything — so a nonsense deadline does not sort last, it sorts wherever the comparison
+happens to leave it. Action items are re-validated on the way _out_ of the database as well
+as on the way in: the column is `jsonb`, and a schema change, a hand-edited row or a restored
+backup can each put something there that the original write-time check never saw.
+
+**Prose is the one model output with no schema, and that is the point.** A schema exists to
+stop model output becoming a decision — a category that routes, a boolean that gates, a
+string that reaches a provider call. A translation becomes none of those: it is shown to one
+person, next to the email it came from, and nothing branches on it. What replaces the schema
+is what actually matters for text on a screen — bounded, control characters stripped,
+envelope markers removed so a model cannot paint a fake system message — plus the structural
+guarantee that there is no tool on the port to reach for. The residual risk is stated rather
+than papered over: a translated phishing line is still a phishing line, which is why the
+injection warning is repeated on the summary rather than assumed to have been seen once.
 
 **A feature that works perfectly on none of the mail people want to search.** Embedding runs
 after an email is notified, so search only ever knew about mail that arrived while the

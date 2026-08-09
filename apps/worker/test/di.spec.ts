@@ -43,6 +43,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
       'SyncScheduler',
       // Without it, `search` and the standing lists have nothing to answer them.
       'MailboxQueryService',
+      'AssistantService',
     ]) {
       expect(names, `${required} is not registered in WorkerModule`).toContain(required);
     }
@@ -50,7 +51,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
 
   const cases: Array<[string, string, number]> = [
     ['processors/sync.processor.js', 'SyncProcessor', 8],
-    ['processors/commands.processor.js', 'CommandsProcessor', 11],
+    ['processors/commands.processor.js', 'CommandsProcessor', 12],
     ['processors/notify.processor.js', 'NotifyProcessor', 4],
     ['processors/ai.processor.js', 'AiProcessor', 8],
     ['services/ai.service.js', 'AiService', 3],
@@ -63,6 +64,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
     ['queue/queue.producer.js', 'QueueProducer', 1],
     ['repositories/search.repository.js', 'SearchRepository', 1],
     ['services/mailbox-query.service.js', 'MailboxQueryService', 4],
+    ['services/assistant.service.js', 'AssistantService', 5],
   ];
 
   for (const [file, exported, expectedCount] of cases) {

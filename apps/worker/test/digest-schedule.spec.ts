@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { isDigestDue, DIGEST_SWEEP_INTERVAL_MS } from '../src/services/digest-schedule.js';
+import {
+  isDigestDue,
+  startOfLocalDay,
+  DIGEST_SWEEP_INTERVAL_MS,
+} from '../src/services/digest-schedule.js';
 
 /**
  * When a scheduled digest is due.
@@ -176,5 +180,54 @@ describe('the sweep interval', () => {
         now: at('2026-08-06T08:15:00Z'),
       }),
     ).toBe(true);
+  });
+});
+
+describe('the start of the user’s day', () => {
+  // "What arrived today" is a question about someone's own calendar day.
+  // Answering it in UTC is wrong by up to fourteen hours for the people it is
+  // wrong for — which is most of the world east of Greenwich, every morning.
+
+  const at = (iso: string) => new Date(iso);
+
+  it('is local midnight, not UTC midnight', () => {
+    // 07:00 in Nairobi (UTC+3) on the 9th. Their day began at 21:00 UTC on the
+    // 8th, which is the previous UTC day entirely.
+    const start = startOfLocalDay('Africa/Nairobi', at('2026-08-09T04:00:00Z'));
+
+    expect(start?.toISOString()).toBe('2026-08-08T21:00:00.000Z');
+  });
+
+  it('is UTC midnight for a user in UTC', () => {
+    const start = startOfLocalDay('UTC', at('2026-08-09T04:00:00Z'));
+    expect(start?.toISOString()).toBe('2026-08-09T00:00:00.000Z');
+  });
+
+  it('handles a zone behind UTC', () => {
+    // 21:00 on the 8th in New York (UTC-4) — still the 8th locally, while UTC
+    // has already rolled over to the 9th.
+    const start = startOfLocalDay('America/New_York', at('2026-08-09T01:00:00Z'));
+    expect(start?.toISOString()).toBe('2026-08-08T04:00:00.000Z');
+  });
+
+  it('handles a zone with a half-hour offset', () => {
+    // Kolkata is UTC+5:30, which is where naive hour arithmetic breaks.
+    const start = startOfLocalDay('Asia/Kolkata', at('2026-08-09T04:00:00Z'));
+    expect(start?.toISOString()).toBe('2026-08-08T18:30:00.000Z');
+  });
+
+  it('is always in the past, never ahead of now', () => {
+    for (const zone of ['Pacific/Kiritimati', 'Pacific/Niue', 'Asia/Kathmandu', 'UTC']) {
+      const now = at('2026-08-09T04:00:00Z');
+      const start = startOfLocalDay(zone, now);
+      expect(start!.getTime(), zone).toBeLessThanOrEqual(now.getTime());
+      // And never more than a day back, which a sign error would produce.
+      expect(now.getTime() - start!.getTime(), zone).toBeLessThan(24 * 3_600_000);
+    }
+  });
+
+  it('returns null for a timezone Intl does not know', () => {
+    // A corrupt preference should cost accuracy, not throw inside a query.
+    expect(startOfLocalDay('Mars/Olympus_Mons')).toBeNull();
   });
 });

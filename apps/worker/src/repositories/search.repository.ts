@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
-import { Prisma, withoutTenantScope } from '@wea/db';
+import { Prisma, withoutTenantScope, type TenantClient } from '@wea/db';
 import { AppError } from '@wea/shared';
 import { PrismaService } from '../common/prisma.service.js';
+import { startOfLocalDay } from '../services/digest-schedule.js';
 
 /**
  * Finding an email the user half-remembers.
@@ -45,6 +46,15 @@ const RRF_K = 60;
 
 /** How deep each individual search goes before fusion. */
 const CANDIDATE_DEPTH = 40;
+
+export interface Deadline {
+  emailMessageId: string;
+  subject: string;
+  fromName: string | null;
+  fromAddress: string;
+  description: string;
+  dueAt: Date;
+}
 
 export interface SearchHit {
   emailMessageId: string;
@@ -234,12 +244,20 @@ export class SearchRepository {
    * reads the stored analysis, so a deployment with no model provider returns
    * nothing for it rather than a wrong answer — which the caller turns into a
    * sentence that says so.
+   *
+   * `today` reads the user's timezone in the same transaction. It could be
+   * passed in, but then every caller would have to remember to, and the one that
+   * forgot would silently answer in UTC — which is what this used to do, and it
+   * is wrong by up to fourteen hours for the people it is wrong for.
    */
   async list(userId: string, kind: ListKind, limit = 10): Promise<SearchHit[]> {
-    const where = listFilter(kind);
+    const rows = await this.prisma.forUser(userId, async (tx) => {
+      const where =
+        kind === 'today'
+          ? { receivedAt: { gte: await this.dayStart(tx, userId) } }
+          : listFilter(kind);
 
-    const rows = await this.prisma.forUser(userId, async (tx) =>
-      tx.emailMessage.findMany({
+      return tx.emailMessage.findMany({
         where: {
           direction: 'inbound',
           deletedAt: null,
@@ -257,8 +275,8 @@ export class SearchRepository {
           receivedAt: true,
           isUnread: true,
         },
-      }),
-    );
+      });
+    });
 
     return rows.map((row) => ({
       emailMessageId: row.id,
@@ -271,6 +289,73 @@ export class SearchRepository {
       // Recency is the whole ranking for a list; a score would be theatre.
       score: 0,
     }));
+  }
+
+  /**
+   * Everything the user has been asked to do, soonest first.
+   *
+   * The action items are already extracted by analysis and were sitting in a
+   * JSON column nobody read. Nothing new is asked of a model here — this is a
+   * query over work already paid for.
+   *
+   * The JSON is filtered in TypeScript rather than in SQL because it is model
+   * output: `dueDate` is whatever came back, and a `jsonb` path query would
+   * either trust that it parses as a timestamp or need the same guards written
+   * in a language with fewer of them.
+   */
+  async deadlines(userId: string, limit = 10): Promise<Deadline[]> {
+    const rows = await this.prisma.forUser(userId, async (tx) =>
+      tx.messageAnalysis.findMany({
+        where: {
+          message: { deletedAt: null, isSpam: false, isArchived: false },
+          // A cheap pre-filter: most analyses have no action items at all, and
+          // this keeps the deserialisation to the ones that might.
+          NOT: { actionItems: { equals: [] } },
+        },
+        orderBy: { createdAt: 'desc' },
+        // Widened, because the due-date filter below discards most of these.
+        take: 200,
+        select: {
+          actionItems: true,
+          message: {
+            select: {
+              id: true,
+              subject: true,
+              fromName: true,
+              fromAddress: true,
+            },
+          },
+        },
+      }),
+    );
+
+    const deadlines: Deadline[] = [];
+
+    for (const row of rows) {
+      for (const item of parseActionItems(row.actionItems)) {
+        if (!item.dueAt) continue;
+        deadlines.push({
+          emailMessageId: row.message.id,
+          subject: row.message.subject,
+          fromName: row.message.fromName,
+          fromAddress: row.message.fromAddress,
+          description: item.description,
+          dueAt: item.dueAt,
+        });
+      }
+    }
+
+    return deadlines.sort((a, b) => a.dueAt.getTime() - b.dueAt.getTime()).slice(0, limit);
+  }
+
+  /** Local midnight for this user, or UTC midnight if their timezone is unusable. */
+  private async dayStart(tx: TenantClient, userId: string): Promise<Date> {
+    const user = await tx.user.findUnique({
+      where: { id: userId },
+      select: { timezone: true },
+    });
+
+    return (user && startOfLocalDay(user.timezone)) ?? startOfUtcDay();
   }
 
   /* ------------------------------ backfill ------------------------------- */
@@ -352,9 +437,8 @@ function listFilter(kind: ListKind): Prisma.EmailMessageWhereInput {
       return { isUnread: true, isArchived: false };
 
     case 'today':
-      // Midnight UTC, not the user's midnight. Honest about what it is: the
-      // per-user version needs their timezone threaded through, and guessing
-      // would make "today" quietly wrong for half the world. See docs/status.md.
+      // Handled by the caller, which has a transaction to read the user's
+      // timezone in. Reached only if that branch is removed.
       return { receivedAt: { gte: startOfUtcDay() } };
 
     case 'urgent':
@@ -424,4 +508,39 @@ export function vectorLiteral(vector: number[]): string {
   }
 
   return `[${vector.join(',')}]`;
+}
+
+/**
+ * Action items as the model returned them.
+ *
+ * Re-validated on the way out, not just on the way in. The row was schema-checked
+ * when it was written, but the column is `jsonb` — a later schema change, a
+ * hand-edited row or a restored backup can all put something else there, and this
+ * runs on a path that renders straight to a user's phone. Anything that does not
+ * parse is dropped rather than repaired.
+ */
+function parseActionItems(value: unknown): Array<{ description: string; dueAt: Date | null }> {
+  if (!Array.isArray(value)) return [];
+
+  const items: Array<{ description: string; dueAt: Date | null }> = [];
+
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+
+    const item = raw as { description?: unknown; dueDate?: unknown };
+    if (typeof item.description !== 'string' || !item.description.trim()) continue;
+
+    let dueAt: Date | null = null;
+    if (typeof item.dueDate === 'string') {
+      const parsed = new Date(item.dueDate);
+      // `new Date("banana")` is an Invalid Date rather than a throw, and an
+      // Invalid Date compares false against everything — which would sort a
+      // nonsense deadline to an arbitrary position rather than dropping it.
+      if (!Number.isNaN(parsed.getTime())) dueAt = parsed;
+    }
+
+    items.push({ description: item.description.trim().slice(0, 200), dueAt });
+  }
+
+  return items;
 }

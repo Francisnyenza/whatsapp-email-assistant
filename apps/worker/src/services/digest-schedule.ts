@@ -105,6 +105,44 @@ function formatIn(
   }
 }
 
+/**
+ * The instant "today" began, where the user is.
+ *
+ * "What arrived today" is a question about someone's own calendar day, and
+ * answering it in UTC is wrong by up to fourteen hours — for anyone far enough
+ * east, half of what reached them this morning was yesterday. The list query
+ * needs an instant to compare `received_at` against, so this turns the user's
+ * local midnight into one.
+ *
+ * The offset is measured at `now` rather than at midnight, which is an hour out
+ * for the few hours after a DST transition. Measuring it at midnight is circular
+ * — you need the offset to know which instant midnight was — and the honest fix
+ * is a full timezone database, which is not worth pulling in for a one-hour
+ * error on two mornings a year in the zones that still observe it.
+ *
+ * @returns null for a timezone `Intl` does not recognise, so the caller can fall
+ *   back rather than throw on a corrupt preference.
+ */
+export function startOfLocalDay(timezone: string, now = new Date()): Date | null {
+  const parts = formatIn(now, timezone);
+  if (!parts) return null;
+
+  // What the wall clock reads, treated as though it were UTC. Its distance from
+  // the real instant is the zone's offset.
+  const asIfUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    now.getUTCSeconds(),
+    now.getUTCMilliseconds(),
+  );
+  const offsetMs = asIfUtc - now.getTime();
+
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day) - offsetMs);
+}
+
 function parseTime(value: string): number | null {
   const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
   if (!match) return null;

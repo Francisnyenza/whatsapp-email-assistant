@@ -9,7 +9,10 @@ import { MailboxActionService } from '../src/services/mailbox-action.service.js'
 import { ReplyComposer } from '../src/services/reply-composer.js';
 import { ForwardComposer } from '../src/services/forward-composer.js';
 import { MailboxQueryService } from '../src/services/mailbox-query.service.js';
+import { AssistantService } from '../src/services/assistant.service.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
+import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
+import { MessageRepository } from '../src/repositories/message.repository.js';
 import { CommandsProcessor } from '../src/processors/commands.processor.js';
 import { encodeActionPayload, type InboundWhatsAppMessage, type MailOperation } from '@wea/shared';
 
@@ -161,6 +164,19 @@ describeIfDb('command loop (real database)', () => {
         { recordUsage: vi.fn() } as never,
         logger as never,
       ),
+      new AssistantService(
+        // No model provider here either: what is being checked is that a stored
+        // analysis answers "summarise" *without* one, and that the absence of
+        // one produces a sentence rather than silence when nothing is stored.
+        { provider: () => null, secondary: () => null, isOverBudget: async () => false } as never,
+        accounts as never,
+        // Real repositories, against the real rows the test writes. A stub here
+        // would assert that the service calls a method, not that the method
+        // finds the analysis.
+        new AnalysisRepository(service as never),
+        new MessageRepository(service as never),
+        logger as never,
+      ),
       inbox,
       queue as never,
       logger as never,
@@ -255,6 +271,9 @@ describeIfDb('command loop (real database)', () => {
       await tx.conversationState.deleteMany({ where: { userId } });
       await tx.draft.deleteMany({ where: { userId } });
       // Actions in one test must not carry into the next.
+      // Analyses outlive a test's own writes, so a second one hits the unique
+      // constraint on email_message_id and a list test sees the first's rows.
+      await tx.messageAnalysis.deleteMany({ where: { userId } });
       await tx.emailMessage.updateMany({
         where: { userId },
         data: { isArchived: false, isStarred: false, isUnread: true, deletedAt: null },
@@ -431,6 +450,102 @@ describeIfDb('command loop (real database)', () => {
 
       expect(mutations).toHaveLength(0);
       expect(sends()).toHaveLength(0);
+    });
+
+    it('answers deadlines from stored action items', async () => {
+      const dueAt = new Date(Date.now() + 3 * 24 * 3_600_000).toISOString();
+
+      await withTenant(userId, async (tx) => {
+        await tx.messageAnalysis.create({
+          data: {
+            userId,
+            emailMessageId: emails.sarah!,
+            summary: 'Q3 report',
+            bulletSummary: [],
+            category: 'work',
+            priority: 'high',
+            urgencyScore: 0.6,
+            spamScore: 0,
+            language: 'en',
+            sentiment: 'neutral',
+            requiresReply: true,
+            entities: [],
+            actionItems: [{ description: 'Send the Q3 report', dueDate: dueAt }],
+            suggestedReplies: [],
+            modelProvider: 'test',
+            model: 'test',
+            tokensUsed: 0,
+          },
+        });
+      });
+
+      await deliver({ text: 'deadlines' });
+
+      expect(rows()).toHaveLength(1);
+      expect(lastText()).toContain('Deadlines');
+      expect(JSON.stringify(rows())).toContain('Send the Q3 report');
+    });
+
+    it('says so when there are none, rather than showing an empty list', async () => {
+      await deliver({ text: 'deadlines' });
+
+      expect(rows()).toHaveLength(0);
+      expect(lastText().length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('asking about one email', () => {
+    // Summarise and translate are reads too, but they concern a *specific*
+    // email — so unlike search they go through the resolution ladder and the
+    // planner, and the answer replaces the planner's placeholder rather than
+    // being sent after it.
+
+    it('summarises from the stored analysis without asking a model', async () => {
+      await withTenant(userId, async (tx) => {
+        await tx.messageAnalysis.create({
+          data: {
+            userId,
+            emailMessageId: emails.sarah!,
+            summary: 'Sarah needs the Q3 report before Friday.',
+            bulletSummary: ['Due Friday'],
+            category: 'work',
+            priority: 'high',
+            urgencyScore: 0.6,
+            spamScore: 0,
+            language: 'en',
+            sentiment: 'neutral',
+            requiresReply: true,
+            entities: [],
+            actionItems: [],
+            suggestedReplies: [],
+            modelProvider: 'test',
+            model: 'test',
+            tokensUsed: 0,
+          },
+        });
+      });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'summarise' });
+
+      // The answer, not the "Reading it…" placeholder the planner returned.
+      expect(lastText()).toContain('Sarah needs the Q3 report before Friday.');
+      expect(lastText()).not.toContain('Reading it');
+      expect(mutations).toHaveLength(0);
+    });
+
+    it('says what is missing when there is no analysis and no model', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'summarise' });
+
+      // A specific sentence rather than silence, and never the placeholder.
+      expect(lastText()).not.toContain('Reading it');
+      expect(lastText().length).toBeGreaterThan(0);
+    });
+
+    it('does not send anything when asked to translate with no model configured', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'translate to swahili' });
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText()).not.toContain('Translating');
     });
   });
 

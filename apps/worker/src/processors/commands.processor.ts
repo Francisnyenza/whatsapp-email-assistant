@@ -22,6 +22,7 @@ import { MailboxActionService } from '../services/mailbox-action.service.js';
 import { ReplyComposer } from '../services/reply-composer.js';
 import { ForwardComposer } from '../services/forward-composer.js';
 import { MailboxQueryService } from '../services/mailbox-query.service.js';
+import { AssistantService } from '../services/assistant.service.js';
 import { interpretTap, type TapEffect } from '../services/tap-interpreter.js';
 import { InboxRepository } from '../repositories/inbox.repository.js';
 import { QueueProducer } from '../queue/queue.producer.js';
@@ -63,6 +64,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly replies: ReplyComposer,
     private readonly forwards: ForwardComposer,
     private readonly queries: MailboxQueryService,
+    private readonly assistant: AssistantService,
     private readonly inbox: InboxRepository,
     private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
@@ -482,17 +484,35 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       return { payload: buildText(GENERIC_FAILURE), failed: 'no target' };
     }
 
-    if (effect.kind === 'mutate') {
-      return this.attempt(
-        () => this.mailbox.apply(userId, emailMessageId, effect.operation),
-        () => intended,
-      );
-    }
+    switch (effect.kind) {
+      case 'mutate':
+        return this.attempt(
+          () => this.mailbox.apply(userId, emailMessageId, effect.operation),
+          () => intended,
+        );
 
-    return this.attempt(
-      () => this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body }),
-      () => intended,
-    );
+      case 'reply':
+        return this.attempt(
+          () => this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body }),
+          () => intended,
+        );
+
+      // The answer *is* the message, so `intended` — "Reading it…" — is
+      // discarded rather than sent. Sending both would be two notifications for
+      // one question, and sending only the placeholder would be the "Archived."
+      // failure in a new costume.
+      case 'summarize':
+        return this.attempt(
+          () => this.assistant.summarize(userId, emailMessageId),
+          (summary) => buildText(summary),
+        );
+
+      case 'translate':
+        return this.attempt(
+          () => this.assistant.translate(userId, emailMessageId, effect.language),
+          (translated) => buildText(translated),
+        );
+    }
   }
 
   /* ------------------------------- shared -------------------------------- */

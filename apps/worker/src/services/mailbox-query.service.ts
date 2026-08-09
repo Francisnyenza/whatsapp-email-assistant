@@ -8,6 +8,7 @@ import {
   SearchRepository,
   type ListKind,
   type SearchHit,
+  type Deadline,
 } from '../repositories/search.repository.js';
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
 
@@ -39,12 +40,20 @@ export class MailboxQueryService {
    * the caller's branch and this class cannot drift apart.
    */
   handles(intent: CommandIntent): boolean {
-    return LIST_KINDS[intent.intent] !== undefined || intent.intent === 'search';
+    return (
+      LIST_KINDS[intent.intent] !== undefined ||
+      intent.intent === 'search' ||
+      intent.intent === 'list_deadlines'
+    );
   }
 
   async answer(userId: string, intent: CommandIntent): Promise<WhatsAppOutboundPayload | null> {
     if (intent.intent === 'search') {
       return this.answerSearch(userId, intent.query);
+    }
+
+    if (intent.intent === 'list_deadlines') {
+      return this.renderDeadlines(await this.search.deadlines(userId));
     }
 
     const kind = LIST_KINDS[intent.intent];
@@ -115,6 +124,43 @@ export class MailboxQueryService {
     }
   }
 
+  /* ------------------------------ deadlines ------------------------------ */
+
+  /**
+   * What the user has been asked to do, and by when.
+   *
+   * Built from action items an analysis already extracted, so this costs a query
+   * rather than a model call. A mailbox with no analyses — no provider, or one
+   * configured after the mail arrived — genuinely has no deadlines to show, and
+   * the empty message says which of those it is rather than implying the user
+   * has nothing due.
+   */
+  private renderDeadlines(deadlines: Deadline[]): WhatsAppOutboundPayload {
+    if (deadlines.length === 0) {
+      return buildText(
+        this.ai.provider()
+          ? 'Nothing with a deadline that I can see.'
+          : "I can't pull out deadlines without a model configured — nothing has been read closely enough to find one.",
+      );
+    }
+
+    // A list row gives 24 characters for its title and 72 for its description,
+    // which is what decides the layout here. The *task* takes the title,
+    // because this is the one list where what needs doing matters more than who
+    // asked — and the due date goes in the description, where "in 3d" and the
+    // subject both fit rather than crowding each other out of the title.
+    return buildDigest(
+      deadlines.map((deadline) => ({
+        emailMessageId: deadline.emailMessageId,
+        fromName: deadline.description,
+        fromAddress: deadline.fromAddress,
+        subject: `${formatDue(deadline.dueAt)} · ${deadline.subject}`,
+        priority: 'normal' as const,
+      })),
+      'Deadlines',
+    );
+  }
+
   /* -------------------------------- lists -------------------------------- */
 
   private renderList(kind: ListKind, hits: SearchHit[]): WhatsAppOutboundPayload {
@@ -137,10 +183,9 @@ export class MailboxQueryService {
 }
 
 /**
- * Which list intents map to which query. `list_deadlines` is deliberately
- * absent: it needs the action items and reminders extracted from an analysis,
- * which is a different piece of work, and a list that quietly returned "urgent"
- * instead would be worse than saying it is not built.
+ * Which list intents map to which mailbox query. `list_deadlines` is not one of
+ * them — it reads extracted action items rather than messages, so it has its own
+ * branch above and its own shape on the way out.
  */
 const LIST_KINDS: Partial<Record<CommandIntent['intent'], ListKind>> = {
   list_today: 'today',
@@ -159,6 +204,23 @@ const EMPTY: Record<ListKind, string> = {
   unread: 'You’re all caught up — nothing unread.',
   urgent: 'Nothing urgent right now.',
 };
+
+/**
+ * A due date at a glance.
+ *
+ * Relative rather than absolute, because "in 2 days" is answerable without
+ * arithmetic and "2026-08-11T09:00:00Z" is not — and because a list row has
+ * twenty-four characters to work with. Overdue is stated plainly: it is the one
+ * case where the user needs to act now rather than plan.
+ */
+function formatDue(dueAt: Date, now = new Date()): string {
+  const days = Math.round((dueAt.getTime() - now.getTime()) / (24 * 3_600_000));
+
+  if (days < 0) return `${Math.abs(days)}d overdue`;
+  if (days === 0) return 'today';
+  if (days === 1) return 'tomorrow';
+  return `in ${days}d`;
+}
 
 function toResultItem(hit: SearchHit) {
   return {

@@ -45,15 +45,34 @@ export interface PlanContext {
  * we then failed to perform is the one outcome worse than an error.
  */
 export type PlannedEffect =
-  { kind: 'mutate'; operation: MailOperation } | { kind: 'reply'; body: string };
+  | { kind: 'mutate'; operation: MailOperation }
+  | { kind: 'reply'; body: string }
+  /**
+   * Ask the assistant something about this email.
+   *
+   * Unlike the other two, the *answer* is the message — so the payload the
+   * planner returns alongside it is a placeholder the processor discards. That
+   * is why these carry `followUp: 'queue_query'` rather than `'queue_action'`:
+   * the two are handled differently downstream, and one name for both would
+   * mean a summary that reads "Archived."
+   */
+  | { kind: 'summarize' }
+  | { kind: 'translate'; language: string };
 
 export interface PlannedResponse {
   payload: WhatsAppOutboundPayload;
   /** What the worker should do after sending, if anything. */
-  followUp: 'none' | 'await_confirmation' | 'await_reply_text' | 'queue_send' | 'queue_action';
+  followUp:
+    | 'none'
+    | 'await_confirmation'
+    | 'await_reply_text'
+    | 'queue_send'
+    | 'queue_action'
+    | 'queue_query';
   /**
-   * Present exactly when `followUp` is `queue_send` or `queue_action`. The
-   * caller must carry it out before sending `payload`.
+   * Present exactly when `followUp` is `queue_send`, `queue_action` or
+   * `queue_query`. The caller must carry it out before sending `payload` — and
+   * for `queue_query` it replaces `payload` with what came back.
    */
   effect?: PlannedEffect;
   /** The email this response concerns, for the delivery record. */
@@ -101,29 +120,20 @@ export class ResponsePlanner {
           followUp: 'none',
         };
 
-      case 'list_deadlines':
-        return {
-          payload: buildText(
-            "I can't pull out deadlines yet — that part isn't finished. " +
-              'Try *urgent* to see what needs attention.',
-          ),
-          followUp: 'none',
-        };
-
       case 'question':
         return {
           payload: buildText(
             "I can't answer questions about your mailbox yet. " +
-              'Try *search <words>*, *unread*, or *urgent*.',
+              'Try *search <words>*, *unread*, *urgent* or *deadlines*.',
           ),
           followUp: 'none',
         };
 
-      // `search`, `list_today`, `list_unread` and `list_urgent` are deliberately
-      // absent. They are reads over the whole mailbox rather than actions on one
-      // email, so they are answered by MailboxQueryService before the processor
-      // ever calls the planner — this class stays pure and target-oriented, and
-      // never grows a database dependency to serve four intents.
+      // `search` and every `list_*` are deliberately absent. They are reads over
+      // the whole mailbox rather than actions on one email, so they are answered
+      // by MailboxQueryService before the processor ever calls the planner —
+      // this class stays pure and target-oriented, and never grows a database
+      // dependency to serve five intents.
       //
       // If one reaches here it means that interception was removed, so it falls
       // through to the default rather than being silently mishandled.
@@ -222,16 +232,31 @@ export class ResponsePlanner {
           emailMessageId,
         };
 
+      // --- asking the assistant about this email ---------------------------
+      // Reads, both of them. Nothing here can send, move or delete anything, so
+      // there is no confirmation to ask for — the answer is the response.
       case 'summarize':
+        return {
+          payload: buildText('Reading it…'),
+          followUp: 'queue_query',
+          effect: { kind: 'summarize' },
+          emailMessageId,
+        };
+
       case 'translate':
+        return {
+          payload: buildText('Translating…'),
+          followUp: 'queue_query',
+          effect: { kind: 'translate', language: intent.language },
+          emailMessageId,
+        };
+
       case 'read_aloud':
       case 'draft':
-        // The AI layer isn't built. Naming the specific missing capability is
-        // more useful than a generic apology.
+        // Still unbuilt. Naming the specific missing capability is more useful
+        // than a generic apology.
         return {
-          payload: buildText(
-            `I can't ${describeAiVerb(intent)} yet — the assistant features aren't finished.`,
-          ),
+          payload: buildText(`I can't ${describeAiVerb(intent)} yet — that part isn't finished.`),
           followUp: 'none',
           emailMessageId,
         };
@@ -302,16 +327,7 @@ function toOption(candidate: ResolutionCandidate) {
 }
 
 function describeAiVerb(intent: CommandIntent): string {
-  switch (intent.intent) {
-    case 'summarize':
-      return 'summarise emails';
-    case 'translate':
-      return 'translate emails';
-    case 'read_aloud':
-      return 'read emails aloud';
-    default:
-      return 'draft replies';
-  }
+  return intent.intent === 'read_aloud' ? 'read emails aloud' : 'draft replies for you';
 }
 
 const HELP_TEXT = [
@@ -326,6 +342,11 @@ const HELP_TEXT = [
   '• _archive_ — file it away',
   '• _delete_ — asks you to confirm first',
   '• _mark unread_ · _important_',
+  '',
+  '*Finding and reading*',
+  '• _search invoices from Tom_',
+  '• _unread_ · _today_ · _urgent_ · _deadlines_',
+  '• _summarise_ · _translate to swahili_',
   '',
   'Your replies go out from your own email address, threaded normally. ' +
     'Nobody can tell you answered from WhatsApp.',

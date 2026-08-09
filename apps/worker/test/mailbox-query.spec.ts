@@ -40,6 +40,7 @@ describe('mailbox queries', () => {
   let service: MailboxQueryService;
   let search: ReturnType<typeof vi.fn>;
   let list: ReturnType<typeof vi.fn>;
+  let deadlines: ReturnType<typeof vi.fn>;
   let embed: ReturnType<typeof vi.fn>;
   let recordUsage: ReturnType<typeof vi.fn>;
   let providerFor: () => unknown;
@@ -50,6 +51,7 @@ describe('mailbox queries', () => {
   beforeEach(() => {
     search = vi.fn().mockResolvedValue([hit('m1', 'Invoice 4471')]);
     list = vi.fn().mockResolvedValue([hit('m1', 'Invoice 4471')]);
+    deadlines = vi.fn().mockResolvedValue([]);
     embed = vi.fn().mockResolvedValue({ vector: VECTOR, usage: USAGE });
     recordUsage = vi.fn().mockResolvedValue(undefined);
     overBudget = false;
@@ -60,7 +62,7 @@ describe('mailbox queries', () => {
     secondaryFor = () => null;
 
     service = new MailboxQueryService(
-      { search, list } as never,
+      { search, list, deadlines } as never,
       {
         provider: () => providerFor(),
         secondary: () => secondaryFor(),
@@ -91,10 +93,13 @@ describe('mailbox queries', () => {
       expect(service.handles({ intent: 'help' })).toBe(false);
     });
 
-    it('does not claim the lists it cannot actually answer', () => {
-      // `list_deadlines` needs extracted action items. Claiming it and returning
-      // something adjacent would be worse than saying it is not built.
-      expect(service.handles({ intent: 'list_deadlines' })).toBe(false);
+    it('claims deadlines, which are a read over extracted action items', () => {
+      expect(service.handles({ intent: 'list_deadlines' })).toBe(true);
+    });
+
+    it('does not claim what it cannot actually answer', () => {
+      // A free-form question needs the model to reason over the mailbox, which
+      // is a different thing entirely from a query with a shape.
       expect(service.handles({ intent: 'question', question: 'who?' })).toBe(false);
     });
   });
@@ -216,7 +221,7 @@ describe('mailbox queries', () => {
     });
 
     it('returns null for an intent it does not own, rather than a wrong answer', async () => {
-      expect(await service.answer('user-1', { intent: 'list_deadlines' })).toBeNull();
+      expect(await service.answer('user-1', { intent: 'question', question: 'who?' })).toBeNull();
     });
   });
 });

@@ -58,6 +58,36 @@ export class AnalysisRepository {
   }
 
   /**
+   * The stored analysis for one message, if there is one.
+   *
+   * Only the fields a person reads. The rest — scores, entities, the model
+   * name — exist for routing and reporting, and putting them on a phone would
+   * be showing someone the machinery instead of the answer.
+   */
+  async find(
+    userId: string,
+    emailMessageId: string,
+  ): Promise<Pick<
+    EmailAnalysis,
+    'summary' | 'bulletSummary' | 'containsInstructionLikeText'
+  > | null> {
+    return this.prisma.forUser(userId, async (tx) => {
+      const row = await tx.messageAnalysis.findUnique({
+        where: { emailMessageId },
+        select: { summary: true, bulletSummary: true, containsInstructionLikeText: true },
+      });
+
+      return row
+        ? {
+            summary: row.summary,
+            bulletSummary: row.bulletSummary,
+            containsInstructionLikeText: row.containsInstructionLikeText,
+          }
+        : null;
+    });
+  }
+
+  /**
    * Adds one call to today's tally.
    *
    * Aggregated per day, task, provider and model rather than one row per call:

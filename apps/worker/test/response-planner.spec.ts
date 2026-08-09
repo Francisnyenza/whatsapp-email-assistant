@@ -193,12 +193,9 @@ describe('unbuilt features say so plainly', () => {
   // An assistant that goes quiet reads as broken. Naming the specific missing
   // capability is more useful than a generic apology.
 
-  it('names the capability for AI verbs', () => {
-    expect(textOf(plan({ intent: 'summarize' }, resolved()))).toContain('summarise');
-    expect(textOf(plan({ intent: 'translate', language: 'sw' }, resolved()))).toContain(
-      'translate',
-    );
+  it('names the capability for the AI verbs that are still missing', () => {
     expect(textOf(plan({ intent: 'read_aloud' }, resolved()))).toContain('aloud');
+    expect(textOf(plan({ intent: 'draft' }, resolved()))).toContain('draft');
   });
 
   it('points a mailbox question at the commands that do work', () => {
@@ -207,10 +204,9 @@ describe('unbuilt features say so plainly', () => {
     expect(text.toLowerCase()).toContain('unread');
   });
 
-  it('says deadlines are not built rather than answering with something else', () => {
-    const text = textOf(plan({ intent: 'list_deadlines' }, resolved()));
-    expect(text).toContain("can't pull out deadlines");
-    expect(text.toLowerCase()).toContain('urgent');
+  it('points a mailbox question at every command that does work', () => {
+    const text = textOf(plan({ intent: 'question', question: 'anything due?' }, resolved()));
+    expect(text.toLowerCase()).toContain('deadlines');
   });
 
   it('does not apologise, blame the user, or hedge', () => {
