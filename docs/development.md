@@ -92,6 +92,26 @@ pnpm db:studio           # Prisma Studio
 pnpm infra:reset         # wipe volumes and start clean
 ```
 
+### The dashboard
+
+```bash
+pnpm --filter @wea/web dev     # http://localhost:3000, expects the API on :3001
+```
+
+Two things about it are worth knowing before you debug it.
+
+The **Content-Security-Policy** is issued per request by `apps/web/src/middleware.ts` with a
+fresh nonce, and it only works because the root layout sets `export const dynamic =
+'force-dynamic'`. Remove that and every route is prerendered at build time, before any nonce
+exists — Next then emits unnonced `<script>` tags that its own policy blocks, and the page is
+blank. Development never prerenders, so this is invisible until you run `next build && next
+start`. If you are changing rendering behaviour, check a production build, not `pnpm dev`.
+
+The dashboard talks to a **different origin** than it is served from, so `connect-src` names
+it explicitly from `NEXT_PUBLIC_API_BASE_URL`. If requests are failing with nothing in the
+network tab but a CSP violation in the console, that variable is wrong — and because Next
+inlines `NEXT_PUBLIC_*` at build time, changing it needs a rebuild rather than a restart.
+
 ## Conventions
 
 - **Package boundaries are real.** `apps/*` may depend on `packages/*`; packages may

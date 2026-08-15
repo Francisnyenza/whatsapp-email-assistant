@@ -2,14 +2,17 @@
 
 Honest accounting of what exists, what is verified, and what remains.
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-15.
 
 ---
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 335 tests** (1 058 unit + 277 integration
+Everything below has tests that run and pass. **1 363 tests** (1 096 unit + 267 integration
 against real Postgres), lint and typecheck clean across every package and app.
+
+(The previous revision of this line claimed 277 integration tests. The three suites are
+52 + 207 + 8, which is 267. Corrected rather than carried forward.)
 
 | Package         | Tests            | What it does                                                                                                        |
 | --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
@@ -21,9 +24,10 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/ai`       | 146              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, OpenAI + Gemini + Anthropic |
 | `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                |
 | `apps/worker`   | 265 + 207 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
+| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                  |
 
 ```bash
-pnpm -r test          # 1 058 unit tests
+pnpm -r test          # 1 096 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -101,6 +105,11 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- The dashboard's Content-Security-Policy was checked against a real production build, not
+  only against the middleware's return value: served from `next start`, every one of the ten
+  `<script>` tags carries the nonce from that request's own header, and the nonce differs per
+  request. The same build without `export const dynamic = 'force-dynamic'` emitted twelve
+  script tags and nonced none of them — see the finding below.
 
 ---
 
@@ -119,7 +128,10 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### After that
 
-- Next.js dashboard (Phase 9)
+- Dashboard views beyond connect-and-configure — a mail list, a message reader, an audit-log
+  view. The shell exists (Phase 9): sign in, connect and disconnect mailboxes, verify a phone,
+  edit every notification setting. Nothing in it reads mail, which is deliberate for now —
+  mail is what WhatsApp is for, and every additional view is another surface holding it.
 - E2E, load and security test suites; CI pipeline (Phase 10)
 - Dockerfiles, Kubernetes manifests, Terraform, monitoring (Phase 11)
 - React Native app, GraphQL, public SDK, IMAP
@@ -144,6 +156,37 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 ## Findings worth carrying forward
 
 Things that surfaced during the build and would have been expensive to discover later.
+
+**A nonce-based CSP silently deletes a statically prerendered page.** The dashboard's
+middleware issues a per-request nonce and `script-src 'self' 'nonce-…' 'strict-dynamic'`.
+Every unit test passed: the nonce was unique per request, present on both the request and
+the response, and correctly formed. Served from a real production build, Next nonced
+_none_ of its twelve script tags — a prerendered route has its HTML written at build time,
+before any request and therefore before any nonce, and `'strict-dynamic'` deliberately makes
+the `'self'` that would otherwise have saved them inert. The page was blank. `export const
+dynamic = 'force-dynamic'` in the root layout fixes it, and `test/rendering.spec.ts` pins it.
+The general shape is the one this project keeps meeting from a new angle: **the tests
+asserted the mechanism and the mechanism was right; the outcome was still wrong.** Dev never
+prerenders, so nothing about this is visible before a deploy.
+
+**Measuring against a server you did not restart is not measuring.** Two consecutive
+verifications of the above reported "zero nonced scripts" — the second was against a stale
+`next start` still holding the port from the previous build, because the `pkill` meant to
+stop it matched its own command line and killed the shell instead. The first reading was a
+real finding; the second was noise that happened to agree with it, which is the worst kind.
+The fix that mattered was checking `EADDRINUSE` in the server log before trusting the curl.
+
+**`tsc` and webpack disagree about `./api.js`.** Under `moduleResolution: "Bundler"`,
+TypeScript accepts a `.js` specifier as an alias for the `.ts` file next to it; Next's
+webpack does not resolve it at all. The typecheck was clean and the build failed. Within
+`apps/web`, relative imports are extensionless — matching what every other file there
+already did, which is how the odd one out was spotted.
+
+**A test that proves a loop by hanging is not a passing signal either.** Removing the
+retry guard in the API client sends it into an unbounded refresh loop that spins on
+microtasks alone — which starves the timer vitest's own 5-second timeout depends on, so the
+suite hangs indefinitely rather than failing. The stub now refuses to answer past a small
+budget, turning a hung CI job into a red one in twelve milliseconds.
 
 **Postgres exempts superusers from row-level security.** The isolation tests initially
 passed _vacuously_ — the policies existed, `\d` displayed them, and nothing was enforced,
@@ -590,3 +633,12 @@ Each of these has a test. They are the load-bearing ones.
     make a provider redeliver forever. Missing raw bytes
     fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
     endless redelivery.
+13. **The dashboard's access token never reaches persistent storage.** It lives in a module
+    variable and dies with the tab; the refresh token is an HttpOnly cookie script cannot
+    read. Persisting the access token would turn any XSS on that origin from a session-length
+    problem into a permanent one.
+14. **A 401 refreshes once, and concurrent 401s refresh together.** Refresh tokens rotate on
+    use, so a second concurrent refresh presents an already-rotated token and correctly trips
+    invariant 8 — the user is signed out of everything by their own dashboard loading. Both
+    the single-flight promise and the single retry are pinned by tests that fail fast rather
+    than hang.

@@ -37,43 +37,49 @@ gives it away.
 
 ## Repository layout
 
+Entries marked _(planned)_ are the intended shape, not directories that exist. Everything
+else is on disk and tested.
+
 ```
 apps/
-  api/        NestJS — REST, GraphQL, OAuth and webhook ingress (stateless)
+  api/        NestJS — REST, OAuth and webhook ingress (stateless)
   worker/     NestJS — queue consumers: ingest, AI, notify, send, automations
-  web/        Next.js dashboard
-  mobile/     React Native (Expo)
+  web/        Next.js dashboard — sign-in, mailboxes, phone, settings
+  mobile/     React Native (Expo)                                    (planned)
 packages/
   shared/     Types, Zod schemas, constants shared across all apps
   crypto/     Envelope encryption (AES-256-GCM + KMS), blind indexes
   db/         Prisma schema, migrations, generated client
-  mail/       Gmail / Microsoft Graph / IMAP adapters, MIME build + parse
+  mail/       Gmail / Microsoft Graph adapters, MIME build + parse
+              (IMAP is planned)
   whatsapp/   Cloud API client, message builders, templates
   ai/         LLM provider abstraction, prompts, structured output schemas
-  sdk/        Public TypeScript SDK
+  sdk/        Public TypeScript SDK                                  (planned)
 infra/
-  docker/ k8s/ terraform/
+  docker/     Local Postgres, Redis and MinIO
+  k8s/ terraform/                                                    (planned)
 ```
 
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**336 tests passing** (328 unit + 8 integration against real Postgres). See
-[`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built.
+**1 363 tests passing** (1 096 unit + 267 integration against real Postgres). See
+[`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
+including what these ticks do not cover.
 
-| Phase |                              | Status                         |
-| ----- | ---------------------------- | ------------------------------ |
-| 1     | Architecture & ADRs          | ✅                             |
-| 2     | Monorepo structure & tooling | ✅                             |
-| 3     | Database schema              | ✅                             |
-| 4     | Backend core                 | 🔨 crypto done                 |
-| 5     | WhatsApp integration         | ✅                             |
-| 6     | Gmail integration            | 🔨 threading, MIME, normalizer |
-| 7     | Outlook / Microsoft 365      | —                              |
-| 8     | AI layer                     | —                              |
-| 9     | Frontend dashboard           | —                              |
-| 10    | Testing                      | —                              |
-| 11    | Deployment & ops             | —                              |
+| Phase |                              | Status                               |
+| ----- | ---------------------------- | ------------------------------------ |
+| 1     | Architecture & ADRs          | ✅                                   |
+| 2     | Monorepo structure & tooling | ✅                                   |
+| 3     | Database schema              | ✅                                   |
+| 4     | Backend core                 | ✅                                   |
+| 5     | WhatsApp integration         | ✅                                   |
+| 6     | Gmail integration            | ✅                                   |
+| 7     | Outlook / Microsoft 365      | ✅                                   |
+| 8     | AI layer                     | ✅ except `read_aloud`, free-form    |
+| 9     | Frontend dashboard           | 🔨 setup and settings; no mail views |
+| 10    | Testing                      | 🔨 unit and integration; no E2E/CI   |
+| 11    | Deployment & ops             | —                                    |
 
 ## Requirements
 
