@@ -93,10 +93,23 @@ describe('everything else', () => {
 
   it('names the missing capability rather than going quiet', () => {
     // A button that does nothing at all reads as broken.
-    for (const action of ['summarize', 'translate', 'read_aloud', 'forward', 'undo'] as const) {
+    for (const action of ['forward', 'undo', 'more'] as const) {
       const effect = interpretTap(tap(action));
       expect(effect.kind).toBe('unavailable');
       expect(effect).toMatchObject({ capability: expect.stringMatching(/\w/) });
+    }
+  });
+
+  it('does not call a built capability unfinished just because it has no button', () => {
+    // Summarise, translate and read-aloud all work when typed. No card emits
+    // these ids today, so these branches are unreachable in practice — but
+    // "that part isn't finished" is false, and it would talk a user out of a
+    // feature they already have.
+    for (const action of ['summarize', 'translate', 'read_aloud'] as const) {
+      const effect = interpretTap(tap(action));
+
+      expect(effect.kind).toBe('acknowledge');
+      expect(effect).toMatchObject({ message: expect.stringMatching(/type/i) });
     }
   });
 

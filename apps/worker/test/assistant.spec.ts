@@ -61,6 +61,7 @@ describe('the assistant', () => {
   let save: ReturnType<typeof vi.fn>;
   let recordUsage: ReturnType<typeof vi.fn>;
   let complete: ReturnType<typeof vi.fn>;
+  let speak: ReturnType<typeof vi.fn>;
   let findForAnalysis: ReturnType<typeof vi.fn>;
   let decryptMessageBody: ReturnType<typeof vi.fn>;
   let providerFor: () => unknown;
@@ -77,7 +78,13 @@ describe('the assistant', () => {
     overBudget = false;
     logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 
-    const provider = { name: 'stub', complete };
+    speak = vi.fn().mockResolvedValue({
+      audio: Buffer.from('OggS-pretend-audio'),
+      mimeType: 'audio/ogg',
+      usage: { ...USAGE, model: 'gpt-4o-mini-tts' },
+    });
+
+    const provider = { name: 'stub', complete, speak };
     providerFor = () => provider;
 
     service = new AssistantService(
@@ -321,6 +328,112 @@ describe('the assistant', () => {
 
       await expect(service.summarize('user-1', 'email-1')).resolves.toContain('Q3');
       expect(logger.warn).toHaveBeenCalled();
+    });
+  });
+
+  describe('reading aloud', () => {
+    it('returns bytes and the type they are, without sending anything', async () => {
+      // Nothing in this class can reach WhatsApp, and nothing here gains it.
+      const spoken = await service.readAloud('user-1', 'email-1');
+
+      expect(spoken.audio.length).toBeGreaterThan(0);
+      expect(spoken.mimeType).toBe('audio/ogg');
+    });
+
+    it('speaks the sender and subject before the body', async () => {
+      await service.readAloud('user-1', 'email-1');
+
+      // The order is the point. A listener cannot skim, so the first second has
+      // to carry the most useful fact — and it is also the only boundary
+      // between our voice and the sender's.
+      const script = speak.mock.calls[0]![0].text as string;
+      expect(script).toMatch(/^Email from Sarah Chen\. Subject: Q3 report\. The message reads:/);
+      expect(script.indexOf('Sarah Chen')).toBeLessThan(script.indexOf('Could you send'));
+    });
+
+    it('carries the type from the provider rather than assuming one', async () => {
+      // WhatsApp rejects an upload whose declared type does not match its
+      // bytes, and it only renders Ogg as a voice note when the codec is Opus.
+      speak.mockResolvedValue({
+        audio: Buffer.from('ID3-pretend-mp3'),
+        mimeType: 'audio/mpeg',
+        usage: USAGE,
+      });
+
+      expect((await service.readAloud('user-1', 'email-1')).mimeType).toBe('audio/mpeg');
+    });
+
+    it('charges the daily budget, so repeated asking is not free', async () => {
+      await service.readAloud('user-1', 'email-1');
+
+      expect(recordUsage).toHaveBeenCalledWith('user-1', 'speech', expect.anything());
+    });
+
+    it('refuses before spending anything when the budget is gone', async () => {
+      overBudget = true;
+
+      await expect(service.readAloud('user-1', 'email-1')).rejects.toThrow();
+      expect(speak).not.toHaveBeenCalled();
+    });
+
+    it('says the message is gone rather than reading an empty one', async () => {
+      findForAnalysis.mockResolvedValue(null);
+
+      await expect(service.readAloud('user-1', 'email-1')).rejects.toMatchObject({
+        code: 'NOT_FOUND',
+      });
+    });
+
+    it('distinguishes no provider from a provider that cannot speak', async () => {
+      // The whole reason the capability is optional. A deployment on Anthropic
+      // has a working provider that has no speech API — telling that user "no
+      // AI is set up" would send them looking for a key they already have.
+      providerFor = () => null;
+      const none = await service.readAloud('user-1', 'email-1').catch((e: AppError) => e);
+      expect((none as AppError).publicMessage).toContain('no AI provider');
+
+      providerFor = () => ({ name: 'anthropic', complete });
+      const mute = await service.readAloud('user-1', 'email-1').catch((e: AppError) => e);
+      expect((mute as AppError).publicMessage).toContain('voice provider');
+      expect((mute as AppError).publicMessage).not.toContain('no AI provider');
+    });
+
+    it('does not retry a provider that structurally cannot speak', async () => {
+      // Retrying would burn a job attempt to reach the same missing method.
+      providerFor = () => ({ name: 'anthropic', complete });
+
+      await expect(service.readAloud('user-1', 'email-1')).rejects.toMatchObject({
+        retryable: false,
+      });
+    });
+
+    it('reads the decrypted body, not the snippet', async () => {
+      findForAnalysis.mockResolvedValue({
+        ...MESSAGE,
+        bodyTextCipher: new Uint8Array([1]),
+        bodyDek: new Uint8Array([2]),
+        bodyKeyVersion: 1,
+      });
+
+      await service.readAloud('user-1', 'email-1');
+
+      expect(decryptMessageBody).toHaveBeenCalled();
+      expect(speak.mock.calls[0]![0].text).toContain('Q3 report before Friday');
+    });
+
+    it('reports truncation so the caller knows, even though the audio says it too', async () => {
+      findForAnalysis.mockResolvedValue({
+        ...MESSAGE,
+        bodyTextCipher: new Uint8Array([1]),
+        bodyDek: new Uint8Array([2]),
+        bodyKeyVersion: 1,
+      });
+      decryptMessageBody.mockResolvedValue('This sentence repeats. '.repeat(400));
+
+      const spoken = await service.readAloud('user-1', 'email-1');
+
+      expect(spoken.truncated).toBe(true);
+      expect(speak.mock.calls[0]![0].text).toContain('That is where I stopped');
     });
   });
 });

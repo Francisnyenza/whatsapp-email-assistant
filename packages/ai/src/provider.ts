@@ -42,6 +42,19 @@ export interface AiProvider {
    * deployment with no provider configured at all.
    */
   embed?(request: EmbeddingRequest): Promise<EmbeddingResponse>;
+
+  /**
+   * Text to speech.
+   *
+   * Optional for the same reason `embed` is, and the bar for implementing it is
+   * higher than "the vendor has an endpoint": it has to return audio WhatsApp
+   * will actually play. Anthropic publishes no speech API at all; Gemini's
+   * returns raw 24 kHz PCM, which WhatsApp cannot play and which we have no
+   * transcoder to convert. On both it is absent rather than present-and-broken,
+   * so a caller that checks `canSpeak` once learns the truth without paying a
+   * round trip and a log line to discover it.
+   */
+  speak?(request: SpeechRequest): Promise<SpeechResponse>;
 }
 
 /**
@@ -60,9 +73,50 @@ export function canEmbed(provider: AiProvider | null | undefined): provider is E
   return typeof provider?.embed === 'function';
 }
 
+/**
+ * A provider that actually speaks.
+ *
+ * The same narrowing `EmbeddingProvider` performs, in one named place.
+ */
+export type SpeechProvider = AiProvider & {
+  speak: NonNullable<AiProvider['speak']>;
+};
+
+/** Whether this provider can speak. The narrowing the callers branch on. */
+export function canSpeak(provider: AiProvider | null | undefined): provider is SpeechProvider {
+  return typeof provider?.speak === 'function';
+}
+
 export interface EmbeddingRequest {
   text: string;
   signal?: AbortSignal;
+}
+
+export interface SpeechRequest {
+  /**
+   * What will be spoken, verbatim.
+   *
+   * Already bounded and already stripped by `prepareSpeech`. A provider is not
+   * the place to decide how much of someone's email is worth reading out.
+   */
+  text: string;
+  /** Provider-specific voice id. Absent means the provider's default. */
+  voice?: string;
+  signal?: AbortSignal;
+}
+
+export interface SpeechResponse {
+  audio: Buffer;
+  /**
+   * What the bytes actually are, carried rather than assumed.
+   *
+   * WhatsApp rejects an upload whose declared type does not match its content,
+   * and it accepts Ogg only when the codec inside is Opus. So this has to come
+   * from whatever encoded it, not from a constant at the send site that would
+   * go stale the moment a provider changed its default format.
+   */
+  mimeType: string;
+  usage: AiUsage;
 }
 
 export interface EmbeddingResponse {

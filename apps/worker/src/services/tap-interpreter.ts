@@ -106,15 +106,21 @@ export function interpretTap(payload: ActionPayload): TapEffect {
       // in, because a forward needs a recipient and a button cannot ask for one.
       return { kind: 'unavailable', capability: 'forward from a button' };
 
+    // --- built, but not reachable from a button -------------------------------
+    // All three work when typed, and no card emits these ids today, so these
+    // branches are unreachable in practice. What they must not say is "that
+    // part isn't finished": it is false, and it would talk a user out of a
+    // feature they already have.
     case 'summarize':
-      return { kind: 'unavailable', capability: 'summarise emails' };
+      return { kind: 'acknowledge', message: 'Type _summarise_ and I’ll do it.' };
 
     case 'translate':
-      return { kind: 'unavailable', capability: 'translate emails' };
+      return { kind: 'acknowledge', message: 'Type _translate to spanish_ — any language works.' };
 
     case 'read_aloud':
-      return { kind: 'unavailable', capability: 'read emails aloud' };
+      return { kind: 'acknowledge', message: 'Type _read it aloud_ and I’ll record it.' };
 
+    // --- not built yet --------------------------------------------------------
     case 'undo':
       return { kind: 'unavailable', capability: 'undo things' };
 

@@ -602,6 +602,22 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           (translated) => buildText(translated),
         );
 
+      // Two round trips before anything is sent — synthesise, then stage the
+      // bytes with Meta — and both sit inside `attempt`, so a failure at either
+      // becomes a sentence rather than a voice note that never arrives.
+      //
+      // Nothing here mentions truncation. WhatsApp renders no caption on an
+      // audio message, so a note about it would be written and never shown; the
+      // recording says so in its own last line, which is where a listener is.
+      case 'speak':
+        return this.attempt(
+          async () => {
+            const spoken = await this.assistant.readAloud(userId, emailMessageId);
+            return this.outbound.uploadAudio(spoken.audio, spoken.mimeType);
+          },
+          (mediaId) => ({ kind: 'media', mediaType: 'audio', mediaId }),
+        );
+
       // Composes and asks. The one effect whose output could leave the
       // building, and the only one that ends in a button rather than an answer.
       case 'draft':

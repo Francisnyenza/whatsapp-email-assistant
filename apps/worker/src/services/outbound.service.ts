@@ -121,6 +121,39 @@ export class OutboundService {
     }
   }
 
+  /**
+   * Uploads audio and returns the media id to send it by.
+   *
+   * A separate step from `deliver` because Meta makes it one: a media message
+   * carries an id, and that id is minted by a prior upload against the same
+   * phone number. It lives here rather than at the call site so the API
+   * credentials stay in the one class that already holds them.
+   *
+   * Deliberately not gated on the 24-hour messaging window. That window governs
+   * what may be *sent*, not what may be staged, so checking it here would refuse
+   * work that is perfectly legitimate — and the send that follows is checked
+   * like every other one.
+   *
+   * @throws {AppError} when the upload fails. Not swallowed: by this point the
+   *   user has been told a voice note is coming, and silence afterwards is the
+   *   one outcome worse than an error message.
+   */
+  async uploadAudio(audio: Buffer, mimeType: string): Promise<string> {
+    // Meta infers nothing from the filename, but the multipart upload requires
+    // one, and an extension that matches the declared type is what keeps the
+    // two from disagreeing in a way it rejects with a generic error.
+    const extension = mimeType === 'audio/ogg' ? 'ogg' : 'mp3';
+
+    const mediaId = await this.client.uploadMedia(audio, mimeType, `voice-note.${extension}`);
+
+    this.logger.info(
+      { event: 'outbound.audio_uploaded', bytes: audio.length, mimeType },
+      'Audio staged for delivery',
+    );
+
+    return mediaId;
+  }
+
   /** Marks the user's message read, so they see the blue ticks while we work. */
   async acknowledgeRead(whatsappMessageId: string): Promise<void> {
     try {

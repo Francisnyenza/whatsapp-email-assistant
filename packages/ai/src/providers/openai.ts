@@ -5,6 +5,8 @@ import type {
   CompletionResponse,
   EmbeddingRequest,
   EmbeddingResponse,
+  SpeechRequest,
+  SpeechResponse,
 } from '../provider.js';
 
 /**
@@ -20,6 +22,16 @@ export interface OpenAiOptions {
   baseUrl?: string;
   /** Per task class, so analysis can run on a cheaper model than composition. */
   models?: Partial<Record<AiTaskClass, string>>;
+  /**
+   * Deliberately not a member of `models`.
+   *
+   * `AiTaskClass` selects a *completion* model and is passed straight to
+   * `complete()`. Speech is a different endpoint returning bytes rather than
+   * text, so folding it into that record would oblige every provider — including
+   * the two that cannot speak at all — to name a speech model.
+   */
+  speechModel?: string;
+  speechVoice?: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
 }
@@ -157,6 +169,73 @@ export class OpenAiProvider implements AiProvider {
   }
 
   /**
+   * Speech, as Ogg-encapsulated Opus.
+   *
+   * The format is not a preference. WhatsApp plays Ogg only when the codec
+   * inside is Opus, and only an Opus voice note renders as a voice note rather
+   * than as a file attachment the recipient has to decide to open. MP3 would
+   * upload fine and arrive as something nobody plays.
+   */
+  async speak(request: SpeechRequest): Promise<SpeechResponse> {
+    const model = this.speechModel;
+    const startedAt = Date.now();
+
+    // Bounded here as well as in `prepareSpeech`, because the two bounds answer
+    // different questions: that one asks how much of an email is worth
+    // listening to, this one asks what the endpoint will accept. A caller that
+    // skips the first must still not be able to send a megabyte of text.
+    const input = request.text.slice(0, MAX_SPEECH_CHARS);
+
+    if (!input.trim()) {
+      // Every provider bills for the attempt and returns silence. Silence is
+      // also exactly what a failed read sounds like, so refusing here keeps the
+      // two apart for the caller.
+      throw new AppError('AI_INVALID_OUTPUT', 'Nothing to speak', { retryable: false });
+    }
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/audio/speech`, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${this.options.apiKey}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          model,
+          input,
+          voice: request.voice ?? this.options.speechVoice ?? 'alloy',
+          response_format: 'opus',
+        }),
+        signal: this.signalFor(request.signal),
+      });
+    } catch (err) {
+      throw new AppError('AI_UNAVAILABLE', 'Could not reach the model provider', {
+        retryable: true,
+        cause: err,
+      });
+    }
+
+    if (!response.ok) throw mapHttpError(response.status);
+
+    const audio = Buffer.from(await response.arrayBuffer());
+
+    if (audio.length === 0) {
+      throw new AppError('AI_INVALID_OUTPUT', 'Model returned no audio', { retryable: true });
+    }
+
+    return {
+      audio,
+      mimeType: 'audio/ogg',
+      usage: speechUsage(input, model, Date.now() - startedAt),
+    };
+  }
+
+  private get speechModel(): string {
+    return this.options.speechModel ?? DEFAULT_SPEECH_MODEL;
+  }
+
+  /**
    * Our own timeout as well as the caller's: a request left hanging holds a
    * worker slot, and BullMQ's timeout would kill the job without recording what
    * happened.
@@ -173,6 +252,57 @@ export class OpenAiProvider implements AiProvider {
  * is a good one, and a rejected request is no embedding at all.
  */
 const MAX_EMBEDDING_CHARS = 20_000;
+
+const DEFAULT_SPEECH_MODEL = 'gpt-4o-mini-tts';
+
+/**
+ * The endpoint's own ceiling is 4096 characters and it rejects the whole
+ * request past it — so a long email would produce an error rather than a
+ * slightly shorter voice note. `prepareSpeech` bounds far below this for
+ * reasons about listening rather than about the API.
+ */
+const MAX_SPEECH_CHARS = 4_000;
+
+/** USD micro-units per million characters of input, as published. */
+const SPEECH_PRICING: Record<string, number> = {
+  'gpt-4o-mini-tts': 12_000_000,
+  'tts-1': 15_000_000,
+  'tts-1-hd': 30_000_000,
+};
+
+/**
+ * What a speech call cost, estimated.
+ *
+ * The speech endpoint returns audio bytes and no usage object — there is no
+ * token count to read, so unlike every other call in this file these numbers
+ * are derived rather than reported. Characters are converted at the
+ * conventional four-per-token, which is a rough ratio and wrong in both
+ * directions for CJK and for code.
+ *
+ * Recorded as tokens anyway, and that is the deliberate part. The daily ceiling
+ * is enforced on `totalTokens`; leaving speech out of it entirely would make
+ * repeated "read that aloud" the one request in the product with no ceiling at
+ * all, which is precisely the runaway that ceiling exists to catch. An
+ * approximate charge against the budget is closer to right than none.
+ *
+ * `costMicros`, by contrast, is exact: the endpoint prices per character, and
+ * characters are counted, not estimated.
+ */
+function speechUsage(input: string, model: string, latencyMs: number): AiUsage {
+  const characters = input.length;
+  const estimatedTokens = Math.ceil(characters / 4);
+  const perMillion = SPEECH_PRICING[model] ?? 0;
+
+  return {
+    promptTokens: estimatedTokens,
+    completionTokens: 0,
+    totalTokens: estimatedTokens,
+    model,
+    provider: 'openai',
+    latencyMs,
+    costMicros: Math.round((characters * perMillion) / 1_000_000),
+  };
+}
 
 interface OpenAiEmbeddingResponse {
   data?: Array<{ embedding?: number[] }>;

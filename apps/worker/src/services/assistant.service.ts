@@ -1,7 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger } from 'pino';
 import { AppError, type EmailAnalysis } from '@wea/shared';
-import { analyzeEmail, translateEmail, draftReply } from '@wea/ai';
+import { analyzeEmail, translateEmail, draftReply, prepareSpeech, canSpeak } from '@wea/ai';
 import { AiService } from './ai.service.js';
 import { AccountService } from './account.service.js';
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
@@ -76,6 +76,76 @@ export class AssistantService {
     return result.data.truncated
       ? `${result.data.text}\n\n_(translated the first part — the email is longer than fits here)_`
       : result.data.text;
+  }
+
+  /**
+   * One email as a voice note.
+   *
+   * Returns bytes rather than sending them, for the same reason `draftReply`
+   * returns text: this class has no path to WhatsApp and gains none here.
+   *
+   * The provider check is `canSpeak` rather than a truthiness test, and that
+   * distinction is the whole reason the capability is optional. A deployment on
+   * Anthropic has a perfectly working provider that cannot speak — so "no
+   * provider" and "this provider does not do speech" are different sentences to
+   * the user, and only the second one is worth suggesting a fix for.
+   *
+   * @throws {AppError} `AI_UNAVAILABLE` when nothing configured can speak,
+   *   `NOT_FOUND` when the message is gone. Both become a specific sentence.
+   */
+  async readAloud(userId: string, emailMessageId: string): Promise<SpokenEmail> {
+    const provider = this.ai.provider();
+
+    if (!canSpeak(provider)) {
+      throw new AppError(
+        'AI_UNAVAILABLE',
+        provider
+          ? `Provider ${provider.name} has no speech capability`
+          : 'No model provider configured',
+        {
+          retryable: false,
+          publicMessage: provider
+            ? "I can't read emails aloud with the voice provider this deployment uses."
+            : "I can't read emails aloud — no AI provider is set up.",
+        },
+      );
+    }
+
+    await this.assertAffordable(userId);
+
+    const message = await this.messages.findForAnalysis(userId, emailMessageId);
+    if (!message) throw new AppError('NOT_FOUND', 'Message is gone', { retryable: false });
+
+    // Prepared before the call, not after. What gets spoken is a product
+    // decision — how much of an email is worth listening to, whose name is
+    // announced first, where quoted history stops — and none of it belongs to
+    // whichever vendor happens to be encoding the audio.
+    const script = prepareSpeech({
+      fromName: message.fromName,
+      fromAddress: message.fromAddress,
+      subject: message.subject,
+      body: await this.body(userId, message),
+    });
+
+    const spoken = await provider.speak({ text: script.text });
+
+    await this.analyses.recordUsage(userId, 'speech', spoken.usage);
+
+    this.logger.info(
+      {
+        event: 'assistant.read_aloud',
+        emailMessageId,
+        truncated: script.truncated,
+        bytes: spoken.audio.length,
+      },
+      'Email read aloud',
+    );
+
+    return {
+      audio: spoken.audio,
+      mimeType: spoken.mimeType,
+      truncated: script.truncated,
+    };
   }
 
   /**
@@ -189,6 +259,14 @@ export class AssistantService {
       return message.snippet;
     }
   }
+}
+
+export interface SpokenEmail {
+  audio: Buffer;
+  /** From the provider that encoded it — WhatsApp rejects a mismatch. */
+  mimeType: string;
+  /** True when the email was longer than a voice note; the audio says so too. */
+  truncated: boolean;
 }
 
 /**

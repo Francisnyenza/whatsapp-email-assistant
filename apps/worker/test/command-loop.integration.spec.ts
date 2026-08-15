@@ -58,8 +58,18 @@ describeIfDb('command loop (real database)', () => {
   const emails: Record<string, string> = {};
   const deliveries: Record<string, string> = {};
 
-  /** Swapped in by the drafting tests; null everywhere else. */
-  let drafting: { name: string; complete: (r: unknown) => Promise<unknown> } | null = null;
+  /** Swapped in by the drafting and read-aloud tests; null everywhere else. */
+  let drafting: {
+    name: string;
+    complete: (r: unknown) => Promise<unknown>;
+    speak?: (r: unknown) => Promise<unknown>;
+  } | null = null;
+
+  /** Every audio blob staged with Meta, in order. */
+  let uploads: Array<{ bytes: number; mimeType: string }> = [];
+
+  /** The outbound stub itself, so a test can make one of its calls fail. */
+  let outboundStub: { uploadAudio: ReturnType<typeof vi.fn> };
 
   const STUB_USAGE = {
     promptTokens: 100,
@@ -82,10 +92,18 @@ describeIfDb('command loop (real database)', () => {
 
     const inbox = new InboxRepository(service as never);
     sent = [];
+    uploads = [];
 
     // The only stub: the HTTP call to Meta. Everything it would record is still
     // written through the real repository.
     const outbound = {
+      // Staging audio is a second Meta call, and it mints the id the send then
+      // references — so a stub that returned nothing would let a media message
+      // with no id look like a success.
+      uploadAudio: vi.fn(async (audio: Buffer, mimeType: string) => {
+        uploads.push({ bytes: audio.length, mimeType });
+        return `media.${uploads.length}`;
+      }),
       reply: vi.fn(async (input: any) => {
         sent.push({
           payload: input.payload,
@@ -102,6 +120,8 @@ describeIfDb('command loop (real database)', () => {
       }),
       acknowledgeRead: vi.fn(),
     };
+
+    outboundStub = outbound as never;
 
     mutations = [];
     enqueued = [];
@@ -291,6 +311,7 @@ describeIfDb('command loop (real database)', () => {
 
   beforeEach(async () => {
     sent.length = 0;
+    uploads.length = 0;
     mutations.length = 0;
     enqueued.length = 0;
     mutateFailure = null;
@@ -575,6 +596,84 @@ describeIfDb('command loop (real database)', () => {
 
       expect(sends()).toHaveLength(0);
       expect(lastText()).not.toContain('Translating');
+    });
+  });
+
+  describe('reading an email aloud', () => {
+    afterEach(() => {
+      drafting = null;
+    });
+
+    it('stages the audio with Meta and answers with the media message', async () => {
+      drafting = {
+        name: 'stub',
+        complete: async () => ({ text: '{}', usage: STUB_USAGE }),
+        speak: async () => ({
+          audio: Buffer.from('OggS-pretend-audio'),
+          mimeType: 'audio/ogg',
+          usage: STUB_USAGE,
+        }),
+      };
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'read it aloud' });
+
+      // The voice note, not the "Recording it…" placeholder the planner
+      // returned — the same contract summarise has, and getting it wrong sends
+      // the word "Recording" where a recording was promised.
+      const last = sent.at(-1)!.payload as any;
+      expect(last.kind).toBe('media');
+      expect(last.mediaType).toBe('audio');
+      expect(last.mediaId).toBe('media.1');
+      expect(uploads).toEqual([{ bytes: 18, mimeType: 'audio/ogg' }]);
+    });
+
+    it('sends no mail — reading aloud is a read', async () => {
+      drafting = {
+        name: 'stub',
+        complete: async () => ({ text: '{}', usage: STUB_USAGE }),
+        speak: async () => ({
+          audio: Buffer.from('OggS'),
+          mimeType: 'audio/ogg',
+          usage: STUB_USAGE,
+        }),
+      };
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'read it aloud' });
+
+      expect(sends()).toHaveLength(0);
+      expect(mutations).toHaveLength(0);
+    });
+
+    it('says so plainly when nothing configured can speak', async () => {
+      // No provider at all, which is the ordinary state of a deployment with no
+      // API key. Silence here would be indistinguishable from being broken.
+      await deliver({ context: { id: deliveries.sarah! }, text: 'read it aloud' });
+
+      expect(lastText()).not.toContain('Recording');
+      expect(lastText().length).toBeGreaterThan(0);
+      expect(uploads).toHaveLength(0);
+    });
+
+    it('does not send a media message when the upload fails', async () => {
+      // A media id is what the send references. Sending without one produces a
+      // message the recipient's client cannot render, which is worse than a
+      // sentence saying it did not work.
+      drafting = {
+        name: 'stub',
+        complete: async () => ({ text: '{}', usage: STUB_USAGE }),
+        speak: async () => ({
+          audio: Buffer.from('OggS'),
+          mimeType: 'audio/ogg',
+          usage: STUB_USAGE,
+        }),
+      };
+      outboundStub.uploadAudio.mockRejectedValueOnce(new Error('Meta refused the upload'));
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'read it aloud' });
+
+      const last = sent.at(-1)!.payload as any;
+      expect(last.kind).not.toBe('media');
+      expect(lastText().length).toBeGreaterThan(0);
     });
   });
 

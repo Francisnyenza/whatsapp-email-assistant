@@ -193,10 +193,6 @@ describe('unbuilt features say so plainly', () => {
   // An assistant that goes quiet reads as broken. Naming the specific missing
   // capability is more useful than a generic apology.
 
-  it('names the capability for the AI verb that is still missing', () => {
-    expect(textOf(plan({ intent: 'read_aloud' }, resolved()))).toContain('aloud');
-  });
-
   it('points a mailbox question at the commands that do work', () => {
     const text = textOf(plan({ intent: 'question', question: 'who emailed me?' }, resolved()));
     expect(text.toLowerCase()).toContain('search');
@@ -213,6 +209,35 @@ describe('unbuilt features say so plainly', () => {
     for (const word of ['sorry', 'unfortunately', 'oops', 'invalid']) {
       expect(text, word).not.toContain(word);
     }
+  });
+});
+
+describe('reading an email aloud', () => {
+  it('plans the speech effect against the resolved email', () => {
+    const planned = plan({ intent: 'read_aloud' }, resolved());
+
+    expect(planned.effect).toEqual({ kind: 'speak' });
+    expect(planned.emailMessageId).toBeDefined();
+  });
+
+  it('carries the placeholder the processor is meant to discard', () => {
+    // Same contract as summarise: the answer *is* the message, so this text is
+    // never sent. `queue_query` rather than `queue_action` is what tells the
+    // processor which of the two it is holding — get that wrong and a voice
+    // note arrives as the word "Recording…".
+    const planned = plan({ intent: 'read_aloud' }, resolved());
+
+    expect(planned.followUp).toBe('queue_query');
+    expect(textOf(planned)).toContain('Recording');
+  });
+
+  it('asks which email rather than picking one when the target is ambiguous', () => {
+    // An effect without a resolved id would reach `carryOutPlan` with nothing
+    // to act on, and reading the wrong email aloud is not recoverable by the
+    // listener having heard it.
+    const planned = plan({ intent: 'read_aloud' }, ambiguous());
+
+    expect(planned.effect).toBeUndefined();
   });
 });
 

@@ -59,6 +59,11 @@ export type PlannedEffect =
   | { kind: 'summarize' }
   | { kind: 'translate'; language: string }
   /**
+   * Read it out. The answer is audio rather than text, but it is the same shape
+   * of effect — the placeholder is discarded and the result is the message.
+   */
+  | { kind: 'speak' }
+  /**
    * Compose a reply and *ask*. The only effect here that produces words which
    * could leave the building — so unlike the two above, its result is not sent
    * to the correspondent, it is shown to the user with a confirmation button
@@ -273,11 +278,10 @@ export class ResponsePlanner {
         };
 
       case 'read_aloud':
-        // Still unbuilt. Naming the specific missing capability is more useful
-        // than a generic apology.
         return {
-          payload: buildText("I can't read emails aloud yet — that part isn't finished."),
-          followUp: 'none',
+          payload: buildText('Recording it…'),
+          followUp: 'queue_query',
+          effect: { kind: 'speak' },
           emailMessageId,
         };
 
@@ -363,6 +367,7 @@ const HELP_TEXT = [
   '• _search invoices from Tom_',
   '• _unread_ · _today_ · _urgent_ · _deadlines_',
   '• _summarise_ · _translate to swahili_',
+  '• _read it aloud_ — comes back as a voice note',
   '',
   '*Writing*',
   '• _draft a polite no_ — I write it, you approve it',

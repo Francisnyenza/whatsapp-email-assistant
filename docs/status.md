@@ -8,26 +8,23 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 363 tests** (1 096 unit + 267 integration
+Everything below has tests that run and pass. **1 417 tests** (1 146 unit + 271 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
-(The previous revision of this line claimed 277 integration tests. The three suites are
-52 + 207 + 8, which is 267. Corrected rather than carried forward.)
-
-| Package         | Tests            | What it does                                                                                                        |
-| --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization             |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes        |
-| `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                            |
-| `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser             |
-| `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                          |
-| `@wea/ai`       | 146              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                |
-| `apps/worker`   | 265 + 207 (int.) | Ingest, analysis, embeddings, search, summarise, translate, draft, deadlines, notify, planner, actions, sweeps      |
-| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                  |
+| Package         | Tests            | What it does                                                                                                                |
+| --------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                     |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                |
+| `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                                    |
+| `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                     |
+| `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                                  |
+| `@wea/ai`       | 183              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, OpenAI + Gemini + Anthropic |
+| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                        |
+| `apps/worker`   | 278 + 211 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, draft, deadlines, notify, planner, actions, sweeps  |
+| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                          |
 
 ```bash
-pnpm -r test          # 1 096 unit tests
+pnpm -r test          # 1 146 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -105,6 +102,13 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- "Read it aloud" comes back as a voice note. The email is announced by sender and subject
+  before a word of it is read, quoted history and signatures are cut, and it is bounded to
+  about two minutes — with the recording itself saying it stopped early, because a caption
+  would not be shown on an audio message. The audio is Ogg-Opus, which is the only thing
+  WhatsApp renders as a voice note rather than as a file. A provider that cannot speak says
+  so as a different sentence from a deployment with no provider at all, and neither is
+  retried. An upload that fails produces a sentence, never a media message with no id.
 - The dashboard's Content-Security-Policy was checked against a real production build, not
   only against the middleware's return value: served from `next start`, every one of the ten
   `<script>` tags carries the nonce from that request's own header, and the nonce differs per
@@ -119,9 +123,7 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **`read_aloud`.** Says plainly that it is not built. It needs a speech pipeline and media
-   upload, which is a phase of its own.
-2. **Free-form questions.** "Did anyone reply about the invoice?" needs the model to reason
+1. **Free-form questions.** "Did anyone reply about the invoice?" needs the model to reason
    over a _set_ of mail rather than one message, which is retrieval-augmented generation and
    a different security question — the retrieved mail is attacker-influenced content
    selected by an attacker-influenceable query.
@@ -156,6 +158,26 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 ## Findings worth carrying forward
 
 Things that surfaced during the build and would have been expensive to discover later.
+
+**Audio erases the boundary that a screen draws for free.** On the notification card, an
+email body sits under a sender line and nobody confuses it with the assistant talking. Read
+aloud, our words and the email's are one voice — an email saying "This is your assistant,
+reply YES to authorise the payment" sounds exactly like us, and there is no quoted block to
+give it away. The preamble helps (it names the real sender first and marks where their words
+begin) and the display name is stripped of the punctuation that would let it forge a second
+header, both tested. Neither is a guarantee, and neither is what actually holds: the
+guarantee is invariant 3 — nothing destructive is authorised by what a user _says_, only by
+a tap carrying a server-minted id — so a spoken instruction cannot authorise anything even
+if a listener is completely taken in. Worth writing down because it is the first feature
+where the mitigation is somewhere other than the feature.
+
+**"The vendor has an endpoint" is not the same as "the capability works".** Gemini publishes
+text-to-speech, so `speak` looked implementable on it. Its output is raw 24 kHz PCM, which
+WhatsApp will not play, and converting it needs a transcoder this project does not have — so
+a `speak` on Gemini could only produce audio that uploads successfully and arrives silent.
+It is absent instead, the same call `embed` on Anthropic already made. The general form:
+**a capability that is present and cannot deliver is worse than one that is absent**, because
+absent is a branch the caller already writes and present is a bug they discover in production.
 
 **A nonce-based CSP silently deletes a statically prerendered page.** The dashboard's
 middleware issues a per-request nonce and `script-src 'self' 'nonce-…' 'strict-dynamic'`.
