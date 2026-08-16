@@ -112,6 +112,48 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
   },
   { re: /^(?:reply|respond|answer)$/i, build: () => ({ intent: 'reply' }) },
 
+  // A brand-new email. Ordered before `draft`, because "write to alice@x.com"
+  // is an origination and "write a reply" is not, and `draft`'s pattern would
+  // otherwise swallow both.
+  //
+  // The recipient is captured as raw text and validated downstream by
+  // `parseRecipientList`, which refuses rather than repairs. Recognising the
+  // shape of a request and deciding where mail may go are different jobs, and
+  // doing the second twice means one of the two is laxer.
+  {
+    // "email alice@x.com about Q3 saying the numbers are attached"
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+?)\s+about\s+(.{1,200}?)\s+(?:saying|that\s+says|with|:)\s+(.+)$/is,
+    build: (m) => ({
+      intent: 'compose',
+      to: m[1]!.trim().replace(/[,;]$/, ''),
+      subject: m[2]!.trim(),
+      body: m[3]!.trim(),
+    }),
+  },
+  {
+    // "email alice@x.com saying the numbers are attached" — no subject given.
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+?)\s+(?:saying|that\s+says|:)\s+(.+)$/is,
+    build: (m) => ({
+      intent: 'compose',
+      to: m[1]!.trim().replace(/[,;]$/, ''),
+      body: m[2]!.trim(),
+    }),
+  },
+  {
+    // "email alice@x.com about the invoice" — subject only, no body yet.
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+?)\s+about\s+(.{1,200})$/is,
+    build: (m) => ({
+      intent: 'compose',
+      to: m[1]!.trim().replace(/[,;]$/, ''),
+      subject: m[2]!.trim(),
+    }),
+  },
+  {
+    // "email alice@x.com" — recipient only.
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+)$/i,
+    build: (m) => ({ intent: 'compose', to: m[1]!.trim().replace(/[,;]$/, '') }),
+  },
+
   // Drafting is explicitly not sending.
   {
     re: /^(?:draft|compose|write)\s+(?:a\s+)?(?:reply|response|answer)?\s*(?:that\s+)?(.*)$/is,

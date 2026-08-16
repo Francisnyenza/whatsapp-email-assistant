@@ -243,3 +243,95 @@ describe('hostile input', () => {
     expect(Date.now() - start).toBeLessThan(1000);
   });
 });
+
+describe('composing a new email', () => {
+  // The gap that made "send and receive email" only half true. Everything else
+  // in this parser acts on a message that already exists; this originates one.
+
+  it('takes a recipient, a subject and a body', () => {
+    expect(intentOf('email alice@acme.com about Q3 saying the numbers are attached')).toEqual({
+      intent: 'compose',
+      to: 'alice@acme.com',
+      subject: 'Q3',
+      body: 'the numbers are attached',
+    });
+  });
+
+  it('takes a body with no subject', () => {
+    expect(intentOf('email alice@acme.com saying running ten minutes late')).toMatchObject({
+      intent: 'compose',
+      to: 'alice@acme.com',
+      body: 'running ten minutes late',
+    });
+  });
+
+  it('takes a subject with no body', () => {
+    expect(intentOf('email alice@acme.com about the invoice')).toEqual({
+      intent: 'compose',
+      to: 'alice@acme.com',
+      subject: 'the invoice',
+    });
+  });
+
+  it('takes a bare recipient', () => {
+    expect(intentOf('email alice@acme.com')).toEqual({
+      intent: 'compose',
+      to: 'alice@acme.com',
+    });
+  });
+
+  it('accepts the ways people phrase it', () => {
+    for (const text of [
+      'new email to alice@acme.com',
+      'e-mail alice@acme.com',
+      'message alice@acme.com',
+      'write to alice@acme.com',
+      'send an email to alice@acme.com',
+      'send to alice@acme.com',
+    ]) {
+      expect(intentOf(text), text).toMatchObject({ intent: 'compose', to: 'alice@acme.com' });
+    }
+  });
+
+  it('does not swallow "draft a reply", which is a different verb', () => {
+    // `write` is shared between the two, and compose is matched first — so this
+    // is the case that would break if the ordering were wrong.
+    expect(intentOf('draft a reply saying yes')).toMatchObject({ intent: 'draft' });
+    expect(intentOf('write a reply that says no')).toMatchObject({ intent: 'draft' });
+  });
+
+  it('does not treat a forward as a compose', () => {
+    expect(intentOf('forward to bob@acme.com')).toMatchObject({ intent: 'forward' });
+  });
+
+  it('requires something address-shaped before it will call it a compose', () => {
+    // Without the `@`, "email me later about the invoice" would parse as a
+    // compose addressed to "me". Shape recognition is the parser's job.
+    expect(intentOf('email me later about the invoice')).toMatchObject({ intent: 'unknown' });
+  });
+
+  it('hands an address-shaped recipient on without judging it', () => {
+    // Recognising the shape of a request and deciding where mail may actually
+    // go are different jobs. `parseRecipientList` refuses these downstream —
+    // validating in both places means one of the two is laxer, and the laxer
+    // one is the one that ends up deciding.
+    for (const bad of ['alice@localhost', 'a@@b.com', 'alice@acme']) {
+      expect(intentOf(`email ${bad} saying hello`), bad).toMatchObject({
+        intent: 'compose',
+        to: bad,
+      });
+    }
+  });
+
+  it('keeps a multi-line body intact', () => {
+    const parsed = intentOf('email alice@acme.com saying line one\nline two');
+
+    expect(parsed).toMatchObject({ intent: 'compose', body: 'line one\nline two' });
+  });
+
+  it('strips a trailing separator from the address', () => {
+    expect(intentOf('email alice@acme.com, saying hello')).toMatchObject({
+      to: 'alice@acme.com',
+    });
+  });
+});

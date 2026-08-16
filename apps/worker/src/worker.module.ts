@@ -9,6 +9,7 @@ import { AccountService } from './services/account.service.js';
 import { MailboxActionService } from './services/mailbox-action.service.js';
 import { ReplyComposer } from './services/reply-composer.js';
 import { ForwardComposer } from './services/forward-composer.js';
+import { ComposeComposer } from './services/compose-composer.js';
 import { DraftRepository } from './repositories/draft.repository.js';
 import { SendProcessor } from './processors/send.processor.js';
 import { IngestProcessor } from './processors/ingest.processor.js';
@@ -39,6 +40,7 @@ import { AssistantService } from './services/assistant.service.js';
     MailboxActionService,
     ReplyComposer,
     ForwardComposer,
+    ComposeComposer,
     DraftRepository,
     MessageRepository,
     WatchRepository,

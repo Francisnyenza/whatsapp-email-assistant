@@ -113,6 +113,22 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
   z.object({ intent: z.literal('reply_affirmative') }),
   z.object({ intent: z.literal('reply_negative') }),
   z.object({ intent: z.literal('draft'), instruction: z.string().optional() }),
+  /**
+   * A brand-new email, to someone the user names. Distinct from `draft`, which
+   * composes a *reply* — `compose` and `write` were long-standing aliases for
+   * that, and the absence of this intent was the largest gap in the product.
+   *
+   * `to` is the raw text the user typed, deliberately not parsed here: the
+   * parser's job is recognising the shape of a request, and turning text into an
+   * address we are willing to send to is `parseRecipientList`'s, which refuses
+   * rather than repairs. Validating in two places means one of them is laxer.
+   */
+  z.object({
+    intent: z.literal('compose'),
+    to: z.string(),
+    subject: z.string().optional(),
+    body: z.string().optional(),
+  }),
   z.object({ intent: z.literal('send') }),
   z.object({ intent: z.literal('cancel') }),
   z.object({ intent: z.literal('undo') }),

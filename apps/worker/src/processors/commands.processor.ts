@@ -14,6 +14,7 @@ import {
   type CommandIntent,
   type WhatsAppOutboundPayload,
 } from '@wea/shared';
+import { parseRecipientList } from '@wea/mail';
 import {
   parseCommand,
   needsConfirmation,
@@ -28,6 +29,7 @@ import { OutboundService } from '../services/outbound.service.js';
 import { MailboxActionService } from '../services/mailbox-action.service.js';
 import { ReplyComposer } from '../services/reply-composer.js';
 import { ForwardComposer } from '../services/forward-composer.js';
+import { ComposeComposer } from '../services/compose-composer.js';
 import { MailboxQueryService } from '../services/mailbox-query.service.js';
 import { AssistantService } from '../services/assistant.service.js';
 import { interpretTap, type TapEffect } from '../services/tap-interpreter.js';
@@ -70,6 +72,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly mailbox: MailboxActionService,
     private readonly replies: ReplyComposer,
     private readonly forwards: ForwardComposer,
+    private readonly composer: ComposeComposer,
     private readonly queries: MailboxQueryService,
     private readonly assistant: AssistantService,
     private readonly inbox: InboxRepository,
@@ -566,6 +569,26 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     effect: PlannedEffect,
     intended: WhatsAppOutboundPayload,
   ): Promise<{ payload: WhatsAppOutboundPayload; failed?: string }> {
+    // Handled before the target check, because a compose is the one effect with
+    // no email behind it. Everything below acts on a message that already
+    // exists; this originates one, so there is nothing to resolve and nothing
+    // to guard against.
+    if (effect.kind === 'compose') {
+      return this.attempt(
+        () =>
+          this.composer.compose({
+            userId,
+            to: parseRecipientList(effect.to),
+            subject: effect.subject,
+            bodyText: effect.body,
+          }),
+        ({ recipients }) =>
+          buildText(
+            recipients === 1 ? `Sending to ${effect.to}…` : `Sending to ${recipients} recipients…`,
+          ),
+      );
+    }
+
     if (!emailMessageId) {
       // The planner only produces an effect alongside a resolved email, so this
       // is a bug rather than a user-facing condition — but reporting it as a

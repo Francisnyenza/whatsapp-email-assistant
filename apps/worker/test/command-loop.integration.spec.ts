@@ -8,6 +8,7 @@ import { ResponsePlanner } from '../src/services/response-planner.js';
 import { MailboxActionService } from '../src/services/mailbox-action.service.js';
 import { ReplyComposer } from '../src/services/reply-composer.js';
 import { ForwardComposer } from '../src/services/forward-composer.js';
+import { ComposeComposer } from '../src/services/compose-composer.js';
 import { MailboxQueryService } from '../src/services/mailbox-query.service.js';
 import { AssistantService } from '../src/services/assistant.service.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
@@ -157,6 +158,17 @@ describeIfDb('command loop (real database)', () => {
       load: async () => ({
         id: accountId,
         userId,
+        provider: 'gmail',
+        emailAddress: `${userId.slice(0, 8)}@example.com`,
+        accessToken: 'x',
+      }),
+      // A compose has no parent message to inherit an account from, so it asks
+      // for the primary. Same shape as `load`; the selection logic itself is
+      // a query and belongs to the account service's own tests.
+      loadPrimary: async () => ({
+        id: accountId,
+        userId,
+        provider: 'gmail',
         emailAddress: `${userId.slice(0, 8)}@example.com`,
         accessToken: 'x',
       }),
@@ -225,6 +237,12 @@ describeIfDb('command loop (real database)', () => {
         logger as never,
       ),
       new ForwardComposer(
+        accounts as never,
+        new DraftRepository(service as never),
+        queue as never,
+        logger as never,
+      ),
+      new ComposeComposer(
         accounts as never,
         new DraftRepository(service as never),
         queue as never,
@@ -753,6 +771,97 @@ describeIfDb('command loop (real database)', () => {
 
       expect(asked).toBe(false);
       expect(lastText().toLowerCase()).toContain('find any email');
+    });
+  });
+
+  describe('composing a brand-new email', () => {
+    // The half of "send and receive email" that did not exist. Everything else
+    // in this file acts on a message already in the mailbox; this originates
+    // one, so there is no thread to resolve and every field is what the user
+    // typed.
+
+    it('queues a send with no threading headers at all', async () => {
+      await deliver({ text: 'email bob@partner.com about Q3 saying the numbers are attached' });
+
+      expect(sends()).toHaveLength(1);
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+
+      expect(draft).not.toBeNull();
+      expect(draft!.toAddresses).toEqual(['bob@partner.com']);
+      expect(draft!.subject).toBe('Q3');
+
+      // The absence is the feature. A stray In-Reply-To would graft this onto
+      // an unrelated conversation in the recipient's client, which reads to
+      // them as the user replying to something they never sent.
+      expect(draft!.inReplyToMessageId).toBeNull();
+      expect(draft!.inReplyToHeader).toBeNull();
+      expect(draft!.referencesHeader).toEqual([]);
+      expect(draft!.providerThreadId).toBeNull();
+    });
+
+    it('stores the body through the sealing path, with a wrapped key beside it', async () => {
+      // Deliberately not asserting the ciphertext is unreadable: this harness
+      // stubs `encryptBody` to pass the bytes through, because real envelope
+      // encryption belongs to @wea/crypto and is asserted there and in ingest's
+      // integration test. What this proves is that compose writes the body to
+      // the *cipher* column with a DEK and a key version — the shape that makes
+      // the retention sweep and the send path work — rather than to a plaintext
+      // column of its own.
+      await deliver({ text: 'email bob@partner.com saying the numbers are attached' });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+
+      expect(draft!.bodyTextCipher.length).toBeGreaterThan(0);
+      expect(draft!.bodyDek.length).toBeGreaterThan(0);
+      expect(draft!.bodyKeyVersion).toBeGreaterThanOrEqual(0);
+    });
+
+    it('refuses an address it cannot send to, and sends nothing', async () => {
+      await deliver({ text: 'email alice@localhost saying hello' });
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText().toLowerCase()).toContain('not an email address');
+    });
+
+    it('refuses a header injection in the recipient', async () => {
+      // The case with no recovery. A newline ends the To: header and starts a
+      // Bcc: the user never saw.
+      await deliver({ text: 'email bob@partner.com\nBcc: attacker@evil.com saying hi' });
+
+      expect(sends()).toHaveLength(0);
+      const drafts = await withTenant(userId, (tx) => tx.draft.count({ where: { kind: 'new' } }));
+      expect(drafts).toBe(0);
+    });
+
+    it('asks what to say rather than inventing it', async () => {
+      // A model could draft one. That is a different verb the user did not use,
+      // and putting words in their mouth and sending them under their own name
+      // are one step apart here.
+      await deliver({ text: 'email bob@partner.com about the invoice' });
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText().toLowerCase()).toContain('what should the email say');
+    });
+
+    it('defaults the subject rather than refusing over it', async () => {
+      await deliver({ text: 'email bob@partner.com saying running ten minutes late' });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+
+      expect(draft!.subject).toBe('(no subject)');
+    });
+
+    it('touches nothing in the mailbox', async () => {
+      await deliver({ text: 'email bob@partner.com saying hello' });
+
+      expect(mutations).toHaveLength(0);
     });
   });
 

@@ -1,11 +1,20 @@
 import { Injectable } from '@nestjs/common';
 import {
+  AppError,
   encodeActionPayload,
   type CommandIntent,
+  type EmailAddress,
   type MailOperation,
   type WhatsAppOutboundPayload,
 } from '@wea/shared';
-import { buildDisambiguation, buildDeleteConfirmation, buildText, clamp } from '@wea/whatsapp';
+import { parseRecipientList } from '@wea/mail';
+import {
+  buildDisambiguation,
+  buildDeleteConfirmation,
+  buildSendConfirmation,
+  buildText,
+  clamp,
+} from '@wea/whatsapp';
 import type { Resolution, ResolutionCandidate } from './thread-resolver.js';
 import { YES_BODY, NO_BODY } from './canned-replies.js';
 
@@ -63,6 +72,12 @@ export type PlannedEffect =
    * of effect — the placeholder is discarded and the result is the message.
    */
   | { kind: 'speak' }
+  /**
+   * Send a brand-new email. The only effect here with no email behind it — a
+   * compose has no parent, so nothing in the resolution ladder applies and the
+   * recipient comes from what the user typed rather than from a stored message.
+   */
+  | { kind: 'compose'; to: string; subject: string; body: string }
   /**
    * Compose a reply and *ask*. The only effect here that produces words which
    * could leave the building — so unlike the two above, its result is not sent
@@ -131,6 +146,9 @@ export class ResponsePlanner {
           payload: buildText('Cancelled. Nothing was sent.'),
           followUp: 'none',
         };
+
+      case 'compose':
+        return planCompose(intent);
 
       // `question`, `search` and every `list_*` are deliberately absent. They are
       // reads over the whole mailbox rather than actions on one email, so they
@@ -341,6 +359,73 @@ function toOption(candidate: ResolutionCandidate) {
   };
 }
 
+/**
+ * A brand-new email.
+ *
+ * Untargeted by nature: there is no message being answered, so the resolution
+ * ladder has nothing to resolve and every field comes from what the user typed.
+ * That is what makes this the one planned effect that validates its own input —
+ * elsewhere the recipient is derived from a stored message and is trustworthy
+ * by construction.
+ *
+ * The recipient is checked *here*, before a confirmation is offered, so a
+ * typo produces "that is not an address I can send to" rather than a
+ * confirmation button that fails after the user has approved it. Approving
+ * something that then does not happen is the worst of both: they believe it
+ * went, and it did not.
+ */
+function planCompose(intent: { to: string; subject?: string; body?: string }): PlannedResponse {
+  let recipients: EmailAddress[];
+
+  try {
+    recipients = parseRecipientList(intent.to);
+  } catch (err) {
+    // `parseRecipientList` refuses with a message written for a person; showing
+    // it beats replacing it with something vaguer.
+    return {
+      payload: buildText(AppError.from(err).publicMessage ?? 'I could not read that address.'),
+      followUp: 'none',
+    };
+  }
+
+  const body = intent.body?.trim();
+
+  if (!body) {
+    // Asked for rather than invented. A model could draft one, and that is a
+    // different verb the user did not use — putting words in their mouth and
+    // sending them under their name are one step apart here.
+    return {
+      payload: buildText(
+        `I have the address. What should the email say?\n\n` +
+          `Try: _email ${recipients[0]!.address} about ${intent.subject ?? 'the invoice'} saying …_`,
+      ),
+      followUp: 'none',
+    };
+  }
+
+  const subject = intent.subject?.trim() || '(no subject)';
+  const to = recipients.map((r) => r.address).join(', ');
+
+  return {
+    payload: buildSendConfirmation(COMPOSE_TARGET, to, `*Subject:* ${subject}\n\n${body}`),
+    followUp: 'await_confirmation',
+    effect: { kind: 'compose', to, subject, body },
+  };
+}
+
+/**
+ * The id a compose confirmation is bound to.
+ *
+ * Every other confirmation names the email it concerns; a compose has none, and
+ * the alternative — minting an id here — would put a value on the button that
+ * the server did not choose. A fixed sentinel keeps the whole payload
+ * server-minted: the tap says only "the compose you are holding for me", and
+ * *which* compose is read from the pending action written server-side when the
+ * user asked. A crafted tap can therefore only re-authorise the one message
+ * they already read.
+ */
+export const COMPOSE_TARGET = 'compose';
+
 const HELP_TEXT = [
   "Here's what I understand:",
   '',
@@ -363,6 +448,10 @@ const HELP_TEXT = [
   '*Asking*',
   '• _did anyone reply about the invoice?_',
   '• I answer from your own mail, and show you which emails I used',
+  '',
+  '*Sending something new*',
+  '• _email alice@acme.com about Q3 saying the numbers are attached_',
+  '• _email alice@acme.com saying running ten minutes late_',
   '',
   '*Writing*',
   '• _draft a polite no_ — I write it, you approve it',
