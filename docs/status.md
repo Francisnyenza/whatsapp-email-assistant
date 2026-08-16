@@ -102,6 +102,14 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- The alert rules are validated twice, because the two tools answer different questions.
+  kubeconform checks the `PrometheusRule` is shaped correctly; the PromQL inside it is just
+  a string to a schema, and a malformed expression is accepted by the cluster and then
+  silently never evaluates — so `promtool check rules` parses every expression as well.
+  Both were confirmed to be load-bearing by breaking a rule on purpose and watching each
+  exit non-zero. Neither can check that the metric _names_ exist, which is why the alerts
+  are written against kube-state-metrics: standard names, no instrumentation in this
+  repository to keep in step.
 - The worker scales on queue depth rather than CPU, via a KEDA `ScaledObject` validated in
   CI against the published CRD schema. Triggers cover only the three queues a person is
   waiting on — `commands`, `notify`, `send`. `ingest`, `ai` and `sync` are deliberately
@@ -172,10 +180,12 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 1. **Terraform.** The manifests assume a cluster, a Postgres with pgvector, a Redis and a
    secret store already exist. Nothing describes how they come to exist.
-2. **Monitoring.** Every log line already carries an `event` field, which is most of the
-   work — what is missing is anything that reads them, and an alert on the few conditions
-   that matter: a mailbox stuck in `polling`, a queue backing up, the retention sweep
-   failing quietly.
+2. **A `/metrics` endpoint on both services.** The alert rules that exist cover
+   availability — nothing running, pods crashlooping, a failed migration — because those
+   read kube-state-metrics and need no instrumentation. Every _product_ condition worth
+   paging on is currently a log line and not a metric: a mailbox stuck in `polling`, a
+   specific queue backing up, the retention sweep failing quietly, a user's token budget
+   exhausted. The code already knows all of it; nothing exports it.
 3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.

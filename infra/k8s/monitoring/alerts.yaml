@@ -1,0 +1,124 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: wea
+  labels:
+    app.kubernetes.io/part-of: wea
+    # Picked up by a Prometheus whose ruleSelector matches this. Adjust to
+    # whatever the cluster's operator selects on.
+    role: alert-rules
+# What these alerts do and do not cover, stated plainly because the gap matters
+# more than the rules.
+#
+# Every expression here reads **kube-state-metrics** — replica counts, pod
+# restarts, job status. Those metrics exist in any cluster running the standard
+# monitoring stack, with no instrumentation in this codebase at all, which is
+# exactly why they are the ones written first.
+#
+# What is *not* here is anything about the product: a mailbox stuck in polling,
+# a user's token budget exhausted, the retention sweep failing quietly, a
+# specific queue backing up. Every one of those is a condition the code already
+# knows about and logs with an `event` field — and none of them is a Prometheus
+# metric, because neither service exposes `/metrics`. Writing alerts against
+# metric names that do not exist would produce rules that never fire and a
+# dashboard that looks green for the same reason an unplugged smoke detector
+# does. They wait on instrumentation; see docs/status.md.
+#
+# The one product-shaped signal available today is the worker's readiness probe,
+# which reports whether it can reach Postgres and Redis. That is real, and it is
+# alerted on below.
+spec:
+  groups:
+    - name: wea.availability
+      rules:
+        - alert: WeaApiDown
+          # Not "fewer replicas than desired" — that is true for a few seconds
+          # of every rollout. Zero available is the condition where nothing is
+          # answering webhooks, and Meta redelivers only so many times.
+          expr: |
+            kube_deployment_status_replicas_available{deployment="wea-api",namespace="wea"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'No API replicas are available'
+            description: >-
+              Nothing is terminating OAuth callbacks or provider webhooks. Gmail and Graph
+              retry, but not forever, and a dropped OAuth callback is a mailbox that silently
+              fails to connect.
+
+        - alert: WeaWorkerDown
+          expr: |
+            kube_deployment_status_replicas_available{deployment="wea-worker",namespace="wea"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'No worker replicas are available'
+            description: >-
+              Nothing is consuming queues. Mail is still being accepted and stored, so this
+              is a growing backlog rather than lost data — but no notification, reply or
+              send is happening.
+
+        - alert: WeaWorkerNotReady
+          # Distinct from Down, and the more informative of the two: the pods
+          # are running and the readiness probe is failing, which means the
+          # worker cannot reach Postgres or Redis. The alert points at the
+          # dependency rather than at the worker.
+          expr: |
+            kube_deployment_status_replicas_available{deployment="wea-worker",namespace="wea"}
+              < kube_deployment_spec_replicas{deployment="wea-worker",namespace="wea"}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Worker replicas have been unready for ten minutes'
+            description: >-
+              Readiness checks Postgres and Redis. Ten minutes is well past a rollout, so
+              this is a dependency the worker cannot reach — check the pod's
+              health.database_unreachable / health.redis_unreachable log lines for which.
+
+    - name: wea.stability
+      rules:
+        - alert: WeaCrashLooping
+          # Restarts over 15 minutes rather than a total, because a total counts
+          # a restart from last Tuesday forever.
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="wea"}[15m]) > 3
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'A pod in the wea namespace is restarting repeatedly'
+            description: >-
+              More than three restarts in fifteen minutes. The usual causes are an OOM kill
+              against the memory limit, or a liveness probe failing because a dependency is
+              down — the second is the one worth checking first, since restarting does not
+              fix it.
+
+        - alert: WeaMigrationFailed
+          # A failed migration means the schema and the code disagree, and the
+          # rollout that follows will run against the wrong shape. There is no
+          # `for:` — one failure is the whole signal.
+          expr: |
+            kube_job_status_failed{job_name="wea-migrate",namespace="wea"} > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: 'The database migration job failed'
+            description: >-
+              Do not roll forward. The schema and the deployed code disagree; check the job
+              logs, which are kept for an hour after it finishes.
+
+        - alert: WeaOomKilled
+          expr: |
+            kube_pod_container_status_last_terminated_reason{reason="OOMKilled",namespace="wea"} > 0
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'A container was killed for exceeding its memory limit'
+            description: >-
+              Neither service has a CPU limit, so this is memory specifically. A worker
+              handling an unusually large mailbox is the benign cause; a steady climb across
+              restarts is a leak.

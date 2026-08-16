@@ -59,7 +59,8 @@ packages/
   sdk/        Public TypeScript SDK                                  (planned)
 infra/
   docker/     Local Postgres, Redis and MinIO
-  k8s/        Deployments, Service, PDBs, HPA, migration Job
+  k8s/        Deployments, Service, PDBs, HPA, migration Job,
+              KEDA autoscaler, Prometheus alerts
   terraform/                                                        (planned)
 ```
 
@@ -82,7 +83,7 @@ including what these ticks do not cover.
 | 8     | AI layer                     | ✅                                   |
 | 9     | Frontend dashboard           | 🔨 setup and settings; no mail views |
 | 10    | Testing                      | 🔨 unit, integration and CI; no E2E  |
-| 11    | Deployment & ops             | 🔨 images + k8s; no Terraform/alerts |
+| 11    | Deployment & ops             | 🔨 images, k8s, alerts; no Terraform |
 
 ## Requirements
 

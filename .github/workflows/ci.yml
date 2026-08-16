@@ -173,17 +173,44 @@ jobs:
             -kubernetes-version 1.30.0 \
             -schema-location default \
             -ignore-filename-pattern 'keda/' \
+            -ignore-filename-pattern 'monitoring/' \
             infra/k8s/
 
       # The KEDA ScaledObject, against the published CRD schema. Worth the extra
       # step: an autoscaler with a misspelled trigger field is accepted by the
       # cluster and then never scales, which looks exactly like a workload that
       # simply is not busy.
-      - name: Validate the KEDA ScaledObject
+      - name: Validate the custom resources
         run: |
           kubeconform -strict -summary \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            infra/k8s/keda/
+            infra/k8s/keda/ infra/k8s/monitoring/
+
+      # Schema validation says the PrometheusRule is shaped correctly. It says
+      # nothing about whether the PromQL inside it parses — that is a string as
+      # far as the schema is concerned, and a malformed expression is accepted
+      # by the cluster and then silently never evaluates. promtool is what
+      # catches it.
+      #
+      # What neither tool checks is whether the metric *names* exist in the
+      # cluster's Prometheus. Nothing offline can, and the alerts here are
+      # deliberately written against kube-state-metrics for that reason: they
+      # need no instrumentation in this codebase, so the names are the standard
+      # ones rather than something this repository would have to keep in step.
+      - name: Validate the alert expressions
+        run: |
+          curl -sSL "https://github.com/prometheus/prometheus/releases/download/v2.53.0/prometheus-2.53.0.linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin --strip-components=1 prometheus-2.53.0.linux-amd64/promtool
+
+          # promtool checks a bare rules file; the CRD wraps the same structure
+          # under `spec`, so the groups are lifted out first.
+          python3 -c "
+          import yaml
+          d = yaml.safe_load(open('infra/k8s/monitoring/alerts.yaml'))
+          yaml.safe_dump({'groups': d['spec']['groups']}, open('/tmp/rules.yaml','w'), sort_keys=False)
+          "
+
+          promtool check rules /tmp/rules.yaml
 
   images:
     name: Container images
