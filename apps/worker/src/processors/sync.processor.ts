@@ -391,7 +391,7 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
       throw error;
     }
 
-    const provider = this.accounts.providerFor('gmail');
+    const provider = this.accounts.providerFor(account.provider);
 
     try {
       const handle = await provider.renewWatch(account);

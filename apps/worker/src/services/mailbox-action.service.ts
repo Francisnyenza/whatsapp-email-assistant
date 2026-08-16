@@ -58,7 +58,7 @@ export class MailboxActionService {
     }
 
     const account = await this.accounts.load(userId, message.accountId);
-    const provider = this.accounts.providerFor('gmail');
+    const provider = this.accounts.providerFor(account.provider);
 
     await provider.mutate(account, message.providerMessageId, operation);
 

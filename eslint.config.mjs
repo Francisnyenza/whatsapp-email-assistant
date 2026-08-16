@@ -39,6 +39,22 @@ export default tseslint.config(
             "MemberExpression[object.name='process'][property.name='env'] ~ CallExpression[callee.property.name='log']",
           message: 'Do not log process.env. Use the config service.',
         },
+        {
+          // Every worker call site used to name its adapter with the literal
+          // 'gmail', because `ProviderAccount` did not carry the kind and there
+          // was nothing else to pass. A Microsoft mailbox was operated through
+          // the Gmail adapter with a Microsoft token on every operation, and
+          // the Graph adapter — built, tested and marked shipped — was never
+          // invoked at runtime.
+          //
+          // A test cannot catch this coming back: reverting one call site to
+          // the literal passes the entire suite, because the integration tests
+          // stub the provider and no suite exercises the wiring between an
+          // account and its adapter. A lint rule can, and it reads every file.
+          selector: "CallExpression[callee.property.name='providerFor'] > Literal:first-child",
+          message:
+            'Pass account.provider, never a literal. Hardcoding it routes every mailbox through one adapter.',
+        },
       ],
     },
   },

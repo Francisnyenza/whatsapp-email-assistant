@@ -43,9 +43,14 @@ export class DraftRepository {
   async createForSend(input: {
     userId: string;
     accountId: string;
-    inReplyToMessageId: string;
-    /** `reply` unless stated; a forward is composed and sent differently. */
-    kind?: 'reply' | 'forward';
+    /**
+     * The message being answered. Absent for a fresh compose, which has no
+     * parent — the column is nullable for exactly this case, and a draft with
+     * no parent is what makes the send path skip threading headers entirely.
+     */
+    inReplyToMessageId?: string;
+    /** `reply` unless stated; a forward and a fresh compose are composed differently. */
+    kind?: 'reply' | 'forward' | 'new';
     to: EmailAddress[];
     cc?: EmailAddress[];
     subject: string;
@@ -64,7 +69,7 @@ export class DraftRepository {
         data: {
           userId: input.userId,
           accountId: input.accountId,
-          inReplyToMessageId: input.inReplyToMessageId,
+          inReplyToMessageId: input.inReplyToMessageId ?? null,
           kind: input.kind ?? 'reply',
           toAddresses: input.to.map((a) => a.address),
           ccAddresses: (input.cc ?? []).map((a) => a.address),

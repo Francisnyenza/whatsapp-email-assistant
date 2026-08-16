@@ -115,6 +115,7 @@ export class AccountLinkingService {
     const identity = await adapter.verifyAccess({
       id: 'pending',
       userId,
+      provider,
       emailAddress: '',
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -252,6 +253,7 @@ export class AccountLinkingService {
       const handle = await adapter.watch({
         id: account.id,
         userId,
+        provider: account.provider,
         emailAddress: account.emailAddress,
         accessToken,
         ...(refreshToken ? { refreshToken } : {}),

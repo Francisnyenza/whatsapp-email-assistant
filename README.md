@@ -69,7 +69,7 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 504 tests passing** (1 225 unit + 279 integration against real Postgres). See
+**1 510 tests passing** (1 231 unit + 279 integration against real Postgres). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 

@@ -69,7 +69,7 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
     }
 
     const account = await this.accounts.load(userId, draft.accountId);
-    const provider = this.accounts.providerFor('gmail');
+    const provider = this.accounts.providerFor(account.provider);
 
     try {
       // A forward carries the original's files. They are fetched here rather
@@ -155,7 +155,7 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
     account: ProviderAccount,
     emailMessageId: string,
   ): Promise<OutboundAttachment[]> {
-    const provider = this.accounts.providerFor('gmail');
+    const provider = this.accounts.providerFor(account.provider);
     const original = await this.drafts.findForForward(userId, emailMessageId);
     if (!original) return [];
 

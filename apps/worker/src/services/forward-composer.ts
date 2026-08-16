@@ -79,7 +79,7 @@ export class ForwardComposer {
     }
 
     const account = await this.accounts.load(input.userId, record.accountId);
-    const provider = this.accounts.providerFor('gmail');
+    const provider = this.accounts.providerFor(account.provider);
     const original = await provider.getMessage(account, record.providerMessageId);
 
     // Inline images belong to the HTML body we are not reproducing; counting

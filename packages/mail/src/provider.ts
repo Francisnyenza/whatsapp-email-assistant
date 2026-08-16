@@ -96,6 +96,18 @@ export interface MailProvider {
 export interface ProviderAccount {
   id: string;
   userId: string;
+  /**
+   * Which adapter this mailbox belongs to — `gmail`, `outlook`, `microsoft365`.
+   *
+   * Not cosmetic, and it was not here originally: without it every call site
+   * had to name a provider from nothing, and all seven of them named `gmail`.
+   * A Microsoft mailbox was routed through the Gmail adapter with a Microsoft
+   * token on every operation, so the Graph adapter — built, tested, and marked
+   * shipped — was never once invoked at runtime. Carrying the kind on the
+   * account is what makes that mistake unavailable rather than merely
+   * discouraged.
+   */
+  provider: string;
   emailAddress: string;
   accessToken: string;
   refreshToken?: string;

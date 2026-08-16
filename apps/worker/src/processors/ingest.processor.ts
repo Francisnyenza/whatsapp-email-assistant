@@ -56,7 +56,7 @@ export class IngestProcessor implements OnModuleInit, OnModuleDestroy {
     const { userId, accountId } = job.data;
 
     const account = await this.accounts.load(userId, accountId);
-    const provider = this.accounts.providerFor('gmail');
+    const provider = this.accounts.providerFor(account.provider);
 
     // From what we have already seen — never from the cursor on the job. A
     // Gmail push carries the mailbox's position *now*, so walking history from

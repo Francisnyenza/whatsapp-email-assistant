@@ -160,6 +160,7 @@ export class AccountsService {
 
       await this.providerFor(account.provider).stopWatch({
         id: account.id,
+        provider: account.provider,
         userId,
         emailAddress: account.emailAddress,
         accessToken,

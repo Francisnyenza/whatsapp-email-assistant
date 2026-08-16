@@ -77,6 +77,7 @@ export class AccountService {
     return {
       id: account.id,
       userId,
+      provider: account.provider,
       emailAddress: account.emailAddress,
       accessToken,
       ...(refreshToken ? { refreshToken } : {}),
@@ -96,6 +97,42 @@ export class AccountService {
   }
 
   /** The account a reply should be sent from — the one the email arrived on. */
+  /**
+   * The mailbox a message with no parent is sent from.
+   *
+   * A reply sends from the account the original arrived on — the correspondent
+   * already knows that address, and answering from a different one is
+   * confusing at best. A fresh compose has no such anchor, so it uses the
+   * primary, falling back to the oldest connected mailbox when no primary is
+   * marked.
+   *
+   * Deterministic on purpose. "Whichever the query returned first" would mean
+   * the same user sending from different addresses on different days, which is
+   * the kind of thing nobody notices until a reply arrives somewhere they are
+   * not looking.
+   *
+   * @throws {AppError} `NOT_FOUND` when nothing is connected, which is a real
+   *   state — a user can verify a phone before connecting a mailbox.
+   */
+  async loadPrimary(userId: string): Promise<ProviderAccount> {
+    const account = await this.prisma.forUser(userId, async (tx) =>
+      tx.emailAccount.findFirst({
+        where: { disconnectedAt: null, status: 'active' },
+        orderBy: [{ isPrimary: 'desc' }, { createdAt: 'asc' }],
+        select: { id: true },
+      }),
+    );
+
+    if (!account) {
+      throw new AppError('NOT_FOUND', 'No connected mailbox to send from', {
+        retryable: false,
+        publicMessage: "You haven't connected a mailbox yet, so there's nothing to send from.",
+      });
+    }
+
+    return this.load(userId, account.id);
+  }
+
   async loadForMessage(userId: string, emailMessageId: string): Promise<ProviderAccount> {
     const message = await this.prisma.forUser(userId, async (tx) =>
       tx.emailMessage.findUnique({
@@ -119,11 +156,18 @@ export class AccountService {
    * because two identical adapters is two places for a fix to be applied once.
    */
   providerFor(kind: string): MailProvider {
-    const existing = this.providers.get(kind);
+    // Normalised before the lookup, so `outlook` and `microsoft365` genuinely
+    // resolve to one instance rather than two identical ones. Keying the cache
+    // on the raw string made the sentence above false: both got a
+    // `GraphProvider`, but each got its own, with its own HTTP client and its
+    // own token-refresh callback.
+    const key = kind === 'microsoft365' ? 'outlook' : kind;
+
+    const existing = this.providers.get(key);
     if (existing) return existing;
 
-    const provider = this.build(kind);
-    this.providers.set(kind, provider);
+    const provider = this.build(key);
+    this.providers.set(key, provider);
     return provider;
   }
 

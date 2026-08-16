@@ -8,7 +8,7 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 504 tests** (1 225 unit + 279 integration
+Everything below has tests that run and pass. **1 510 tests** (1 231 unit + 279 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                     |
@@ -20,11 +20,11 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/mail`     | 221              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                 |
 | `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic  |
 | `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                             |
-| `apps/worker`   | 305 + 219 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics |
+| `apps/worker`   | 311 + 219 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                               |
 
 ```bash
-pnpm -r test          # 1 225 unit tests
+pnpm -r test          # 1 231 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -314,6 +314,28 @@ vocabulary with the fixtures, and one test pins what happens when none does — 
 nothing rather than asking a model to answer from an empty set. The general point is that a
 feature can be correct and still be much weaker in one supported configuration than another,
 and the honest place to record that is next to the tests that show it.
+
+**The Microsoft adapter was never once invoked at runtime.** Every call site in the worker
+— send, ingest, sync, forward, mailbox actions — asked for its adapter by writing the
+literal `'gmail'`, because `ProviderAccount` did not carry the provider kind and there was
+nothing else to pass. A Microsoft mailbox was therefore operated through the Gmail adapter
+with a Microsoft access token on every operation. The Graph adapter has 194 passing
+assertions, Phase 7 was marked ✅ in the README, and none of it ran.
+
+Nothing failed loudly, and three things had to be true at once for that: the adapter's own
+tests pass in isolation because they test the adapter, the integration tests stub the
+provider entirely, and no suite anywhere exercised the wiring _between_ an account and its
+adapter. The insight was even written down correctly elsewhere in the codebase — the API's
+linking service picks its adapter from `account.provider` and says why, "watching a Graph
+account with the Gmail adapter would fail in a way that reads like a Google outage" — and
+was simply not applied on the worker side.
+
+The fix is a required `provider` field on `ProviderAccount`, which turned three more
+silently-wrong construction sites into compile errors the moment it landed. The guard is a
+lint rule, not a test, and that distinction was measured: reverting a call site to the
+literal passes all 530 worker tests, and fails `pnpm lint` in two places. **When a bug
+cannot be caught by a test because the seam is stubbed everywhere, the check belongs in the
+linter.**
 
 **Audio erases the boundary that a screen draws for free.** On the notification card, an
 email body sits under a sender line and nobody confuses it with the assistant talking. Read
