@@ -102,6 +102,14 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- The production images build and run. One Dockerfile serves both Node services, staged so
+  the runtime carries no compiler, no tests and no dev dependencies. Docker was not
+  available in the environment they were written in, so CI builds both and then _runs_ one,
+  importing `@wea/db` inside the container — an image that builds and cannot require its own
+  dependencies is the specific failure a staged build invites, and only running it catches
+  that. Both jobs green on the first attempt, which means the two details that usually bite
+  held: Prisma's generated client survives the pruning production install, and the slim base
+  has the OpenSSL its query engine needs.
 - The CI pipeline runs the exact sequence a fresh clone needs, and it was verified by doing
   that here rather than by reading it: a brand-new database, the extension script, every
   migration, the restricted-role grant, then all 283 database-backed tests. Lint, typecheck,
@@ -141,13 +149,19 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+1. **Kubernetes manifests and Terraform (Phase 11).** The images exist and are verified; what
+   they run on is not described anywhere. This is the largest remaining gap between "works"
+   and "deployable".
+2. **Monitoring (Phase 11).** The code emits structured logs with an `event` field on every
+   line, which is most of the work — what is missing is anything that reads them, and any
+   alert on the handful of conditions that actually matter (a mailbox stuck in `polling`, a
+   queue backing up, the budget sweep failing).
+3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
-2. **Dockerfiles, Kubernetes manifests, Terraform, monitoring (Phase 11).**
 
-Every feature in the product spec is now built, and CI runs everything on every push. What
-remains is the work that makes it deployable and keeps it working.
+Every feature in the product spec is built, CI runs everything on every push, and the
+services build into images that start. What remains is the ground they run on.
 
 ### After that
 

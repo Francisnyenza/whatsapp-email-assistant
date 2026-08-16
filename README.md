@@ -81,7 +81,7 @@ including what these ticks do not cover.
 | 8     | AI layer                     | ✅                                   |
 | 9     | Frontend dashboard           | 🔨 setup and settings; no mail views |
 | 10    | Testing                      | 🔨 unit, integration and CI; no E2E  |
-| 11    | Deployment & ops             | —                                    |
+| 11    | Deployment & ops             | 🔨 images build and run; no k8s yet  |
 
 ## Requirements
 
