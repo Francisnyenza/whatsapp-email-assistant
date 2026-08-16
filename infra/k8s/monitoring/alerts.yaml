@@ -15,18 +15,17 @@ metadata:
 # monitoring stack, with no instrumentation in this codebase at all, which is
 # exactly why they are the ones written first.
 #
-# What is *not* here is anything about the product: a mailbox stuck in polling,
-# a user's token budget exhausted, the retention sweep failing quietly, a
-# specific queue backing up. Every one of those is a condition the code already
-# knows about and logs with an `event` field — and none of them is a Prometheus
-# metric, because neither service exposes `/metrics`. Writing alerts against
-# metric names that do not exist would produce rules that never fire and a
-# dashboard that looks green for the same reason an unplugged smoke detector
-# does. They wait on instrumentation; see docs/status.md.
+# The `wea.queues` group is the exception, and it is the only group here reading
+# a metric this codebase exports: `wea_queue_depth`, served by the worker's own
+# `/metrics`. It exists because queue depth is the one thing about this system's
+# health that Kubernetes cannot see — everything kube-state-metrics reports is
+# about pods, and a backlog is about work.
 #
-# The one product-shaped signal available today is the worker's readiness probe,
-# which reports whether it can reach Postgres and Redis. That is real, and it is
-# alerted on below.
+# Still *not* here: a mailbox stuck in polling, a user's token budget exhausted,
+# the retention sweep failing quietly. Each is a condition the code knows and
+# logs with an `event` field, and none is exported yet. Writing alerts against
+# metric names that do not exist would produce rules that never fire and a
+# dashboard green for the same reason an unplugged smoke detector is quiet.
 spec:
   groups:
     - name: wea.availability
@@ -77,6 +76,71 @@ spec:
               Readiness checks Postgres and Redis. Ten minutes is well past a rollout, so
               this is a dependency the worker cannot reach — check the pod's
               health.database_unreachable / health.redis_unreachable log lines for which.
+
+    - name: wea.queues
+      rules:
+        - alert: WeaCommandBacklog
+          # The queue with a person waiting on it. Someone typed "archive" and
+          # is looking at their phone, so the threshold is low and the window is
+          # short — this is a latency alert wearing a depth alert's clothes.
+          expr: |
+            sum(wea_queue_depth{queue="commands"}) > 50
+          for: 3m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Commands are backing up'
+            description: >-
+              More than fifty queued commands for three minutes. Every one is a person who
+              sent a message and has not been answered. Check whether the workers are ready
+              and whether a provider is timing out.
+
+        - alert: WeaSendBacklog
+          expr: |
+            sum(wea_queue_depth{queue="send"}) > 100
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Outbound replies are backing up'
+            description: >-
+              Replies the user has already confirmed are not going out. Nothing is lost —
+              the draft claim makes each one send exactly once whenever it runs — but the
+              recipient is waiting.
+
+        - alert: WeaQueueStuck
+          # Depth without movement. A queue that is deep and *shrinking* is a
+          # busy system; one that has not moved in fifteen minutes has no
+          # consumer, and the two need different responses.
+          expr: |
+            sum(wea_queue_depth) > 0
+              and
+            sum(delta(wea_queue_depth[15m])) == 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'A queue has work and is not draining'
+            description: >-
+              Depth is non-zero and unchanged for fifteen minutes, which is a stalled
+              consumer rather than a busy one. Check worker readiness first — a worker that
+              cannot reach Redis reports unready and stops consuming.
+
+        - alert: WeaMetricsMissing
+          # The alert about the alerts. Every rule above goes quiet if the
+          # scrape stops, and silence from a monitoring system is
+          # indistinguishable from good news.
+          expr: |
+            absent(wea_worker_up)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'No worker is reporting metrics'
+            description: >-
+              The queue alerts above cannot fire while this is true. Either no worker is
+              running, or the scrape is failing — check the ServiceMonitor and the pod's
+              /metrics endpoint.
 
     - name: wea.stability
       rules:

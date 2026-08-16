@@ -180,9 +180,16 @@ jobs:
       # step: an autoscaler with a misspelled trigger field is accepted by the
       # cluster and then never scales, which looks exactly like a workload that
       # simply is not busy.
+      # Both schema sources, because these directories mix custom resources with
+      # ordinary ones — the ServiceMonitor needs a Service to scrape. Listing
+      # `default` as an additional location is not the same as
+      # `-ignore-missing-schemas`: an unknown kind still fails here, it is just
+      # resolvable from either source.
       - name: Validate the custom resources
         run: |
           kubeconform -strict -summary \
+            -kubernetes-version 1.30.0 \
+            -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             infra/k8s/keda/ infra/k8s/monitoring/
 

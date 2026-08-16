@@ -1,0 +1,47 @@
+# How Prometheus finds the worker's /metrics.
+#
+# The worker has no Service anywhere else, and deliberately: nothing routes
+# traffic to it, it consumes queues. This one exists only so a scraper has
+# something to discover, which is why it is `clusterIP: None` — there is no
+# load balancing to do, and a ServiceMonitor wants the individual pod endpoints
+# rather than one virtual address. Balancing would give a scraper a random
+# replica each interval, and `wea_queue_depth` would appear to jitter between
+# pods that are all reporting the same number.
+apiVersion: v1
+kind: Service
+metadata:
+  name: wea-worker-metrics
+  labels:
+    app.kubernetes.io/name: wea-worker
+    app.kubernetes.io/part-of: wea
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: wea-worker
+  ports:
+    - name: health
+      port: 3002
+      targetPort: health
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: wea-worker
+  labels:
+    app.kubernetes.io/part-of: wea
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wea-worker
+  namespaceSelector:
+    matchNames: [wea]
+  endpoints:
+    - port: health
+      path: /metrics
+      # Faster than the 30s default. The command-backlog alert fires after three
+      # minutes, and a scrape interval that is a meaningful fraction of the alert
+      # window means the alert is deciding on two or three samples.
+      interval: 15s
+      # A scrape that hangs holds a connection and delays the next one. Shorter
+      # than the interval, always.
+      scrapeTimeout: 10s

@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import { renderMetrics, METRICS_CONTENT_TYPE } from './metrics.js';
 
 /**
  * A minimal HTTP listener, so Kubernetes can tell a live worker from a wedged one.
@@ -54,7 +55,7 @@ export function startHealthServer(options: HealthServerOptions): Server {
   const server = createServer((req, res) => {
     const url = req.url ?? '';
 
-    // Only GET, and only these two paths. Not defensiveness for its own sake:
+    // Only GET, and only these three paths. Not defensiveness for its own sake:
     // this listener is reachable from anywhere in the cluster that can route to
     // the pod, and the smallest surface that answers the kubelet is the right
     // one. Anything else is a 404 with no body to reflect back.
@@ -64,6 +65,36 @@ export function startHealthServer(options: HealthServerOptions): Server {
 
     if (url === '/health/live' || url === '/health/live/') {
       return respond(res, 200, { status: 'ok', uptime: Math.floor(process.uptime()) });
+    }
+
+    // Queue depth, which is the one thing about this system's health that a
+    // dashboard cannot get from Kubernetes. Everything kube-state-metrics
+    // reports is about pods; a backlog is about work.
+    //
+    // Served from the same listener rather than a second port. It is the same
+    // trust boundary — reachable from inside the cluster, exposing no user data,
+    // just counts — and a second listener would be a second thing to secure.
+    if (url === '/metrics' || url === '/metrics/') {
+      void options.checks
+        .queues()
+        .then((depths) => {
+          const body = renderMetrics((depths ?? {}) as Record<string, number>);
+          res.writeHead(200, {
+            'content-type': METRICS_CONTENT_TYPE,
+            'content-length': String(Buffer.byteLength(body)),
+            'cache-control': 'no-store',
+          });
+          res.end(body);
+        })
+        .catch((err) => {
+          // 503, not an empty 200. A scrape that succeeds with no samples looks
+          // to Prometheus like a queue that is genuinely empty — which is the
+          // exact reading that would suppress a backlog alert during a Redis
+          // outage.
+          options.onError?.('health.metrics_unavailable', err);
+          respond(res, 503, { error: 'metrics_unavailable' });
+        });
+      return;
     }
 
     if (url === '/health/ready' || url === '/health/ready/') {

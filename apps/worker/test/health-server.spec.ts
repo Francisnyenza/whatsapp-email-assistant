@@ -131,13 +131,17 @@ describe('readiness', () => {
 });
 
 describe('the surface', () => {
-  it('is two routes and nothing else', async () => {
+  it('is three routes and nothing else', async () => {
     // Reachable from anywhere in the cluster that can route to the pod. The
-    // smallest thing that answers the kubelet is the right one.
+    // smallest thing that answers the kubelet and the scraper is the right one.
     const { url } = await start();
 
-    for (const path of ['/', '/metrics', '/health', '/../etc/passwd', '/health/readyz']) {
+    for (const path of ['/', '/health', '/../etc/passwd', '/health/readyz', '/metrics/all']) {
       expect((await fetch(`${url}${path}`)).status, path).toBe(404);
+    }
+
+    for (const path of ['/health/live', '/health/ready', '/metrics']) {
+      expect((await fetch(`${url}${path}`)).status, path).not.toBe(404);
     }
   });
 
@@ -196,3 +200,63 @@ async function start(
 
   return { url: `http://127.0.0.1:${address.port}` };
 }
+
+describe('metrics', () => {
+  it('exports queue depth as a gauge, in the scrape format', async () => {
+    // A gauge, not a counter: a queue depth is a level that goes down as well
+    // as up, and `rate()` over a counter that drains produces nonsense.
+    const { url } = await start({
+      queues: vi.fn().mockResolvedValue({ commands: 3, send: 0, ingest: 41 }),
+    });
+
+    const response = await fetch(`${url}/metrics`);
+    const body = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toContain('text/plain');
+    expect(body).toContain('# TYPE wea_queue_depth gauge');
+    expect(body).toContain('wea_queue_depth{queue="commands"} 3');
+    expect(body).toContain('wea_queue_depth{queue="ingest"} 41');
+    // Zero is a real depth and must be exported, not omitted — a missing series
+    // and an empty queue are different things to an alert.
+    expect(body).toContain('wea_queue_depth{queue="send"} 0');
+  });
+
+  it('ends with a newline, which some parsers require to keep the last sample', async () => {
+    const { url } = await start({ queues: vi.fn().mockResolvedValue({ send: 1 }) });
+
+    expect(await (await fetch(`${url}/metrics`)).text()).toMatch(/\n$/);
+  });
+
+  it('answers 503 rather than an empty 200 when Redis is gone', async () => {
+    // The failure that matters. A scrape that succeeds with no samples reads as
+    // "every queue is empty", which is exactly what would suppress a backlog
+    // alert during the outage causing the backlog.
+    const { url } = await start({ queues: vi.fn().mockRejectedValue(new Error('ECONNREFUSED')) });
+
+    const response = await fetch(`${url}/metrics`);
+
+    expect(response.status).toBe(503);
+    expect(await response.text()).not.toContain('wea_queue_depth');
+  });
+
+  it('drops a non-finite sample rather than breaking the whole scrape', async () => {
+    // One unparseable line fails the entire endpoint in Prometheus, taking
+    // every healthy series with it.
+    const { url } = await start({
+      queues: vi.fn().mockResolvedValue({ good: 5, bad: Number.NaN, worse: Infinity }),
+    });
+
+    const body = await (await fetch(`${url}/metrics`)).text();
+
+    expect(body).toContain('wea_queue_depth{queue="good"} 5');
+    expect(body).not.toContain('NaN');
+    expect(body).not.toContain('Infinity');
+  });
+
+  it('is not reachable by POST', async () => {
+    const { url } = await start();
+
+    expect((await fetch(`${url}/metrics`, { method: 'POST' })).status).toBe(405);
+  });
+});
