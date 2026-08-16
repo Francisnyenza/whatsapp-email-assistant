@@ -15,6 +15,8 @@ export {
 
 export { buildForwardBody, type ForwardSource } from './forwarding.js';
 
+export { parseRecipient, parseRecipientList, looksLikeAddress } from './recipients.js';
+
 export {
   composeMime,
   toGmailRaw,

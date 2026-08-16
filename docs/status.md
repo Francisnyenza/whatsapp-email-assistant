@@ -8,7 +8,7 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 477 tests** (1 198 unit + 279 integration
+Everything below has tests that run and pass. **1 504 tests** (1 225 unit + 279 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                     |
@@ -17,14 +17,14 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                     |
 | `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                                                         |
 | `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                          |
-| `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                                                       |
+| `@wea/mail`     | 221              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                 |
 | `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic  |
 | `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                             |
 | `apps/worker`   | 305 + 219 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                               |
 
 ```bash
-pnpm -r test          # 1 198 unit tests
+pnpm -r test          # 1 225 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
