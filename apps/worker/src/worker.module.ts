@@ -10,6 +10,8 @@ import { MailboxActionService } from './services/mailbox-action.service.js';
 import { ReplyComposer } from './services/reply-composer.js';
 import { ForwardComposer } from './services/forward-composer.js';
 import { ComposeComposer } from './services/compose-composer.js';
+import { MediaProcessor } from './processors/media.processor.js';
+import { AttachmentRepository } from './repositories/attachment.repository.js';
 import { DraftRepository } from './repositories/draft.repository.js';
 import { SendProcessor } from './processors/send.processor.js';
 import { IngestProcessor } from './processors/ingest.processor.js';
@@ -41,6 +43,8 @@ import { AssistantService } from './services/assistant.service.js';
     ReplyComposer,
     ForwardComposer,
     ComposeComposer,
+    MediaProcessor,
+    AttachmentRepository,
     DraftRepository,
     MessageRepository,
     WatchRepository,

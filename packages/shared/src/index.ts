@@ -67,6 +67,7 @@ export {
   type JobName,
   type QueueDefaults,
   type ProcessChangeJob,
+  type DeliverAttachmentJob,
   type AnalyzeEmailJob,
   type NotifyEmailJob,
   type SendEmailJob,

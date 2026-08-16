@@ -129,6 +129,8 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
     subject: z.string().optional(),
     body: z.string().optional(),
   }),
+  /** "send me the attachment" — the files on an email, into the chat. */
+  z.object({ intent: z.literal('get_attachment') }),
   z.object({ intent: z.literal('send') }),
   z.object({ intent: z.literal('cancel') }),
   z.object({ intent: z.literal('undo') }),

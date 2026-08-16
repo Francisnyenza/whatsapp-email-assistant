@@ -72,6 +72,8 @@ export type PlannedEffect =
    * of effect — the placeholder is discarded and the result is the message.
    */
   | { kind: 'speak' }
+  /** Send this email's files into the chat, one queued job each. */
+  | { kind: 'attachments' }
   /**
    * Send a brand-new email. The only effect here with no email behind it — a
    * compose has no parent, so nothing in the resolution ladder applies and the
@@ -256,6 +258,17 @@ export class ResponsePlanner {
       // --- asking the assistant about this email ---------------------------
       // Reads, both of them. Nothing here can send, move or delete anything, so
       // there is no confirmation to ask for — the answer is the response.
+      case 'get_attachment':
+        return {
+          // A placeholder the processor keeps rather than discards: the files
+          // arrive as separate messages afterwards, so this one is the only
+          // acknowledgement the user gets that anything is happening.
+          payload: buildText('Fetching the files…'),
+          followUp: 'queue_action',
+          effect: { kind: 'attachments' },
+          emailMessageId,
+        };
+
       case 'summarize':
         return {
           payload: buildText('Reading it…'),
@@ -444,6 +457,7 @@ const HELP_TEXT = [
   '• _unread_ · _today_ · _urgent_ · _deadlines_',
   '• _summarise_ · _translate to swahili_',
   '• _read it aloud_ — comes back as a voice note',
+  '• _send me the attachment_ — the files, into this chat',
   '',
   '*Asking*',
   '• _did anyone reply about the invoice?_',

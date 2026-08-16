@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { randomUUID, createHash } from 'node:crypto';
 import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { InboxRepository } from '../src/repositories/inbox.repository.js';
+import { AttachmentRepository } from '../src/repositories/attachment.repository.js';
 import { DraftRepository } from '../src/repositories/draft.repository.js';
 import { ThreadResolver } from '../src/services/thread-resolver.js';
 import { ResponsePlanner } from '../src/services/response-planner.js';
@@ -251,6 +252,7 @@ describeIfDb('command loop (real database)', () => {
       mailboxQueries,
       assistant,
       inbox,
+      new AttachmentRepository(service as never),
       queue as never,
       logger as never,
     );

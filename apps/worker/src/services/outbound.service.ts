@@ -144,11 +144,25 @@ export class OutboundService {
     // two from disagreeing in a way it rejects with a generic error.
     const extension = mimeType === 'audio/ogg' ? 'ogg' : 'mp3';
 
-    const mediaId = await this.client.uploadMedia(audio, mimeType, `voice-note.${extension}`);
+    return this.uploadMedia(audio, mimeType, `voice-note.${extension}`);
+  }
+
+  /**
+   * Stages any file with Meta and returns the id to send it by.
+   *
+   * The filename is carried through rather than invented, because for an
+   * attachment it is the thing the recipient sees and the only clue to what the
+   * file is. Meta does not infer a type from it — the declared MIME type is
+   * what matters — but a name that disagrees with the type is rejected with a
+   * message that says nothing useful.
+   */
+  async uploadMedia(content: Buffer, mimeType: string, filename: string): Promise<string> {
+    const mediaId = await this.client.uploadMedia(content, mimeType, filename);
 
     this.logger.info(
-      { event: 'outbound.audio_uploaded', bytes: audio.length, mimeType },
-      'Audio staged for delivery',
+      // The filename is a fact about the user's mail, so it is not logged.
+      { event: 'outbound.media_uploaded', bytes: content.length, mimeType },
+      'Media staged for delivery',
     );
 
     return mediaId;

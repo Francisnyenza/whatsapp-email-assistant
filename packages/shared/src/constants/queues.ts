@@ -57,6 +57,9 @@ export const JOB = {
 
   // commands
   HANDLE_INBOUND: 'commands.handleInbound',
+
+  // media
+  DELIVER_ATTACHMENT: 'media.deliverAttachment',
 } as const;
 
 export type JobName = (typeof JOB)[keyof typeof JOB];
@@ -136,6 +139,25 @@ export const QUEUE_DEFAULTS: Record<QueueName, QueueDefaults> = {
 };
 
 /* -------------------------------- job payloads ------------------------------ */
+
+/**
+ * Send one of an email's attachments into the WhatsApp chat.
+ *
+ * On its own queue rather than on `notify`, because the two have different
+ * shapes of failure. A notification is small, fast and must not be delayed; an
+ * attachment is a provider download, a Meta upload and up to twenty-five
+ * megabytes through the worker. Sharing a queue would let one large file sit in
+ * front of somebody's mail.
+ *
+ * Carries ids and nothing else. The filename, the size and the bytes are all
+ * read server-side from the row, so a replayed or crafted job cannot describe a
+ * file that is not the one the ids name.
+ */
+export interface DeliverAttachmentJob {
+  userId: string;
+  emailMessageId: string;
+  attachmentId: string;
+}
 
 export interface ProcessChangeJob {
   accountId: string;

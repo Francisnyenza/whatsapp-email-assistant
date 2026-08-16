@@ -154,6 +154,17 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
     build: (m) => ({ intent: 'compose', to: m[1]!.trim().replace(/[,;]$/, '') }),
   },
 
+  // The files on an email. Matched before compose, because "send me the
+  // attachment" starts with a verb compose also claims.
+  {
+    re: /^(?:send|give|show)\s+(?:me\s+)?(?:the\s+|its\s+|it'?s\s+)?(?:attachments?|files?|documents?|pdfs?)$/i,
+    build: () => ({ intent: 'get_attachment' }),
+  },
+  {
+    re: /^(?:attachments?|files?)\??$/i,
+    build: () => ({ intent: 'get_attachment' }),
+  },
+
   // Drafting is explicitly not sending.
   {
     re: /^(?:draft|compose|write)\s+(?:a\s+)?(?:reply|response|answer)?\s*(?:that\s+)?(.*)$/is,

@@ -13,6 +13,7 @@ import {
   type InboundWhatsAppMessage,
   type CommandIntent,
   type WhatsAppOutboundPayload,
+  type DeliverAttachmentJob,
 } from '@wea/shared';
 import { parseRecipientList } from '@wea/mail';
 import {
@@ -34,6 +35,7 @@ import { MailboxQueryService } from '../services/mailbox-query.service.js';
 import { AssistantService } from '../services/assistant.service.js';
 import { interpretTap, type TapEffect } from '../services/tap-interpreter.js';
 import { InboxRepository } from '../repositories/inbox.repository.js';
+import { AttachmentRepository } from '../repositories/attachment.repository.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 import { startWorker } from './base.processor.js';
 
@@ -76,6 +78,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly queries: MailboxQueryService,
     private readonly assistant: AssistantService,
     private readonly inbox: InboxRepository,
+    private readonly attachments: AttachmentRepository,
     private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
@@ -607,6 +610,32 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
         return this.attempt(
           () => this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body }),
           () => intended,
+        );
+
+      // One job per file rather than one for all of them. Each is a separate
+      // download and a separate upload, and a single job that failed on the
+      // third of four would retry the two that already arrived.
+      case 'attachments':
+        return this.attempt(
+          async () => {
+            const files = await this.attachments.listDeliverable(userId, emailMessageId);
+
+            for (const file of files) {
+              await this.queue.enqueue(
+                QUEUE.MEDIA,
+                JOB.DELIVER_ATTACHMENT,
+                { userId, emailMessageId, attachmentId: file.id } satisfies DeliverAttachmentJob,
+                // Keyed on the attachment, so asking twice does not send twice.
+                { jobId: `media:${file.id}` },
+              );
+            }
+
+            return files.length;
+          },
+          (count) =>
+            count === 0
+              ? buildText('That email has no attachments.')
+              : buildText(count === 1 ? 'Sending the file…' : `Sending ${count} files…`),
         );
 
       // The answer *is* the message, so `intended` — "Reading it…" — is

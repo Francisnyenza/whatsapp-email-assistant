@@ -8,7 +8,7 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 528 tests** (1 242 unit + 286 integration
+Everything below has tests that run and pass. **1 553 tests** (1 267 unit + 286 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                     |
@@ -16,15 +16,15 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                          |
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                     |
 | `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                                                         |
-| `@wea/whatsapp` | 159              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                          |
+| `@wea/whatsapp` | 161              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                          |
 | `@wea/mail`     | 221              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                 |
 | `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic  |
 | `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                             |
-| `apps/worker`   | 311 + 226 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics |
+| `apps/worker`   | 323 + 226 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                               |
 
 ```bash
-pnpm -r test          # 1 242 unit tests
+pnpm -r test          # 1 267 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -206,7 +206,7 @@ entirely from WhatsApp" is the product claim and this is the honest scoreboard f
 | Summarise / translate / read aloud | ✅         |                                                                                                                                                                                                                                                                                                                         |
 | Free-form questions                | ✅         | RAG over the user's own mail                                                                                                                                                                                                                                                                                            |
 | **Compose a new email**            | ✅         | `email alice@acme.com about Q3 saying …`. Recipient validated by `parseRecipientList`, which refuses rather than repairs; no threading headers, so it cannot graft onto an unrelated conversation; sends from the primary mailbox. Multi-turn prompting for a missing body is not built — it asks and the user retypes. |
-| **Attachments — into the chat**    | ❌         | A notification _names_ the attachments and nothing delivers them. `QUEUE.MEDIA` is declared in `packages/shared/src/constants/queues.ts` with defaults and has **no producer and no consumer** — the "reads as a capability, does nothing" shape this project keeps finding, this time a whole queue.                   |
+| **Attachments — into the chat**    | ✅         | `send me the attachment`. `QUEUE.MEDIA` now has both a producer and a consumer. One job per file, keyed on the attachment so asking twice does not send twice. Capped at 25 MB, measured while reading rather than trusting `sizeBytes`. Refuses a flagged file, and an inline signature logo, each with a sentence.    |
 | **Attachments — out of the chat**  | ❌         | A photo or document sent in the chat never becomes an attachment. Outbound attachments work only on a forward, copied from the original.                                                                                                                                                                                |
 | **CC / BCC / reply-all**           | ❌         | Precisely: `mime-builder.ts` and `forwarding.ts` support `cc` and `bcc`, and `threading.ts` computes a reply-all recipient set. The plumbing is built and tested; **the command surface cannot express it**, so no user can reach it. Reply is always reply-to-sender.                                                  |
 | **Subject editing**                | ❌         | Subjects are derived (`Re: `, `Fwd: `). Compose needs one the user chooses.                                                                                                                                                                                                                                             |
@@ -228,9 +228,9 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 Reordered against the parity audit above. The deployment work is real but it ships a
 product that cannot compose an email, and that ordering was wrong.
 
-1. **The media queue.** `QUEUE.MEDIA` exists and nothing uses it. Closing it covers both
-   directions: attachments delivered into the chat, and a photo or document sent in the chat
-   becoming an attachment on a reply or a compose.
+1. **Attachments out of the chat.** The inbound direction is built; a photo or document the
+   user sends in WhatsApp still becomes nothing. It needs the same media queue in reverse —
+   download from Meta, store, and attach to a reply or a compose.
 2. **CC, BCC and reply-all.** The MIME and threading layers already do this; only the
    command surface is missing. The cheapest real capability on the list.
 3. **Labels, folders and snooze.** Filing verbs beyond archive.
