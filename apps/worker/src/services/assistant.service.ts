@@ -1,7 +1,15 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger } from 'pino';
 import { AppError, type EmailAnalysis } from '@wea/shared';
-import { analyzeEmail, translateEmail, draftReply, prepareSpeech, canSpeak } from '@wea/ai';
+import {
+  analyzeEmail,
+  translateEmail,
+  draftReply,
+  prepareSpeech,
+  canSpeak,
+  answerQuestion,
+  type AskSource,
+} from '@wea/ai';
 import { AiService } from './ai.service.js';
 import { AccountService } from './account.service.js';
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
@@ -76,6 +84,87 @@ export class AssistantService {
     return result.data.truncated
       ? `${result.data.text}\n\n_(translated the first part — the email is longer than fits here)_`
       : result.data.text;
+  }
+
+  /**
+   * A question answered from several emails at once.
+   *
+   * The retrieval happens elsewhere — `MailboxQueryService` owns the search, and
+   * this class deliberately owns no mailbox-wide query. What arrives here is
+   * already scoped to the user by row-level security, which is what makes it
+   * safe to put in front of a model at all: the set can contain mail an attacker
+   * arranged to have retrieved, but never mail belonging to anyone else.
+   *
+   * Returns the answer and *which of the supplied emails it used*, by index.
+   * The model never sees an id — see `answerQuestion` — so the caller maps
+   * indexes back to the rows it already holds, and a fabricated citation
+   * resolves to nothing rather than to a row.
+   *
+   * @throws {AppError} `AI_UNAVAILABLE` with no provider, `AI_INVALID_OUTPUT`
+   *   when the answer fails its schema. Both become a sentence, never silence.
+   */
+  async answerQuestionFrom(
+    userId: string,
+    question: string,
+    sources: QuestionSource[],
+  ): Promise<{ text: string; usedSources: number[] }> {
+    const provider = this.ai.provider();
+    if (!provider) {
+      throw new AppError('AI_UNAVAILABLE', 'No model provider configured', { retryable: false });
+    }
+
+    await this.assertAffordable(userId);
+
+    // Bodies where we still hold them, snippets where the retention sweep has
+    // been. Sequential rather than parallel: each decrypt is a KMS unwrap, and
+    // firing a handful at once to save a few hundred milliseconds on a question
+    // is not worth the burst against a shared key.
+    const enriched: AskSource[] = [];
+    for (const source of sources) {
+      enriched.push({
+        fromName: source.fromName,
+        fromAddress: source.fromAddress,
+        subject: source.subject,
+        receivedAt: source.receivedAt,
+        text: await this.bodyFor(userId, source.emailMessageId, source.snippet),
+      });
+    }
+
+    const result = await answerQuestion(provider, { question, sources: enriched });
+
+    await this.analyses.recordUsage(userId, 'question', result.usage);
+
+    this.logger.info(
+      {
+        event: 'assistant.question_answered',
+        sources: sources.length,
+        cited: result.data.usedSources.length,
+      },
+      'Mailbox question answered',
+    );
+
+    return { text: result.data.text, usedSources: result.data.usedSources };
+  }
+
+  /**
+   * The body of one retrieved email, falling back to the snippet it came with.
+   *
+   * A miss here is not worth failing the question over — the answer is simply
+   * built from less. What would be worth failing over is answering from an
+   * email we could not read at all, and the snippet is the same 300 characters
+   * the search matched on, so there is always something real to reason from.
+   */
+  private async bodyFor(userId: string, emailMessageId: string, snippet: string): Promise<string> {
+    try {
+      const message = await this.messages.findForAnalysis(userId, emailMessageId);
+      return message ? await this.body(userId, message) : snippet;
+    } catch (err) {
+      this.logger.warn(
+        { event: 'assistant.question_source_unavailable', emailMessageId, err },
+        'Could not read a retrieved email; answering from its snippet',
+      );
+      return snippet;
+    }
   }
 
   /**
@@ -259,6 +348,15 @@ export class AssistantService {
       return message.snippet;
     }
   }
+}
+
+export interface QuestionSource {
+  emailMessageId: string;
+  subject: string;
+  fromName: string | null;
+  fromAddress: string;
+  snippet: string;
+  receivedAt: Date;
 }
 
 export interface SpokenEmail {

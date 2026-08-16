@@ -193,17 +193,6 @@ describe('unbuilt features say so plainly', () => {
   // An assistant that goes quiet reads as broken. Naming the specific missing
   // capability is more useful than a generic apology.
 
-  it('points a mailbox question at the commands that do work', () => {
-    const text = textOf(plan({ intent: 'question', question: 'who emailed me?' }, resolved()));
-    expect(text.toLowerCase()).toContain('search');
-    expect(text.toLowerCase()).toContain('unread');
-  });
-
-  it('points a mailbox question at every command that does work', () => {
-    const text = textOf(plan({ intent: 'question', question: 'anything due?' }, resolved()));
-    expect(text.toLowerCase()).toContain('deadlines');
-  });
-
   it('does not apologise, blame the user, or hedge', () => {
     const text = textOf(plan({ intent: 'summarize' }, resolved())).toLowerCase();
     for (const word of ['sorry', 'unfortunately', 'oops', 'invalid']) {
@@ -238,6 +227,36 @@ describe('reading an email aloud', () => {
     const planned = plan({ intent: 'read_aloud' }, ambiguous());
 
     expect(planned.effect).toBeUndefined();
+  });
+});
+
+describe('the intents this class deliberately does not own', () => {
+  // `question`, `search` and the standing lists are reads over the whole
+  // mailbox, answered by MailboxQueryService before the planner is reached —
+  // this class has no database and grows none to serve them.
+
+  it('carries out nothing for a mailbox-wide read', () => {
+    // The property that matters if the interception upstream is ever removed:
+    // reaching here produces no effect, so nothing is executed against a
+    // half-understood intent. The user gets the fallback instead, which is
+    // visibly wrong rather than quietly wrong.
+    for (const intent of [
+      { intent: 'question' as const, question: 'did tom reply?' },
+      { intent: 'search' as const, query: 'invoices' },
+      { intent: 'list_unread' as const },
+      { intent: 'list_deadlines' as const },
+    ]) {
+      const planned = plan(intent, resolved());
+
+      expect(planned.effect, intent.intent).toBeUndefined();
+      expect(planned.followUp, intent.intent).toBe('none');
+    }
+  });
+
+  it('still says something, because silence reads as broken', () => {
+    expect(
+      textOf(plan({ intent: 'question', question: 'anything?' }, resolved())).length,
+    ).toBeGreaterThan(0);
   });
 });
 

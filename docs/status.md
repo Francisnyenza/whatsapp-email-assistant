@@ -8,23 +8,23 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 417 tests** (1 146 unit + 271 integration
+Everything below has tests that run and pass. **1 459 tests** (1 180 unit + 279 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests            | What it does                                                                                                                |
-| --------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                     |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                |
-| `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                                    |
-| `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                     |
-| `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                                  |
-| `@wea/ai`       | 183              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                        |
-| `apps/worker`   | 278 + 211 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, draft, deadlines, notify, planner, actions, sweeps  |
-| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                          |
+| Package         | Tests            | What it does                                                                                                                                    |
+| --------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                         |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                    |
+| `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                                                        |
+| `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                         |
+| `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                                                      |
+| `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic |
+| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                            |
+| `apps/worker`   | 287 + 219 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps                 |
+| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                              |
 
 ```bash
-pnpm -r test          # 1 146 unit tests
+pnpm -r test          # 1 180 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -102,6 +102,18 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- A free-form question is answered from the user's own mail and nothing else. The candidate
+  set comes from the same hybrid search `search` uses, so it is scoped by row-level
+  security — asserted against real rows. Each retrieved email reaches the model inside its
+  own nonce-delimited block, numbered rather than identified: **no real email id is ever put
+  in front of the model**, so a citation it invents refers to nothing and the rows the user
+  taps are server-minted by construction rather than by check. Output is schema-validated
+  and discarded on failure. An answer claiming to have deleted or forwarded mail changes
+  nothing, because there is no path from this call to a mutation — asserted by making a
+  stub model say exactly that.
+- Retrieval for a question is deliberately narrower than for a search (four sources, not
+  ten): every source is third-party prose competing with the system prompt, so each one
+  added makes an injection marginally more likely to land.
 - "Read it aloud" comes back as a voice note. The email is announced by sender and subject
   before a word of it is read, quoted history and signatures are cut, and it is bounded to
   about two minutes — with the recording itself saying it stopped early, because a caption
@@ -123,10 +135,16 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Free-form questions.** "Did anyone reply about the invoice?" needs the model to reason
-   over a _set_ of mail rather than one message, which is retrieval-augmented generation and
-   a different security question — the retrieved mail is attacker-influenced content
-   selected by an attacker-influenceable query.
+1. **A CI pipeline (Phase 10).** Everything below is run by hand today. Lint, typecheck,
+   build, the unit suites and the Postgres-backed integration suites all pass on demand, and
+   nothing enforces that on a push — which is how a green project becomes a red one quietly.
+2. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+   but stub every third party. What is untested end to end is the seam with Meta and with
+   Google, which is where a contract changes without telling anyone.
+3. **Dockerfiles, Kubernetes manifests, Terraform, monitoring (Phase 11).**
+
+Every feature in the product spec is now built. What remains is the work that makes it
+deployable and keeps it working.
 
 ### After that
 
@@ -158,6 +176,17 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 ## Findings worth carrying forward
 
 Things that surfaced during the build and would have been expensive to discover later.
+
+**A natural-language question is a poor keyword query, and that is visible without
+embeddings.** Question answering reuses the hybrid search that powers `search`, and with a
+model provider configured the semantic arm carries it. Without one, the retrieval falls back
+to full-text and trigram over a _sentence_ — and "what did sarah want?" shares no term with
+any subject or snippet, so it legitimately retrieves nothing. The integration tests are
+written against that reality rather than around it: the questions that retrieve share
+vocabulary with the fixtures, and one test pins what happens when none does — we say we found
+nothing rather than asking a model to answer from an empty set. The general point is that a
+feature can be correct and still be much weaker in one supported configuration than another,
+and the honest place to record that is next to the tests that show it.
 
 **Audio erases the boundary that a screen draws for free.** On the notification card, an
 email body sits under a sender line and nobody confuses it with the assistant talking. Read
@@ -655,11 +684,19 @@ Each of these has a test. They are the load-bearing ones.
     make a provider redeliver forever. Missing raw bytes
     fail closed; an authentic payload always gets a 200 so a bug here cannot trigger
     endless redelivery.
-13. **The dashboard's access token never reaches persistent storage.** It lives in a module
+13. **A model is never given an email id.** Question answering numbers its sources 1..n for
+    the length of one call and maps the numbers back itself. There is no id in the model's
+    context to leak, repeat, or be induced to emit, so a fabricated citation resolves to
+    nothing rather than to a row — the row ids the user taps stay server-minted by
+    construction rather than by validation.
+14. **A question is a read.** Nothing on the path from a free-form question to its answer can
+    mutate a mailbox or send mail, whatever the answer says. Asserted by making the model
+    claim it deleted everything and checking that it did not.
+15. **The dashboard's access token never reaches persistent storage.** It lives in a module
     variable and dies with the tab; the refresh token is an HttpOnly cookie script cannot
     read. Persisting the access token would turn any XSS on that origin from a session-length
     problem into a permanent one.
-14. **A 401 refreshes once, and concurrent 401s refresh together.** Refresh tokens rotate on
+16. **A 401 refreshes once, and concurrent 401s refresh together.** Refresh tokens rotate on
     use, so a second concurrent refresh presents an already-rotated token and correctly trips
     invariant 8 — the user is signed out of everything by their own dashboard loading. Both
     the single-flight promise and the single retry are pinned by tests that fail fast rather

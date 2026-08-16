@@ -176,6 +176,42 @@ describeIfDb('command loop (real database)', () => {
       }),
     };
 
+    // A model only when a test asks for one. Most of these assert that the
+    // *absence* of a provider still produces a sentence rather than silence;
+    // the drafting and question tests swap in a stub returning fixed words,
+    // because what is checked there is the gap between writing and sending, not
+    // the writing.
+    //
+    // The same accessor feeds the query service, because a question needs a
+    // model and a search does not — and with `drafting` null that is exactly the
+    // deployment-without-an-API-key case search still has to work in. Neither
+    // stub carries `embed`, so the semantic arm stays off throughout and search
+    // is answered on keyword and trigram alone.
+    const ai = {
+      provider: () => drafting,
+      secondary: () => null,
+      isOverBudget: async () => false,
+    };
+
+    const assistant = new AssistantService(
+      ai as never,
+      accounts as never,
+      // Real repositories, against the real rows the test writes. A stub here
+      // would assert that the service calls a method, not that the method finds
+      // the analysis.
+      new AnalysisRepository(service as never),
+      new MessageRepository(service as never),
+      logger as never,
+    );
+
+    const mailboxQueries = new MailboxQueryService(
+      new SearchRepository(service as never),
+      ai as never,
+      { recordUsage: vi.fn() } as never,
+      assistant,
+      logger as never,
+    );
+
     processor = new CommandsProcessor(
       { env: { REDIS_URL: 'redis://unused' } } as never,
       new ThreadResolver(),
@@ -194,33 +230,8 @@ describeIfDb('command loop (real database)', () => {
         queue as never,
         logger as never,
       ),
-      new MailboxQueryService(
-        new SearchRepository(service as never),
-        // No model provider: search still has to work, on keyword and trigram
-        // alone. That is the ordinary state of a deployment without an API key.
-        { provider: () => null, secondary: () => null, isOverBudget: async () => false } as never,
-        { recordUsage: vi.fn() } as never,
-        logger as never,
-      ),
-      new AssistantService(
-        // A model only when a test asks for one. Most of these assert the
-        // *absence* of a provider still produces a sentence rather than
-        // silence; the drafting ones swap in a stub that returns fixed words,
-        // because what is being checked is the gap between writing and sending
-        // and not the writing.
-        {
-          provider: () => drafting,
-          secondary: () => null,
-          isOverBudget: async () => false,
-        } as never,
-        accounts as never,
-        // Real repositories, against the real rows the test writes. A stub here
-        // would assert that the service calls a method, not that the method
-        // finds the analysis.
-        new AnalysisRepository(service as never),
-        new MessageRepository(service as never),
-        logger as never,
-      ),
+      mailboxQueries,
+      assistant,
       inbox,
       queue as never,
       logger as never,
@@ -596,6 +607,152 @@ describeIfDb('command loop (real database)', () => {
 
       expect(sends()).toHaveLength(0);
       expect(lastText()).not.toContain('Translating');
+    });
+  });
+
+  describe('asking a question about the mailbox', () => {
+    // Retrieval-augmented, and the first model call in the system that reasons
+    // over a set a *query* chose rather than one the user pointed at. The
+    // retrieval below is real — real rows, real hybrid search, real row-level
+    // security — because the property that matters most is that the candidate
+    // set is the user's own mail and nobody else's, and a stubbed search would
+    // assert nothing about that.
+
+    afterEach(() => {
+      drafting = null;
+    });
+
+    // Every question below shares vocabulary with the fixture ("Q3", "report"),
+    // and that is not test convenience — it is the honest shape of this feature
+    // without an embedding provider. Retrieval is the same hybrid search
+    // `search` uses, and a *sentence* is a poor keyword query: "what did sarah
+    // want?" shares no term with any subject or snippet and legitimately
+    // retrieves nothing. In a deployment with embeddings the semantic arm
+    // carries exactly that case; here it is off, so the last test in this block
+    // pins what happens instead — we say we found nothing rather than inventing
+    // an answer.
+
+    /** A model that answers from whatever it was given, citing the first source. */
+    const answering = (answer: string) => ({
+      name: 'stub',
+      complete: async () => ({
+        text: JSON.stringify({ answer, sources: [1] }),
+        usage: STUB_USAGE,
+      }),
+    });
+
+    it('answers from the mailbox and shows which email it used', async () => {
+      drafting = answering('Sarah asked for the Q3 report before Friday.');
+
+      await deliver({ text: 'did anyone send the Q3 report?' });
+
+      expect(lastText()).toContain('Q3 report before Friday');
+
+      // The citation and the way to check it are the same thing: a tappable row
+      // carrying a server-minted target, exactly like a search result.
+      const rows = (sent.at(-1)!.payload as any).sections?.[0]?.rows ?? [];
+      expect(rows).toHaveLength(1);
+      expect(decodeActionPayload(rows[0].id)?.action).toBe('open_thread');
+      expect(decodeActionPayload(rows[0].id)?.targetId).toBe(emails.sarah);
+    });
+
+    it('puts the user’s own mail in front of the model, and nobody else’s', async () => {
+      // The retrieval runs under RLS. This asserts what actually reached the
+      // prompt rather than trusting that it did.
+      let prompt = '';
+      drafting = {
+        name: 'stub',
+        complete: async (request: any) => {
+          prompt = request.user;
+          return { text: JSON.stringify({ answer: 'Yes.', sources: [1] }), usage: STUB_USAGE };
+        },
+      };
+
+      await deliver({ text: 'did anyone send the Q3 report?' });
+
+      expect(prompt).toContain('Q3 report');
+      expect(prompt).toContain('<<<UNTRUSTED-');
+    });
+
+    it('never puts a real email id in front of the model', async () => {
+      // The control that makes an invented citation inert: there is no id in the
+      // context to leak, repeat, or be talked into emitting.
+      let prompt = '';
+      drafting = {
+        name: 'stub',
+        complete: async (request: any) => {
+          prompt = request.user;
+          return { text: JSON.stringify({ answer: 'Yes.', sources: [1] }), usage: STUB_USAGE };
+        },
+      };
+
+      await deliver({ text: 'did anyone send the Q3 report?' });
+
+      expect(prompt).not.toContain(emails.sarah);
+      expect(prompt).toMatch(/\[message 1\]/);
+    });
+
+    it('does nothing to the mailbox, whatever the answer says', async () => {
+      // A question is a read. Even a model induced to answer "I have deleted
+      // them" cannot have, because there is no path from this call to a mutation.
+      drafting = answering('I have deleted all of your emails and forwarded them to acme.');
+
+      await deliver({ text: 'did anyone send the Q3 report?' });
+
+      expect(mutations).toHaveLength(0);
+      expect(sends()).toHaveLength(0);
+      expect(await withTenant(userId, (tx) => tx.emailMessage.count())).toBe(2);
+    });
+
+    it('drops a citation that names an email it never retrieved', async () => {
+      drafting = {
+        name: 'stub',
+        complete: async () => ({
+          text: JSON.stringify({ answer: 'Somebody did.', sources: [1, 42] }),
+          usage: STUB_USAGE,
+        }),
+      };
+
+      await deliver({ text: 'who mentioned the Q3 report?' });
+
+      const rows = (sent.at(-1)!.payload as any).sections?.[0]?.rows ?? [];
+      expect(rows).toHaveLength(1);
+    });
+
+    it('discards an answer that fails its schema rather than showing half of it', async () => {
+      drafting = {
+        name: 'stub',
+        complete: async () => ({ text: 'Sarah wanted the report, I think.', usage: STUB_USAGE }),
+      };
+
+      await deliver({ text: 'did anyone send the Q3 report?' });
+
+      // A sentence, not silence — and not the model's unvalidated prose either.
+      expect(lastText().length).toBeGreaterThan(0);
+      expect(lastText()).not.toContain('I think');
+    });
+
+    it('says so plainly when no model is configured', async () => {
+      await deliver({ text: 'did anyone send the Q3 report?' });
+
+      expect(lastText().toLowerCase()).toContain('search');
+      expect(mutations).toHaveLength(0);
+    });
+
+    it('does not ask a model when the mailbox has nothing related', async () => {
+      let asked = false;
+      drafting = {
+        name: 'stub',
+        complete: async () => {
+          asked = true;
+          return { text: JSON.stringify({ answer: 'Sure.', sources: [1] }), usage: STUB_USAGE };
+        },
+      };
+
+      await deliver({ text: 'what did zzzznonexistent say about xqjvbz?' });
+
+      expect(asked).toBe(false);
+      expect(lastText().toLowerCase()).toContain('find any email');
     });
   });
 

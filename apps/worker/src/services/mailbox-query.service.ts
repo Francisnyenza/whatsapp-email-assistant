@@ -1,7 +1,7 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger } from 'pino';
 import { embedQuery, canEmbed } from '@wea/ai';
-import { buildSearchResults, buildDigest, buildText } from '@wea/whatsapp';
+import { buildSearchResults, buildDigest, buildText, buildAnswer } from '@wea/whatsapp';
 import type { CommandIntent, WhatsAppOutboundPayload } from '@wea/shared';
 import { AiService } from './ai.service.js';
 import {
@@ -11,6 +11,7 @@ import {
   type Deadline,
 } from '../repositories/search.repository.js';
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
+import { AssistantService } from './assistant.service.js';
 
 /**
  * Reads over the mailbox: "find the invoice from Tom", "what's unread".
@@ -32,6 +33,7 @@ export class MailboxQueryService {
     private readonly search: SearchRepository,
     private readonly ai: AiService,
     private readonly analyses: AnalysisRepository,
+    private readonly assistant: AssistantService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
@@ -43,6 +45,7 @@ export class MailboxQueryService {
     return (
       LIST_KINDS[intent.intent] !== undefined ||
       intent.intent === 'search' ||
+      intent.intent === 'question' ||
       intent.intent === 'list_deadlines'
     );
   }
@@ -50,6 +53,10 @@ export class MailboxQueryService {
   async answer(userId: string, intent: CommandIntent): Promise<WhatsAppOutboundPayload | null> {
     if (intent.intent === 'search') {
       return this.answerSearch(userId, intent.query);
+    }
+
+    if (intent.intent === 'question') {
+      return this.answerQuestion(userId, intent.question);
     }
 
     if (intent.intent === 'list_deadlines') {
@@ -84,6 +91,74 @@ export class MailboxQueryService {
     );
 
     return buildSearchResults(text, hits.map(toResultItem));
+  }
+
+  /* ------------------------------ questions ------------------------------ */
+
+  /**
+   * "Did anyone reply about the invoice?"
+   *
+   * Retrieval-augmented, and the retrieval is the security-relevant half. The
+   * same hybrid search that answers `search` picks the candidates, which means
+   * two things at once: every candidate is the user's own mail, because the
+   * query runs under row-level security; and *which* of their mail is partly
+   * chosen by whoever wrote it, because anyone who can send the user an email
+   * can write one full of the words a likely question matches.
+   *
+   * The first is what makes this safe to build at all. The second is why the
+   * emails reach the model inside a nonce envelope, numbered rather than
+   * identified, with the question placed after them — and why the answer is
+   * prose the user reads rather than anything that acts.
+   *
+   * Fewer sources than a search returns, deliberately. Ten emails of body text
+   * would bury the question and the rules under third-party prose, which is the
+   * simplest way there is to make an injection land.
+   */
+  private async answerQuestion(userId: string, question: string): Promise<WhatsAppOutboundPayload> {
+    const text = question.trim();
+
+    if (!this.ai.provider()) {
+      // Not an apology — the commands that *do* work without a model are the
+      // useful thing to say here.
+      return buildText(
+        'I can’t answer questions about your mailbox without a model configured. ' +
+          'Try *search <words>*, *unread*, *urgent* or *deadlines*.',
+      );
+    }
+
+    const vector = await this.queryVector(userId, text);
+    const hits = await this.search.search(userId, text, {
+      ...(vector ? { vector } : {}),
+      limit: QUESTION_SOURCES,
+    });
+
+    if (hits.length === 0) {
+      // Answering from nothing is answering from the model's imagination, which
+      // is the one output this feature must never produce.
+      return buildText(
+        'I couldn’t find any email that looks related to that. ' +
+          'Try naming a sender, or a word you remember from the subject.',
+      );
+    }
+
+    const answer = await this.assistant.answerQuestionFrom(userId, text, hits);
+
+    this.logger.info(
+      {
+        event: 'question.answered',
+        semantic: vector !== null,
+        retrieved: hits.length,
+        cited: answer.usedSources.length,
+      },
+      'Mailbox question answered',
+    );
+
+    // Indexes mapped back to rows we already hold. A citation the model
+    // invented was dropped before it reached here, so this cannot name an email
+    // that was never retrieved.
+    const cited = answer.usedSources.map((index) => hits[index]).filter(Boolean) as SearchHit[];
+
+    return buildAnswer(answer.text, cited.map(toResultItem));
   }
 
   /**
@@ -187,6 +262,18 @@ export class MailboxQueryService {
  * them — it reads extracted action items rather than messages, so it has its own
  * branch above and its own shape on the way out.
  */
+/**
+ * How many emails a question is answered from.
+ *
+ * Far fewer than the ten a search shows, and the reason is not cost. Every
+ * source is third-party prose competing with the system prompt for the model's
+ * attention, so each one added makes an injection marginally more likely to
+ * land — and the marginal *answer* stops improving well before ten, because a
+ * question the top few cannot answer is usually a question the next six cannot
+ * either.
+ */
+const QUESTION_SOURCES = 4;
+
 const LIST_KINDS: Partial<Record<CommandIntent['intent'], ListKind>> = {
   list_today: 'today',
   list_unread: 'unread',

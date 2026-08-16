@@ -63,7 +63,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
     ['processors/ingest.processor.js', 'IngestProcessor', 5],
     ['queue/queue.producer.js', 'QueueProducer', 1],
     ['repositories/search.repository.js', 'SearchRepository', 1],
-    ['services/mailbox-query.service.js', 'MailboxQueryService', 4],
+    ['services/mailbox-query.service.js', 'MailboxQueryService', 5],
     ['services/assistant.service.js', 'AssistantService', 5],
   ];
 

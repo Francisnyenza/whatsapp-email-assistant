@@ -132,20 +132,11 @@ export class ResponsePlanner {
           followUp: 'none',
         };
 
-      case 'question':
-        return {
-          payload: buildText(
-            "I can't answer questions about your mailbox yet. " +
-              'Try *search <words>*, *unread*, *urgent* or *deadlines*.',
-          ),
-          followUp: 'none',
-        };
-
-      // `search` and every `list_*` are deliberately absent. They are reads over
-      // the whole mailbox rather than actions on one email, so they are answered
-      // by MailboxQueryService before the processor ever calls the planner —
-      // this class stays pure and target-oriented, and never grows a database
-      // dependency to serve five intents.
+      // `question`, `search` and every `list_*` are deliberately absent. They are
+      // reads over the whole mailbox rather than actions on one email, so they
+      // are answered by MailboxQueryService before the processor ever calls the
+      // planner — this class stays pure and target-oriented, and never grows a
+      // database dependency to serve six intents.
       //
       // If one reaches here it means that interception was removed, so it falls
       // through to the default rather than being silently mishandled.
@@ -368,6 +359,10 @@ const HELP_TEXT = [
   '• _unread_ · _today_ · _urgent_ · _deadlines_',
   '• _summarise_ · _translate to swahili_',
   '• _read it aloud_ — comes back as a voice note',
+  '',
+  '*Asking*',
+  '• _did anyone reply about the invoice?_',
+  '• I answer from your own mail, and show you which emails I used',
   '',
   '*Writing*',
   '• _draft a polite no_ — I write it, you approve it',

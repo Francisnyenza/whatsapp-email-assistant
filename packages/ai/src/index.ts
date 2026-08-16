@@ -31,6 +31,8 @@ export { translateEmail, type TranslationInput, type Translation } from './trans
 
 export { draftReply, type DraftInput } from './draft.js';
 
+export { answerQuestion, type AskInput, type AskSource, type Answer } from './ask.js';
+
 export {
   prepareSpeech,
   stripQuotedHistory,

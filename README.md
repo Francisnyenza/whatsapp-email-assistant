@@ -63,7 +63,7 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 417 tests passing** (1 146 unit + 271 integration against real Postgres). See
+**1 459 tests passing** (1 180 unit + 279 integration against real Postgres). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 
@@ -76,7 +76,7 @@ including what these ticks do not cover.
 | 5     | WhatsApp integration         | ✅                                   |
 | 6     | Gmail integration            | ✅                                   |
 | 7     | Outlook / Microsoft 365      | ✅                                   |
-| 8     | AI layer                     | ✅ except free-form questions        |
+| 8     | AI layer                     | ✅                                   |
 | 9     | Frontend dashboard           | 🔨 setup and settings; no mail views |
 | 10    | Testing                      | 🔨 unit and integration; no E2E/CI   |
 | 11    | Deployment & ops             | —                                    |

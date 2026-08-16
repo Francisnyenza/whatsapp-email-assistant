@@ -43,6 +43,7 @@ describe('mailbox queries', () => {
   let deadlines: ReturnType<typeof vi.fn>;
   let embed: ReturnType<typeof vi.fn>;
   let recordUsage: ReturnType<typeof vi.fn>;
+  let answerQuestionFrom: ReturnType<typeof vi.fn>;
   let providerFor: () => unknown;
   let secondaryFor: () => unknown;
   let overBudget: boolean;
@@ -54,6 +55,9 @@ describe('mailbox queries', () => {
     deadlines = vi.fn().mockResolvedValue([]);
     embed = vi.fn().mockResolvedValue({ vector: VECTOR, usage: USAGE });
     recordUsage = vi.fn().mockResolvedValue(undefined);
+    answerQuestionFrom = vi
+      .fn()
+      .mockResolvedValue({ text: 'Tom sent it on Tuesday.', usedSources: [0] });
     overBudget = false;
     logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
@@ -69,6 +73,7 @@ describe('mailbox queries', () => {
         isOverBudget: async () => overBudget,
       } as never,
       { recordUsage } as never,
+      { answerQuestionFrom } as never,
       logger,
     );
   });
@@ -97,10 +102,15 @@ describe('mailbox queries', () => {
       expect(service.handles({ intent: 'list_deadlines' })).toBe(true);
     });
 
-    it('does not claim what it cannot actually answer', () => {
-      // A free-form question needs the model to reason over the mailbox, which
-      // is a different thing entirely from a query with a shape.
-      expect(service.handles({ intent: 'question', question: 'who?' })).toBe(false);
+    it('claims free-form questions, which are a read over the whole mailbox', () => {
+      expect(service.handles({ intent: 'question', question: 'who?' })).toBe(true);
+    });
+
+    it('does not claim an action on one email', () => {
+      // Those belong to the planner. Claiming one here would answer a delete
+      // with a search result.
+      expect(service.handles({ intent: 'archive' })).toBe(false);
+      expect(service.handles({ intent: 'reply', body: 'sure' })).toBe(false);
     });
   });
 
@@ -221,7 +231,109 @@ describe('mailbox queries', () => {
     });
 
     it('returns null for an intent it does not own, rather than a wrong answer', async () => {
-      expect(await service.answer('user-1', { intent: 'question', question: 'who?' })).toBeNull();
+      expect(await service.answer('user-1', { intent: 'archive' })).toBeNull();
+    });
+  });
+
+  describe('answering a question', () => {
+    it('retrieves fewer emails than a search shows', async () => {
+      // Every source is third-party prose competing with the system prompt, so
+      // each one added makes an injection marginally more likely to land — and a
+      // question the top few cannot answer is rarely answered by the next six.
+      await service.answer('user-1', { intent: 'question', question: 'did tom reply?' });
+
+      expect(search.mock.calls[0]![2]).toMatchObject({ limit: 4 });
+      expect(search.mock.calls[0]![2].limit).toBeLessThan(10);
+    });
+
+    it('passes the retrieved emails to the assistant, and the question with them', async () => {
+      search.mockResolvedValue([hit('m1', 'Invoice 4471'), hit('m2', 'Re: Invoice 4471')]);
+
+      await service.answer('user-1', { intent: 'question', question: '  did tom reply?  ' });
+
+      const [userId, question, sources] = answerQuestionFrom.mock.calls[0]!;
+      expect(userId).toBe('user-1');
+      expect(question).toBe('did tom reply?');
+      expect(sources).toHaveLength(2);
+    });
+
+    it('answers with the emails it cited, as tappable rows', async () => {
+      // The citation and the way to check it are the same thing. An answer about
+      // someone's mail is a claim, and a claim they cannot check is worse than
+      // no answer at all.
+      search.mockResolvedValue([hit('m1', 'Invoice 4471'), hit('m2', 'Re: Invoice 4471')]);
+      answerQuestionFrom.mockResolvedValue({ text: 'Tom replied Tuesday.', usedSources: [1] });
+
+      const payload = await service.answer('user-1', {
+        intent: 'question',
+        question: 'did tom reply?',
+      });
+
+      expect(bodyOf(payload)).toContain('Tom replied Tuesday.');
+      expect(rowsOf(payload)).toHaveLength(1);
+    });
+
+    it('cannot show a row for an email it never retrieved', async () => {
+      // The model answers in ordinals and never sees an id, so an out-of-range
+      // citation resolves to nothing. This asserts the mapping honours that
+      // rather than indexing into undefined and rendering an empty row.
+      search.mockResolvedValue([hit('m1', 'Invoice 4471')]);
+      answerQuestionFrom.mockResolvedValue({ text: 'Someone did.', usedSources: [0, 5] });
+
+      const payload = await service.answer('user-1', { intent: 'question', question: 'who?' });
+
+      const rows = rowsOf(payload);
+      expect(rows).toHaveLength(1);
+      expect(JSON.stringify(rows)).not.toContain('undefined');
+    });
+
+    it('falls back to plain text when the answer cites nothing', async () => {
+      // A list with an empty section is rejected by the API, and "I can't tell
+      // from these" is a complete answer that genuinely has no sources.
+      answerQuestionFrom.mockResolvedValue({
+        text: 'I can\u2019t tell from these.',
+        usedSources: [],
+      });
+
+      const payload = await service.answer('user-1', { intent: 'question', question: 'who?' });
+
+      expect(payload).toMatchObject({ kind: 'text' });
+      expect(bodyOf(payload)).toContain('tell from these');
+    });
+
+    it('does not ask a model when nothing was retrieved', async () => {
+      // Answering from nothing is answering from the model's imagination.
+      search.mockResolvedValue([]);
+
+      const payload = await service.answer('user-1', {
+        intent: 'question',
+        question: 'did the payment clear?',
+      });
+
+      expect(answerQuestionFrom).not.toHaveBeenCalled();
+      expect(bodyOf(payload)).toContain('find any email');
+    });
+
+    it('says what does work when no model is configured, and searches nothing', async () => {
+      providerFor = () => null;
+
+      const payload = await service.answer('user-1', { intent: 'question', question: 'who?' });
+
+      expect(bodyOf(payload)).toContain('search');
+      expect(search).not.toHaveBeenCalled();
+      expect(answerQuestionFrom).not.toHaveBeenCalled();
+    });
+
+    it('still retrieves when the query cannot be embedded', async () => {
+      // Keyword and trigram carry the retrieval. A question is worth answering
+      // from a slightly worse candidate set rather than not at all.
+      embed.mockRejectedValue(new Error('provider down'));
+
+      await service.answer('user-1', { intent: 'question', question: 'did tom reply?' });
+
+      expect(search).toHaveBeenCalled();
+      expect(search.mock.calls[0]![2]).not.toHaveProperty('vector');
+      expect(answerQuestionFrom).toHaveBeenCalled();
     });
   });
 });

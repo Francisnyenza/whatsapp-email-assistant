@@ -31,6 +31,7 @@ export {
   buildDraftConfirmation,
   buildDisambiguation,
   buildSearchResults,
+  buildAnswer,
   buildText,
   enforceLimits,
   clamp,

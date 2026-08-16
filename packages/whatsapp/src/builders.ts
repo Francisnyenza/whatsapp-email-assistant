@@ -396,6 +396,42 @@ export function buildText(body: string): WhatsAppTextPayload {
 }
 
 /**
+ * An answer to a question, with the emails it came from.
+ *
+ * Not `buildDigest`: that one opens "You have N new emails", which is a
+ * different sentence from "here is what I found out", and reusing it would tell
+ * the user their answer was a delivery.
+ *
+ * The rows matter more than they look. An answer about someone's mail is a
+ * claim, and a claim the user cannot check is worse than no answer — so every
+ * email the answer drew on is offered as a tappable row, which is both the
+ * citation and the way to go read the thing for themselves. The ids are
+ * server-minted `open_thread` targets like every other row here (ADR 0004), so
+ * naming a source cannot widen what the tap after it may touch.
+ *
+ * With nothing cited it falls back to text. A list with an empty section is
+ * rejected by the API, and "I can't tell from these" is a complete answer that
+ * genuinely has no sources.
+ */
+export function buildAnswer(answer: string, sources: SearchResultItem[]): WhatsAppOutboundPayload {
+  const rows = sources.slice(0, WHATSAPP_LIMITS.listRowCount).map((item) => ({
+    id: encodeActionPayload({ action: 'open_thread', targetId: item.emailMessageId }),
+    title: clamp(item.fromName ?? item.fromAddress, WHATSAPP_LIMITS.listRowTitle),
+    description: clamp(item.subject || '(no subject)', WHATSAPP_LIMITS.listRowDescription),
+  }));
+
+  if (rows.length === 0) return buildText(answer);
+
+  return {
+    kind: 'list',
+    header: clamp('Answer', WHATSAPP_LIMITS.headerText),
+    body: clamp(answer, WHATSAPP_LIMITS.interactiveBody),
+    buttonText: clamp('Show sources', WHATSAPP_LIMITS.listButtonText),
+    sections: [{ title: rows.length === 1 ? 'From this email' : 'From these emails', rows }],
+  };
+}
+
+/**
  * Final safety net before a payload leaves for Meta.
  *
  * Every builder above already clamps, but payloads also come from command
