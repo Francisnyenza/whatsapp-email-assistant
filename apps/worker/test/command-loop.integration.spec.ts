@@ -776,6 +776,46 @@ describeIfDb('command loop (real database)', () => {
     });
   });
 
+  describe('replying to everyone', () => {
+    it('copies the other recipients, which a plain reply does not', async () => {
+      // `resolveReplyRecipients` implemented this from the start and no command
+      // ever set the flag — built, tested and unreachable until now.
+      await deliver({ context: { id: deliveries.sarah! }, text: 'reply all saying I agree' });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ orderBy: { createdAt: 'desc' } }),
+      );
+
+      expect(draft!.toAddresses).toContain('sarah.chen@acme.com');
+      expect(draft!.ccAddresses.length).toBeGreaterThan(0);
+    });
+
+    it('leaves a plain reply going only to the sender', async () => {
+      // The default must stay reply-to-sender. Quietly copying five people on a
+      // reply the user thought was private cannot be taken back.
+      await deliver({ context: { id: deliveries.sarah! }, text: 'reply saying I agree' });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ orderBy: { createdAt: 'desc' } }),
+      );
+
+      expect(draft!.ccAddresses).toEqual([]);
+    });
+
+    it('never copies the user their own address', async () => {
+      // Replying to a thread you are on would otherwise put you in your own Cc,
+      // and every reply-all after it would carry you twice.
+      await deliver({ context: { id: deliveries.sarah! }, text: 'reply all saying I agree' });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ orderBy: { createdAt: 'desc' } }),
+      );
+
+      const everyone = [...draft!.toAddresses, ...draft!.ccAddresses];
+      expect(everyone.some((a) => a.startsWith(userId.slice(0, 8)))).toBe(false);
+    });
+  });
+
   describe('composing a brand-new email', () => {
     // The half of "send and receive email" that did not exist. Everything else
     // in this file acts on a message already in the mailbox; this originates
@@ -858,6 +898,26 @@ describeIfDb('command loop (real database)', () => {
       );
 
       expect(draft!.subject).toBe('(no subject)');
+    });
+
+    it('carries a cc through to the draft', async () => {
+      await deliver({
+        text: 'email bob@partner.com cc carol@partner.com about Q3 saying the numbers are attached',
+      });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+
+      expect(draft!.toAddresses).toEqual(['bob@partner.com']);
+      expect(draft!.ccAddresses).toEqual(['carol@partner.com']);
+    });
+
+    it('refuses a bad cc as hard as a bad recipient', async () => {
+      // A Cc is no less irreversible than a To — the message arrives either way.
+      await deliver({ text: 'email bob@partner.com cc not-an-address saying hi' });
+
+      expect(sends()).toHaveLength(0);
     });
 
     it('touches nothing in the mailbox', async () => {

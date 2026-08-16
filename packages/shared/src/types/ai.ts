@@ -109,6 +109,15 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
     intent: z.literal('reply'),
     body: z.string().optional(),
     target: z.string().optional(),
+    /**
+     * Copy everyone the original was addressed to.
+     *
+     * Opt-in, and it has to be: quietly copying five people on a reply the user
+     * thought was private is not recoverable. `resolveReplyRecipients` has
+     * implemented this from the start and nothing ever set it — the capability
+     * was built, tested and unreachable.
+     */
+    replyAll: z.boolean().optional(),
   }),
   z.object({ intent: z.literal('reply_affirmative') }),
   z.object({ intent: z.literal('reply_negative') }),
@@ -126,6 +135,8 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
   z.object({
     intent: z.literal('compose'),
     to: z.string(),
+    /** Raw text again, validated downstream by the same parser as `to`. */
+    cc: z.string().optional(),
     subject: z.string().optional(),
     body: z.string().optional(),
   }),

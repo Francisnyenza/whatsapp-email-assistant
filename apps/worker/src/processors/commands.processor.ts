@@ -582,6 +582,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           this.composer.compose({
             userId,
             to: parseRecipientList(effect.to),
+            ...(effect.cc ? { cc: parseRecipientList(effect.cc) } : {}),
             subject: effect.subject,
             bodyText: effect.body,
           }),
@@ -608,7 +609,13 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
 
       case 'reply':
         return this.attempt(
-          () => this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body }),
+          () =>
+            this.replies.composeReply({
+              userId,
+              emailMessageId,
+              bodyText: effect.body,
+              ...(effect.replyAll ? { replyAll: true } : {}),
+            }),
           () => intended,
         );
 

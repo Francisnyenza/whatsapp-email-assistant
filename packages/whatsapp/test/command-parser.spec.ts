@@ -335,3 +335,77 @@ describe('composing a new email', () => {
     });
   });
 });
+
+describe('reply-all', () => {
+  // `resolveReplyRecipients` has implemented this from the start and nothing
+  // ever set the flag. The capability was built, tested and unreachable.
+
+  it('recognises it with a body', () => {
+    expect(intentOf('reply all saying I agree')).toEqual({
+      intent: 'reply',
+      body: 'I agree',
+      replyAll: true,
+    });
+  });
+
+  it('accepts the ways people say it', () => {
+    for (const text of [
+      'reply to everyone saying yes',
+      'respond to all saying yes',
+      'reply everybody saying yes',
+    ]) {
+      expect(intentOf(text), text).toMatchObject({ intent: 'reply', replyAll: true });
+    }
+  });
+
+  it('recognises it with no body, so the assistant can ask', () => {
+    expect(intentOf('reply all')).toEqual({ intent: 'reply', replyAll: true });
+  });
+
+  it('does not read "all" as the first word of the body', () => {
+    // The ordering hazard: matched before plain reply, or "reply all saying X"
+    // becomes a reply whose body begins "all saying X".
+    const parsed = intentOf('reply all saying I agree');
+    expect(parsed).not.toMatchObject({ body: 'all saying I agree' });
+  });
+
+  it('leaves an ordinary reply alone', () => {
+    // The default has to stay reply-to-sender. Quietly copying five people on a
+    // reply the user thought was private is not recoverable.
+    expect(intentOf('reply saying I agree')).toEqual({ intent: 'reply', body: 'I agree' });
+    expect(intentOf('reply saying I agree')).not.toHaveProperty('replyAll');
+  });
+
+  it('does not treat "reply to alice" as reply-all', () => {
+    expect(intentOf('reply to sarah saying yes')).not.toMatchObject({ replyAll: true });
+  });
+});
+
+describe('cc on a compose', () => {
+  it('takes a copy list between the recipient and the subject', () => {
+    expect(intentOf('email alice@acme.com cc bob@acme.com about Q3 saying here it is')).toEqual({
+      intent: 'compose',
+      to: 'alice@acme.com',
+      cc: 'bob@acme.com',
+      subject: 'Q3',
+      body: 'here it is',
+    });
+  });
+
+  it('takes a copy list with no subject', () => {
+    expect(intentOf('email alice@acme.com cc bob@acme.com saying here it is')).toMatchObject({
+      cc: 'bob@acme.com',
+      body: 'here it is',
+    });
+  });
+
+  it('carries several copies through as raw text for the validator', () => {
+    expect(
+      intentOf('email alice@acme.com copying bob@acme.com, carol@acme.com saying hi'),
+    ).toMatchObject({ cc: 'bob@acme.com, carol@acme.com' });
+  });
+
+  it('leaves a compose with no cc alone', () => {
+    expect(intentOf('email alice@acme.com saying hi')).not.toHaveProperty('cc');
+  });
+});

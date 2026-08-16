@@ -55,7 +55,7 @@ export interface PlanContext {
  */
 export type PlannedEffect =
   | { kind: 'mutate'; operation: MailOperation }
-  | { kind: 'reply'; body: string }
+  | { kind: 'reply'; body: string; replyAll?: boolean }
   /**
    * Ask the assistant something about this email.
    *
@@ -79,7 +79,7 @@ export type PlannedEffect =
    * compose has no parent, so nothing in the resolution ladder applies and the
    * recipient comes from what the user typed rather than from a stored message.
    */
-  | { kind: 'compose'; to: string; subject: string; body: string }
+  | { kind: 'compose'; to: string; cc?: string; subject: string; body: string }
   /**
    * Compose a reply and *ask*. The only effect here that produces words which
    * could leave the building — so unlike the two above, its result is not sent
@@ -204,9 +204,17 @@ export class ResponsePlanner {
       case 'reply':
         if (intent.body) {
           return {
-            payload: buildText(`Sending your reply to *${subject ?? 'this email'}*…`),
+            payload: buildText(
+              intent.replyAll
+                ? `Replying to everyone on *${subject ?? 'this email'}*…`
+                : `Sending your reply to *${subject ?? 'this email'}*…`,
+            ),
             followUp: 'queue_send',
-            effect: { kind: 'reply', body: intent.body },
+            effect: {
+              kind: 'reply',
+              body: intent.body,
+              ...(intent.replyAll ? { replyAll: true } : {}),
+            },
             emailMessageId,
           };
         }
@@ -387,11 +395,20 @@ function toOption(candidate: ResolutionCandidate) {
  * something that then does not happen is the worst of both: they believe it
  * went, and it did not.
  */
-function planCompose(intent: { to: string; subject?: string; body?: string }): PlannedResponse {
+function planCompose(intent: {
+  to: string;
+  cc?: string;
+  subject?: string;
+  body?: string;
+}): PlannedResponse {
   let recipients: EmailAddress[];
+  let copies: EmailAddress[] = [];
 
   try {
     recipients = parseRecipientList(intent.to);
+    // Validated to the same standard as `to`, and refused just as hard. A Cc is
+    // no less irreversible than a To — the message arrives either way.
+    if (intent.cc) copies = parseRecipientList(intent.cc);
   } catch (err) {
     // `parseRecipientList` refuses with a message written for a person; showing
     // it beats replacing it with something vaguer.
@@ -418,11 +435,18 @@ function planCompose(intent: { to: string; subject?: string; body?: string }): P
 
   const subject = intent.subject?.trim() || '(no subject)';
   const to = recipients.map((r) => r.address).join(', ');
+  const cc = copies.map((r) => r.address).join(', ');
 
   return {
-    payload: buildSendConfirmation(COMPOSE_TARGET, to, `*Subject:* ${subject}\n\n${body}`),
+    payload: buildSendConfirmation(
+      COMPOSE_TARGET,
+      // Everyone who will receive it, shown before it is sent. A Cc the user
+      // cannot see on the confirmation is a Cc they did not agree to.
+      cc ? `${to}\n*Cc:* ${cc}` : to,
+      `*Subject:* ${subject}\n\n${body}`,
+    ),
     followUp: 'await_confirmation',
-    effect: { kind: 'compose', to, subject, body },
+    effect: { kind: 'compose', to, ...(cc ? { cc } : {}), subject, body },
   };
 }
 
@@ -446,6 +470,7 @@ const HELP_TEXT = [
   '• Reply directly to any email I send you',
   '• _reply with I will send it Friday_',
   '• _yes_ / _no_ for a quick answer',
+  '• _reply all saying I agree_ — copies everyone on the thread',
   '',
   '*Managing*',
   '• _archive_ — file it away',
@@ -466,6 +491,7 @@ const HELP_TEXT = [
   '*Sending something new*',
   '• _email alice@acme.com about Q3 saying the numbers are attached_',
   '• _email alice@acme.com saying running ten minutes late_',
+  '• _email alice@acme.com cc bob@acme.com saying …_',
   '',
   '*Writing*',
   '• _draft a polite no_ — I write it, you approve it',

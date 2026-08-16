@@ -97,6 +97,17 @@ const EXACT_COMMANDS: Record<string, CommandIntent> = {
  */
 const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandIntent }> = [
   // Reply with an explicit body.
+  // Reply-all, matched before plain reply so "reply all saying X" is not read
+  // as a reply whose body begins "all saying X".
+  {
+    re: /^(?:reply|respond)\s+(?:to\s+)?(?:all|everyone|everybody)\s+(?:with|saying|that)\s+(.+)$/is,
+    build: (m) => ({ intent: 'reply', body: m[1]!.trim(), replyAll: true }),
+  },
+  {
+    re: /^(?:reply|respond)\s+(?:to\s+)?(?:all|everyone|everybody)$/i,
+    build: () => ({ intent: 'reply', replyAll: true }),
+  },
+
   {
     re: /^(?:reply|respond|answer)\s+(?:with|saying|that)\s+(.+)$/is,
     build: (m) => ({ intent: 'reply', body: m[1]!.trim() }),
@@ -111,6 +122,19 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
     }),
   },
   { re: /^(?:reply|respond|answer)$/i, build: () => ({ intent: 'reply' }) },
+
+  {
+    // "email alice@x.com cc bob@x.com about Q3 saying …" — the copy list sits
+    // between the recipient and the subject, which is where people put it.
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+?)\s+(?:cc|copy(?:ing)?)\s+([^]+?)\s+(?:about\s+(.{1,200}?)\s+)?(?:saying|that\s+says|:)\s+(.+)$/is,
+    build: (m) => ({
+      intent: 'compose',
+      to: m[1]!.trim().replace(/[,;]$/, ''),
+      cc: m[2]!.trim(),
+      ...(m[3] ? { subject: m[3].trim() } : {}),
+      body: m[4]!.trim(),
+    }),
+  },
 
   // A brand-new email. Ordered before `draft`, because "write to alice@x.com"
   // is an origination and "write a reply" is not, and `draft`'s pattern would
