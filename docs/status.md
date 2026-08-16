@@ -102,6 +102,11 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- The Kubernetes manifests validate against the real 1.30 schemas in CI (kubeconform,
+  `-strict`), not by eye. A misspelled field is accepted silently by `kubectl apply` — the
+  object is created and the setting simply does not exist — so a typo in
+  `terminationGracePeriodSeconds` would give a worker killed mid-job and a manifest that
+  reads as though it is not.
 - The production images build and run. One Dockerfile serves both Node services, staged so
   the runtime carries no compiler, no tests and no dev dependencies. Docker was not
   available in the environment they were written in, so CI builds both and then _runs_ one,
@@ -149,19 +154,30 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Kubernetes manifests and Terraform (Phase 11).** The images exist and are verified; what
-   they run on is not described anywhere. This is the largest remaining gap between "works"
-   and "deployable".
-2. **Monitoring (Phase 11).** The code emits structured logs with an `event` field on every
-   line, which is most of the work — what is missing is anything that reads them, and any
-   alert on the handful of conditions that actually matter (a mailbox stuck in `polling`, a
-   queue backing up, the budget sweep failing).
-3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+1. **A health listener on the worker.** It is a standalone Nest context with no HTTP server,
+   so its Deployment has no probes at all — stated in the manifest rather than faked with an
+   `exec` probe that only restates what the kubelet already knows. The cost is that a worker
+   whose queue connection has died silently stays in the deployment. This is the smallest
+   change on this list and the one that closes a real hole.
+2. **Queue-depth autoscaling for the worker.** The API scales on CPU; a worker's load is
+   queue depth, and a worker blocked on a slow provider call uses almost no CPU while the
+   backlog grows — a CPU autoscaler would scale _down_ exactly when more consumers were
+   needed. Doing it properly means KEDA reading the BullMQ waiting list from Redis. Until
+   then `replicas` is a fixed number and says so.
+3. **Terraform.** The manifests assume a cluster, a Postgres with pgvector, a Redis and a
+   secret store already exist. Nothing describes how they come to exist.
+4. **Monitoring.** Every log line already carries an `event` field, which is most of the
+   work — what is missing is anything that reads them, and an alert on the few conditions
+   that matter: a mailbox stuck in `polling`, a queue backing up, the retention sweep
+   failing quietly.
+5. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
 
-Every feature in the product spec is built, CI runs everything on every push, and the
-services build into images that start. What remains is the ground they run on.
+Every feature in the product spec is built, CI runs everything on every push, the services
+build into images that start, and there are manifests to run them under. What is missing is
+the operational layer: how the cluster comes to exist, and how anyone finds out when
+something in it goes wrong.
 
 ### After that
 
