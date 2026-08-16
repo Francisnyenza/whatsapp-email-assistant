@@ -86,9 +86,14 @@ resource "aws_db_parameter_group" "postgres" {
     value = "500"
   }
 
-  # The application connects as the restricted role and relies on row-level
-  # security. This makes the policies apply to the *owner* too, closing the
-  # exemption that made the isolation tests pass vacuously during development.
+  # Refuses any connection that is not TLS. Mail bodies are encrypted at the
+  # column level before they are written, so this protects the credentials and
+  # the metadata around them rather than the bodies — worth having anyway, and
+  # `pending-reboot` because it cannot be applied to a running instance.
+  #
+  # Note what this is *not*: row-level security is enforced by the schema and by
+  # connecting as `wea_app`, which the application does. Nothing in a parameter
+  # group affects it.
   parameter {
     name         = "rds.force_ssl"
     value        = "1"
@@ -158,16 +163,17 @@ resource "aws_db_instance" "postgres" {
 # refuse writes loudly instead of discarding jobs silently, which is the same
 # choice docker-compose.yml makes locally.
 resource "aws_elasticache_parameter_group" "redis" {
-  name_prefix = "${local.name}-redis7-"
-  family      = "redis7"
+  # `name`, not `name_prefix` — unlike its RDS counterpart this resource has no
+  # prefix argument, and so no `create_before_destroy` either: a fixed name
+  # cannot be created alongside itself. It does not need one. Adding or changing
+  # a `parameter` block is applied in place; only a change to `name` or `family`
+  # replaces the resource.
+  name   = "${local.name}-redis7"
+  family = "redis7"
 
   parameter {
     name  = "maxmemory-policy"
     value = "noeviction"
-  }
-
-  lifecycle {
-    create_before_destroy = true
   }
 
   tags = local.tags
