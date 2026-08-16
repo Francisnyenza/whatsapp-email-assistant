@@ -212,6 +212,43 @@ jobs:
 
           promtool check rules /tmp/rules.yaml
 
+  terraform:
+    name: Terraform
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+          # The wrapper rewrites stdout to collect outputs and swallows the
+          # exit code of the step in the process, which is the opposite of what
+          # a check should do.
+          terraform_wrapper: false
+
+      - name: Formatting
+        run: terraform -chdir=infra/terraform fmt -check -diff
+
+      # `-backend=false` because there is no state to configure here — this
+      # downloads the provider schemas, which is the only reason init is needed
+      # before validate.
+      - name: Init
+        run: terraform -chdir=infra/terraform init -backend=false -input=false
+
+      # The step that earns its place. `validate` checks every resource type,
+      # every attribute name and every variable reference against the real AWS
+      # provider schema — so a misremembered argument is caught here rather than
+      # half an hour into an apply, with some resources already created.
+      #
+      # It cannot run in the environment this was written in: that proxy blocks
+      # registry.terraform.io, so `init` fails and `validate` has no schemas to
+      # check against. Formatting was all that could be verified there, which is
+      # why this job exists.
+      - name: Validate
+        run: terraform -chdir=infra/terraform validate
+
   images:
     name: Container images
     runs-on: ubuntu-latest

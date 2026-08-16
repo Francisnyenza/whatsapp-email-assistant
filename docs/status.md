@@ -102,6 +102,12 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- The Terraform module is checked against the real AWS provider schema in CI — `validate`
+  after `init`, so every resource type, attribute name and variable reference is verified
+  rather than eyeballed. This is the one thing in the project that **could not** be verified
+  in the environment it was written in: that proxy blocks `registry.terraform.io`, so `init`
+  fails and there are no schemas to check against. Formatting was all that could be
+  confirmed locally, which is exactly why the CI job exists.
 - The alert rules are validated twice, because the two tools answer different questions.
   kubeconform checks the `PrometheusRule` is shaped correctly; the PromQL inside it is just
   a string to a schema, and a malformed expression is accepted by the cluster and then
@@ -178,8 +184,12 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Terraform.** The manifests assume a cluster, a Postgres with pgvector, a Redis and a
-   secret store already exist. Nothing describes how they come to exist.
+1. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
+   the secret; it deliberately does not create an EKS cluster, because every organisation
+   with Kubernetes already has an opinion about how clusters are made and a module that
+   insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
+   subnet groups and security groups the module takes as inputs, and External Secrets wired
+   from the Secrets Manager secret into the namespace.
 2. **A `/metrics` endpoint on both services.** The alert rules that exist cover
    availability — nothing running, pods crashlooping, a failed migration — because those
    read kube-state-metrics and need no instrumentation. Every _product_ condition worth
