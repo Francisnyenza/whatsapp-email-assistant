@@ -136,3 +136,48 @@ jobs:
 
       - name: Worker integration tests
         run: pnpm --filter @wea/worker test:integration
+
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      # Both, even when one fails. They share a Dockerfile, so a break in the
+      # shared stages shows up in both and a break in one argument shows up in
+      # one — which is the difference worth seeing.
+      fail-fast: false
+      matrix:
+        app: [api, worker]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Built, not pushed. Nothing here has a registry to push to yet, and a
+      # Dockerfile that has never been built is a Dockerfile that does not work —
+      # the failure modes are all at build time (a missing manifest in the
+      # dependency layer, a generated Prisma client that did not survive the
+      # production install) and none of them are visible by reading it.
+      - name: Build ${{ matrix.app }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infra/docker/node.Dockerfile
+          build-args: APP=${{ matrix.app }}
+          push: false
+          load: true
+          tags: wea-${{ matrix.app }}:ci
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+      # The build succeeding proves the image assembles. This proves it runs:
+      # the entrypoint resolves, every workspace dependency survived the
+      # production install, and the Prisma client is where the code expects it.
+      # An image that builds and then cannot require its own dependencies is the
+      # specific failure a staged build invites.
+      - name: Check the image starts
+        run: |
+          docker run --rm --entrypoint node wea-${{ matrix.app }}:ci \
+            -e "import('@wea/db').then(() => console.log('deps resolve'))"

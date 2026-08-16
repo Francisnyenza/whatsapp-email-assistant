@@ -1,0 +1,40 @@
+# What never belongs in a build context.
+#
+# `node_modules` first and for two reasons: it is the largest thing in the repo
+# by an order of magnitude, and a host `node_modules` copied into a Linux image
+# brings native binaries built for the wrong platform — which fails at runtime,
+# not at build, and looks like a code bug.
+node_modules
+.pnpm-store
+
+# Build output. The image builds its own; copying a stale `dist` in is how an
+# image ships code that no longer matches its source.
+dist
+build
+.next
+out
+generated
+*.tsbuildinfo
+.turbo
+
+# Secrets. A `.env` in the build context is a secret in an image layer, and
+# layers are readable by anyone who can pull the image — deleting the file in a
+# later step does not remove it from the one before.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Everything the runtime has no use for.
+.git
+.github
+coverage
+test-results
+playwright-report
+docs
+demo
+*.log
+.vscode
+.idea
+.DS_Store
