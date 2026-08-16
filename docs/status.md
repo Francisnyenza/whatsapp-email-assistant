@@ -186,31 +186,79 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
 
 ---
 
+## Mail-app parity: what a WhatsApp chat can and cannot do
+
+Audited against the verb list of an ordinary mail client, because "manage your email
+entirely from WhatsApp" is the product claim and this is the honest scoreboard for it.
+
+| Capability                         | In a chat? | Notes                                                                                                                                                                                                                                                                                                 |
+| ---------------------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Receive mail                       | ✅         | Push from Gmail and Graph, polling fallback                                                                                                                                                                                                                                                           |
+| Reply                              | ✅         | Threaded, from the user's own address                                                                                                                                                                                                                                                                 |
+| Reply with AI drafting             | ✅         | Composed, shown, confirmed by tap                                                                                                                                                                                                                                                                     |
+| Forward                            | ✅         | Carries the original's attachments                                                                                                                                                                                                                                                                    |
+| Archive                            | ✅         |                                                                                                                                                                                                                                                                                                       |
+| Delete                             | ✅         | Confirmation tap; trash, never permanent                                                                                                                                                                                                                                                              |
+| Mark read / unread                 | ✅         |                                                                                                                                                                                                                                                                                                       |
+| Star / important                   | ✅         |                                                                                                                                                                                                                                                                                                       |
+| Search                             | ✅         | Hybrid: vector + full-text + trigram                                                                                                                                                                                                                                                                  |
+| Standing lists                     | ✅         | today, unread, urgent, deadlines                                                                                                                                                                                                                                                                      |
+| Summarise / translate / read aloud | ✅         |                                                                                                                                                                                                                                                                                                       |
+| Free-form questions                | ✅         | RAG over the user's own mail                                                                                                                                                                                                                                                                          |
+| **Compose a new email**            | ❌         | **The largest gap.** `compose` and `write` are aliases for drafting a _reply_; nothing originates a message to an arbitrary recipient. Half of "send and receive email" is missing.                                                                                                                   |
+| **Attachments — into the chat**    | ❌         | A notification _names_ the attachments and nothing delivers them. `QUEUE.MEDIA` is declared in `packages/shared/src/constants/queues.ts` with defaults and has **no producer and no consumer** — the "reads as a capability, does nothing" shape this project keeps finding, this time a whole queue. |
+| **Attachments — out of the chat**  | ❌         | A photo or document sent in the chat never becomes an attachment. Outbound attachments work only on a forward, copied from the original.                                                                                                                                                              |
+| **CC / BCC / reply-all**           | ❌         | Precisely: `mime-builder.ts` and `forwarding.ts` support `cc` and `bcc`, and `threading.ts` computes a reply-all recipient set. The plumbing is built and tested; **the command surface cannot express it**, so no user can reach it. Reply is always reply-to-sender.                                |
+| **Subject editing**                | ❌         | Subjects are derived (`Re: `, `Fwd: `). Compose needs one the user chooses.                                                                                                                                                                                                                           |
+| **Folders / labels**               | ❌         | No move, no label add/remove, no listing. Archive is the only filing verb.                                                                                                                                                                                                                            |
+| **Snooze**                         | ❌         | Nothing defers a message to a later time.                                                                                                                                                                                                                                                             |
+| **Spam / not spam**                | ❌         | Analysis produces a `spamScore` and nothing acts on it.                                                                                                                                                                                                                                               |
+| **Undo**                           | ❌         | Parsed as an intent, answers "not built".                                                                                                                                                                                                                                                             |
+| **Multi-account send selection**   | ❌         | Several mailboxes connect and the primary is used; a user cannot choose which to send from.                                                                                                                                                                                                           |
+| **Contacts**                       | ❌         | No address book, so compose has only literal addresses to work with.                                                                                                                                                                                                                                  |
+
+---
+
 ## Not yet built
 
 Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
+Reordered against the parity audit above. The deployment work is real but it ships a
+product that cannot compose an email, and that ordering was wrong.
+
+1. **Compose a new email.** The missing half of the product claim. Needs an intent taking a
+   recipient, a subject and a body; a confirmation before anything leaves the building; MIME
+   with no threading headers; and a `to` that is validated rather than trusted, since a
+   recipient parsed out of chat text is the one field where a mistake sends someone's words
+   to the wrong person and cannot be undone.
+2. **The media queue.** `QUEUE.MEDIA` exists and nothing uses it. Closing it covers both
+   directions: attachments delivered into the chat, and a photo or document sent in the chat
+   becoming an attachment on a reply or a compose.
+3. **CC, BCC and reply-all.** The MIME and threading layers already do this; only the
+   command surface is missing. The cheapest real capability on the list.
+4. **Labels, folders and snooze.** Filing verbs beyond archive.
+5. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
    the secret; it deliberately does not create an EKS cluster, because every organisation
    with Kubernetes already has an opinion about how clusters are made and a module that
    insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
    subnet groups and security groups the module takes as inputs, and External Secrets wired
    from the Secrets Manager secret into the namespace.
-2. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
+6. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
    the backlog alerts. Still unexported and still only a log line: a mailbox stuck in
    `polling`, a user's token budget exhausted, the retention sweep failing quietly — and
    anything at all from the API, which has no `/metrics` yet, so its latency and error rate
    are invisible.
-3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+7. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
 
-Every feature in the product spec is built, CI runs everything on every push, the services
-build into images that start, and there are manifests to run them under. What is missing is
-the operational layer: how the cluster comes to exist, and how anyone finds out when
-something in it goes wrong.
+An earlier revision of this paragraph said every feature in the product spec was built.
+The parity audit above is what that claim looks like when it is checked verb by verb, and
+it is not true: a user cannot compose an email, cannot receive an attachment, and cannot
+CC anyone. What is built is everything that acts on mail _already in the mailbox_, plus the
+infrastructure to run it. Origination is the half that is missing.
 
 ### After that
 

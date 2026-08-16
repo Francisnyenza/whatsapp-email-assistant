@@ -19,6 +19,8 @@ gives it away.
   sent through your own mailbox, so they land in your Sent folder and in the recipient's
   existing conversation.
 - **Full mailbox control** — archive, delete, forward, mark read/unread/important, search.
+  (Composing a brand-new email, attachments in either direction, and CC/BCC are **not built
+  yet** — see the parity table in [`docs/status.md`](docs/status.md).)
 - **AI throughout** — summarize, draft, rewrite, translate (10+ languages), classify, detect
   urgency and spam, extract deadlines, invoices, meeting times and action items.
 - **Voice** — send a voice note, get an email; have your email read aloud.
