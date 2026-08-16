@@ -102,6 +102,12 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- The CI pipeline runs the exact sequence a fresh clone needs, and it was verified by doing
+  that here rather than by reading it: a brand-new database, the extension script, every
+  migration, the restricted-role grant, then all 283 database-backed tests. Lint, typecheck,
+  build, formatting and the unit suites run in a second job with no database at all, which
+  is also a test — it proves the DB-backed suites still skip cleanly for a developer who has
+  not set `TEST_DATABASE_URL`.
 - A free-form question is answered from the user's own mail and nothing else. The candidate
   set comes from the same hybrid search `search` uses, so it is scoped by row-level
   security — asserted against real rows. Each retrieved email reaches the model inside its
@@ -135,16 +141,13 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **A CI pipeline (Phase 10).** Everything below is run by hand today. Lint, typecheck,
-   build, the unit suites and the Postgres-backed integration suites all pass on demand, and
-   nothing enforces that on a push — which is how a green project becomes a red one quietly.
-2. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+1. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
-3. **Dockerfiles, Kubernetes manifests, Terraform, monitoring (Phase 11).**
+2. **Dockerfiles, Kubernetes manifests, Terraform, monitoring (Phase 11).**
 
-Every feature in the product spec is now built. What remains is the work that makes it
-deployable and keeps it working.
+Every feature in the product spec is now built, and CI runs everything on every push. What
+remains is the work that makes it deployable and keeps it working.
 
 ### After that
 
@@ -176,6 +179,19 @@ deployable and keeps it working.
 ## Findings worth carrying forward
 
 Things that surfaced during the build and would have been expensive to discover later.
+
+**The precondition for 283 tests existed only in one shell's history.** The hardening
+migration creates the application role `wea_app` as `NOLOGIN`, which is right for
+production. Every isolation assertion in the project requires _connecting_ as that role,
+because Postgres exempts the table owner from row-level security — and nothing in the
+repository ever gave it a password. It worked here because it had been typed by hand
+months ago. A fresh clone would have run `pnpm test:integration`, watched every
+database-backed test skip itself, and seen green. Setting up CI is what surfaced it: a
+pipeline has no shell history. Now `pnpm db:test-role` is a checked-in script that also
+refuses to proceed if the role would bypass RLS, and it runs in CI and in first-run setup
+alike. The general shape is the familiar one from this project — **a safeguard that is
+silently absent looks exactly like one that is present** — arriving this time as an
+environment step rather than a line of code.
 
 **A natural-language question is a poor keyword query, and that is visible without
 embeddings.** Question answering reuses the hybrid search that powers `search`, and with a

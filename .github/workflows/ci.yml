@@ -1,0 +1,138 @@
+name: CI
+
+# Two jobs rather than one, and the split is deliberate. `static` fails fast on
+# anything that does not need a database; `integration` is the slower job that
+# stands up Postgres and proves the things only a real database can prove. Run
+# together, a lint error and a broken tenant boundary are two separate red
+# marks instead of one, and the second is not hidden behind the first.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A superseded run tells you about code nobody is going to merge.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Turbo caches on content, so a job that changed nothing is seconds rather
+  # than minutes. Nothing here is a secret.
+  TURBO_TELEMETRY_DISABLED: 1
+  NEXT_TELEMETRY_DISABLED: 1
+
+jobs:
+  static:
+    name: Lint, types, build, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      # `--frozen-lockfile` is the point of running this in CI at all: it fails
+      # when the lockfile does not match package.json, which is the difference
+      # between "works on my machine" and a reproducible install.
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      # Before lint and typecheck, because `@wea/db` generates its Prisma client
+      # at build time — without it every import of the client is an error that
+      # has nothing to do with the change under review.
+      - name: Build
+        run: pnpm build
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Formatting
+        run: pnpm format:check
+
+      # No TEST_DATABASE_URL here, so the database-backed suites skip
+      # themselves. That is the ordinary developer experience and it is worth
+      # having one job prove it still works.
+      - name: Unit tests
+        run: pnpm test
+
+  integration:
+    name: Integration tests (real Postgres)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        # pgvector, not plain Postgres. The schema declares `vector` columns and
+        # an HNSW index; stock postgres:16 fails at the first migration.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: wea
+          POSTGRES_PASSWORD: wea_dev_password
+          POSTGRES_DB: wea
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wea -d wea"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgresql://wea:wea_dev_password@localhost:5432/wea
+      # The restricted role, and the whole reason this job is worth running.
+      # Point it at the owner instead and every isolation assertion passes
+      # without proving anything, because Postgres exempts the owner from
+      # row-level security.
+      TEST_DATABASE_URL: postgresql://wea_app:wea_app_password@localhost:5432/wea
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      # A service container does not run the init scripts that docker-compose
+      # mounts, so the extensions have to be created explicitly. Same file, so
+      # the two paths cannot drift.
+      - name: Create extensions
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f infra/docker/postgres/init/01-extensions.sql
+
+      - name: Migrate
+        run: pnpm db:migrate:deploy
+
+      # The migrations create `wea_app` NOLOGIN, which is correct for production
+      # and useless for a test that has to connect as it. This grants the
+      # development password and refuses to proceed if the role would bypass
+      # row-level security.
+      - name: Grant the restricted role a login
+        run: pnpm db:test-role
+
+      - name: Database integration tests
+        run: pnpm --filter @wea/db test:integration
+
+      - name: API integration tests
+        run: pnpm --filter @wea/api test:integration
+
+      - name: Worker integration tests
+        run: pnpm --filter @wea/worker test:integration

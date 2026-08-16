@@ -22,8 +22,17 @@ printf 'JWT_REFRESH_SECRET=%s\n'    "$(openssl rand -base64 64)" >> .env
 
 pnpm infra:up        # postgres + redis + minio + mailpit
 pnpm db:migrate      # from Phase 3
+pnpm db:test-role    # lets the integration suite connect as the restricted role
 pnpm dev             # all apps in watch mode
 ```
+
+`db:test-role` is the step it is easy not to know about. The hardening migration
+creates the application role `wea_app` as `NOLOGIN` — correct for production, where
+the app authenticates with a managed credential rather than a password in version
+control — but the integration suite has to _connect_ as that role, because
+Postgres exempts the table owner from row-level security and every isolation
+assertion in the project passes vacuously against the owner. Without this step
+`TEST_DATABASE_URL` cannot connect and 283 tests skip themselves silently.
 
 The process refuses to start on a missing or malformed variable, and prints every
 offending one at once. That is deliberate — see `packages/shared/src/config/env.schema.ts`.
@@ -78,8 +87,8 @@ whose `X-Hub-Signature-256` does not verify, in every environment.
 ```bash
 pnpm dev                 # every app, watch mode
 pnpm build               # build everything (turbo, cached)
-pnpm test                # all tests
-pnpm test:integration    # needs pnpm infra:up
+pnpm test                # all tests; the database-backed ones skip without TEST_DATABASE_URL
+pnpm test:integration    # needs pnpm infra:up and pnpm db:test-role
 pnpm lint                # eslint
 pnpm typecheck           # tsc --noEmit everywhere
 pnpm format              # prettier --write

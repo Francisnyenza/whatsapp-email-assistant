@@ -1,5 +1,7 @@
 # Inbox on WhatsApp
 
+[![CI](https://github.com/Francisnyenza/whatsapp-email-assistant/actions/workflows/ci.yml/badge.svg)](https://github.com/Francisnyenza/whatsapp-email-assistant/actions/workflows/ci.yml)
+
 Manage your email entirely from WhatsApp. Connect Gmail, Outlook or Microsoft 365 once — every
 new email arrives as a WhatsApp message with an AI summary, and every reply you type in
 WhatsApp goes out as a normal, correctly-threaded email from your own address.
@@ -78,7 +80,7 @@ including what these ticks do not cover.
 | 7     | Outlook / Microsoft 365      | ✅                                   |
 | 8     | AI layer                     | ✅                                   |
 | 9     | Frontend dashboard           | 🔨 setup and settings; no mail views |
-| 10    | Testing                      | 🔨 unit and integration; no E2E/CI   |
+| 10    | Testing                      | 🔨 unit, integration and CI; no E2E  |
 | 11    | Deployment & ops             | —                                    |
 
 ## Requirements

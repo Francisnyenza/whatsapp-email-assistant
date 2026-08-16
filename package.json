@@ -22,6 +22,7 @@
     "db:generate": "pnpm --filter @wea/db generate",
     "db:migrate": "pnpm --filter @wea/db migrate",
     "db:migrate:deploy": "pnpm --filter @wea/db migrate:deploy",
+    "db:test-role": "psql \"${DATABASE_URL:-postgresql://wea:wea_dev_password@localhost:5432/wea}\" -v ON_ERROR_STOP=1 -v db=wea -f infra/docker/postgres/test-role.sql",
     "db:seed": "pnpm --filter @wea/db seed",
     "db:studio": "pnpm --filter @wea/db studio",
     "infra:up": "docker compose up -d",
