@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wea-worker
+  labels:
+    app.kubernetes.io/name: wea-worker
+    app.kubernetes.io/part-of: wea
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wea-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # One at a time, and never below the current count. A worker that goes
+      # down mid-job leaves that job to be retried by another — which is safe,
+      # because every processor is idempotent — but a retry costs a model call
+      # and, on the send path, risks the one duplicate the draft claim exists to
+      # prevent. Cheaper to drain properly.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wea-worker
+        app.kubernetes.io/part-of: wea
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      # Much longer than the API's, and the number comes from the work rather
+      # than from a convention. `main.ts` calls `enableShutdownHooks()`, so
+      # SIGTERM closes the BullMQ workers and lets in-flight jobs finish; the
+      # longest of those is an ingest that fetches and analyses a batch of mail.
+      # Killed mid-flight, a send job is the one place a reply could go out
+      # twice.
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: worker
+          image: ghcr.io/OWNER/wea-worker:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          envFrom:
+            - configMapRef:
+                name: wea-config
+            - secretRef:
+                name: wea-secrets
+          # No probes, and that is a real gap rather than an omission worth
+          # hiding. The worker is a standalone Nest context with no HTTP server
+          # — nothing calls it, so it listens on nothing — and there is no
+          # endpoint to probe. The available options were all worse than
+          # nothing: an `exec` probe that greps for the process only restates
+          # that the container is running, which the kubelet already knows, and
+          # a liveness probe that always passes is a probe that lies. What this
+          # costs is that a worker whose queue connection has died silently
+          # stays in the deployment. Closing it means giving the worker a health
+          # listener, which is a code change and is listed in docs/status.md.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: wea-worker
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wea-worker
+# Deliberately no HorizontalPodAutoscaler.
+#
+# The API scales on CPU because CPU is what a request costs. A worker's load is
+# queue depth, and the two are not related: a worker blocked on a slow Gmail
+# call uses almost no CPU while the backlog grows, so a CPU autoscaler would
+# scale *down* exactly when more consumers were needed. Scaling this correctly
+# means reading queue depth from Redis — KEDA's `redis` scaler on the BullMQ
+# waiting list — which is a dependency worth adding deliberately rather than
+# approximating with the wrong signal. Until then, `replicas` is set by hand and
+# is honest about being a fixed number.

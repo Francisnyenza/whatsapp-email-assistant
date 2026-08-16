@@ -1,0 +1,161 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wea-api
+  labels:
+    app.kubernetes.io/name: wea-api
+    app.kubernetes.io/part-of: wea
+spec:
+  replicas: 2
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wea-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer than the current count during a rollout. The API terminates
+      # OAuth callbacks and provider webhooks, and both are one-shot: a dropped
+      # Gmail push is mail that arrives minutes late, and a dropped OAuth
+      # callback is a mailbox that silently fails to connect.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wea-api
+        app.kubernetes.io/part-of: wea
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      # Long enough for an in-flight request to finish and for endpoints to be
+      # withdrawn from every kube-proxy. Shorter, and a webhook Meta is waiting
+      # on gets cut off mid-response — which Meta reads as a failure and
+      # redelivers.
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: api
+          image: ghcr.io/OWNER/wea-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3001
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          envFrom:
+            - configMapRef:
+                name: wea-config
+            - secretRef:
+                name: wea-secrets
+          env:
+            - name: API_PORT
+              value: '3001'
+          # Two probes and two meanings. `ready` reports whether this instance
+          # can serve — it checks the database and Redis — so a pod that loses
+          # them is removed from the Service rather than answering 500s. `live`
+          # checks only that the process is up, because restarting a pod for a
+          # database outage turns one outage into a crashloop across every
+          # replica at once.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            failureThreshold: 5
+          # A slow start must not be mistaken for a dead process. Without this,
+          # a cold start behind a slow migration is killed by the liveness probe
+          # before it ever serves.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              # No CPU limit on purpose. Throttling a request-serving process at
+              # its limit turns a latency spike into a queue, and the queue is
+              # what actually takes the service down. Memory is limited because
+              # a leak has to stop somewhere.
+              memory: 512Mi
+          volumeMounts:
+            # The root filesystem is read-only, so anything that writes needs an
+            # explicit mount. These two are the only things that do.
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wea-api
+  labels:
+    app.kubernetes.io/name: wea-api
+    app.kubernetes.io/part-of: wea
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: wea-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: wea-api
+spec:
+  # Keeps a node drain from taking the last replica with it. With
+  # `maxUnavailable: 0` on the rollout and nothing here, a cluster upgrade can
+  # still empty the deployment.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wea-api
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: wea-api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: wea-api
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Five minutes rather than the default, because inbound mail is bursty:
+      # a quiet three minutes is normal and scaling in on it just means scaling
+      # back out during the next delivery.
+      stabilizationWindowSeconds: 300

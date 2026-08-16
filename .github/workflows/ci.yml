@@ -137,6 +137,32 @@ jobs:
       - name: Worker integration tests
         run: pnpm --filter @wea/worker test:integration
 
+  manifests:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Schema validation against the real Kubernetes API definitions, which is
+      # a different question from "is it valid YAML". A misspelled field is
+      # accepted silently by `kubectl apply` — the object is created and the
+      # setting simply does not exist — so a typo in `terminationGracePeriod`
+      # would produce a worker that is killed mid-job and a manifest that reads
+      # as though it is not.
+      - name: Install kubeconform
+        run: |
+          curl -sSL "https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz -C /usr/local/bin kubeconform
+
+      - name: Validate
+        run: |
+          kubeconform -strict -summary \
+            -kubernetes-version 1.30.0 \
+            -schema-location default \
+            infra/k8s/
+
   images:
     name: Container images
     runs-on: ubuntu-latest

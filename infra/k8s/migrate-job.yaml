@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wea-migrate
+  labels:
+    app.kubernetes.io/name: wea-migrate
+    app.kubernetes.io/part-of: wea
+  annotations:
+    # Run this to completion before the rollout, not alongside it. The name is
+    # fixed rather than generated, so re-applying replaces a finished job rather
+    # than accumulating one per deploy — recreate it (`kubectl delete job
+    # wea-migrate`) as part of the deploy step.
+    wea.dev/run-before: 'wea-api,wea-worker'
+spec:
+  backoffLimit: 2
+  # Cleaned up automatically, but not immediately: a failed migration's logs are
+  # the first thing anyone will want, and a job that vanishes on failure is a
+  # deploy nobody can debug.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: wea-migrate
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          # The API image, because it already carries the Prisma CLI and the
+          # migration files. A separate migration image would be a third thing
+          # to build and a third thing to keep in step with the schema.
+          image: ghcr.io/OWNER/wea-api:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          # `migrate deploy` applies pending migrations and never generates,
+          # resets or prompts. `migrate dev` is the one that would offer to drop
+          # the database, and it must never reach a cluster.
+          command: ['node_modules/.bin/prisma', 'migrate', 'deploy']
+          args: ['--schema', 'node_modules/@wea/db/prisma/schema.prisma']
+          envFrom:
+            - configMapRef:
+                name: wea-config
+          env:
+            # The owner connection, not `wea_app`. Migrations create tables and
+            # policies; the application role deliberately cannot, which is the
+            # whole point of it being a separate role.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: wea-secrets
+                  key: DATABASE_MIGRATION_URL
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

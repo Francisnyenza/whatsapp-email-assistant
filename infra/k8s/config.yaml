@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: wea
+  labels:
+    app.kubernetes.io/part-of: wea
+    # Enforced rather than warned. `restricted` is what the pod specs here
+    # already satisfy — non-root, no privilege escalation, all capabilities
+    # dropped, RuntimeDefault seccomp — so turning it on costs nothing today and
+    # rejects the pod that quietly stops satisfying it tomorrow.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wea-config
+  labels:
+    app.kubernetes.io/part-of: wea
+data:
+  # Everything here is non-secret by construction: public URLs, tuning numbers,
+  # and identifiers that are meaningless without the credentials in the Secret.
+  # Anything that would be damaging to read belongs in `wea-secrets`, and the
+  # boot check in packages/shared/src/config/env.schema.ts is what refuses to
+  # start if one goes missing.
+  NODE_ENV: 'production'
+  LOG_LEVEL: 'info'
+
+  API_PORT: '3001'
+  API_BASE_URL: 'https://api.example.com'
+  WEB_BASE_URL: 'https://app.example.com'
+
+  GOOGLE_REDIRECT_URI: 'https://api.example.com/v1/oauth/google/callback'
+  MICROSOFT_REDIRECT_URI: 'https://api.example.com/v1/oauth/microsoft/callback'
+
+  AI_PRIMARY_PROVIDER: 'openai'
+  AI_FALLBACK_PROVIDER: 'none'
+  AI_REQUEST_TIMEOUT_MS: '30000'
+  AI_MAX_TOKENS_PER_USER_DAY: '200000'
+
+  RETENTION_BODY_DAYS: '90'
+  EMBEDDING_BACKFILL_DAYS: '30'
+---
+# A template, not a Secret. It is checked in so the *shape* is reviewable — the
+# set of credentials this system needs is worth being able to read in a diff —
+# and every value is a placeholder.
+#
+# Nothing here should ever be applied as written. In a real cluster these come
+# from the platform's secret manager through External Secrets or a CSI driver,
+# so the values never exist in Git, in a shell history, or in a `kubectl apply`
+# that someone can scroll back to.
+#
+# The two database URLs are separate on purpose. The application connects as
+# `wea_app`, which cannot bypass row-level security and cannot alter a table;
+# the migration job connects as the owner, which can do both. Pointing the app
+# at the owner would make every tenant-isolation policy in the schema
+# decorative, and nothing would fail visibly.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: wea-secrets
+  labels:
+    app.kubernetes.io/part-of: wea
+type: Opaque
+stringData:
+  DATABASE_URL: 'postgresql://wea_app:REPLACE_ME@postgres:5432/wea'
+  DATABASE_MIGRATION_URL: 'postgresql://wea:REPLACE_ME@postgres:5432/wea'
+  REDIS_URL: 'redis://redis:6379'
+
+  # openssl rand -base64 32 — or, in production, leave unset and set KMS_KEY_ID
+  # instead. The boot check rejects a static master key when NODE_ENV=production.
+  ENCRYPTION_MASTER_KEY: 'REPLACE_ME'
+  BLIND_INDEX_KEY: 'REPLACE_ME'
+
+  # openssl rand -base64 64
+  JWT_ACCESS_SECRET: 'REPLACE_ME'
+  JWT_REFRESH_SECRET: 'REPLACE_ME'
+
+  WHATSAPP_PHONE_NUMBER_ID: 'REPLACE_ME'
+  WHATSAPP_ACCESS_TOKEN: 'REPLACE_ME'
+  WHATSAPP_APP_SECRET: 'REPLACE_ME'
+  WHATSAPP_WEBHOOK_VERIFY_TOKEN: 'REPLACE_ME'
+
+  GOOGLE_CLIENT_ID: 'REPLACE_ME'
+  GOOGLE_CLIENT_SECRET: 'REPLACE_ME'
+
+  MICROSOFT_CLIENT_ID: 'REPLACE_ME'
+  MICROSOFT_CLIENT_SECRET: 'REPLACE_ME'
+  MICROSOFT_WEBHOOK_CLIENT_STATE: 'REPLACE_ME'
+
+  OPENAI_API_KEY: 'REPLACE_ME'
