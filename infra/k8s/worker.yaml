@@ -55,16 +55,32 @@ spec:
                 name: wea-config
             - secretRef:
                 name: wea-secrets
-          # No probes, and that is a real gap rather than an omission worth
-          # hiding. The worker is a standalone Nest context with no HTTP server
-          # — nothing calls it, so it listens on nothing — and there is no
-          # endpoint to probe. The available options were all worse than
-          # nothing: an `exec` probe that greps for the process only restates
-          # that the container is running, which the kubelet already knows, and
-          # a liveness probe that always passes is a probe that lies. What this
-          # costs is that a worker whose queue connection has died silently
-          # stays in the deployment. Closing it means giving the worker a health
-          # listener, which is a code change and is listed in docs/status.md.
+          ports:
+            - name: health
+              containerPort: 3002
+          # The worker serves nothing except these two routes, which exist
+          # solely so this Deployment can have probes at all. `ready` checks
+          # Postgres and Redis and answers 503 when either is gone, so a worker
+          # that cannot consume is taken out of the deployment's ready count
+          # rather than sitting there looking healthy. `live` checks only that
+          # the process is up — a liveness probe that checked Redis would
+          # restart every worker during a Redis blip, and a restarted worker
+          # still cannot reach Redis, so it would cost the in-flight jobs and
+          # buy nothing.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            failureThreshold: 5
           resources:
             requests:
               cpu: 200m
