@@ -163,12 +163,27 @@ jobs:
           curl -sSL "https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz" \
             | tar -xz -C /usr/local/bin kubeconform
 
-      - name: Validate
+      # The core resources, against the built-in Kubernetes schemas only. `keda/`
+      # is excluded because its CRD is not part of Kubernetes, and validating it
+      # here would mean passing `-ignore-missing-schemas` — which would also
+      # stop a typo'd `kind:` in the Deployments from being caught.
+      - name: Validate core resources
         run: |
           kubeconform -strict -summary \
             -kubernetes-version 1.30.0 \
             -schema-location default \
+            -ignore-filename-pattern 'keda/' \
             infra/k8s/
+
+      # The KEDA ScaledObject, against the published CRD schema. Worth the extra
+      # step: an autoscaler with a misspelled trigger field is accepted by the
+      # cluster and then never scales, which looks exactly like a workload that
+      # simply is not busy.
+      - name: Validate the KEDA ScaledObject
+        run: |
+          kubeconform -strict -summary \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            infra/k8s/keda/
 
   images:
     name: Container images

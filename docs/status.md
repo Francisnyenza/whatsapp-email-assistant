@@ -102,6 +102,14 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   — or on their own scheduled times, in their own timezone. A suppressed message is never
   resurfaced; an archived one is not offered; and the backlog is cleared only for what was
   actually shown, so the out-of-window template does not lose the mail it announced.
+- The worker scales on queue depth rather than CPU, via a KEDA `ScaledObject` validated in
+  CI against the published CRD schema. Triggers cover only the three queues a person is
+  waiting on — `commands`, `notify`, `send`. `ingest`, `ai` and `sync` are deliberately
+  excluded: a backlog there means mail is summarised a few minutes later, which nobody
+  perceives, while including them would let an embedding backfill of ten thousand old emails
+  scale the deployment to its ceiling for work nobody is waiting on. It never scales to
+  zero, because activation is a cold start and the promise is five seconds. The file lives
+  apart from the rest, because applying `infra/k8s/` must not require KEDA to be installed.
 - The worker answers `/health/live` and `/health/ready`, so its Deployment has real probes.
   Readiness checks Postgres and Redis and answers **503**, not a 200 carrying the word
   "degraded" — a probe reads the status code and nothing else, so the second would be a
@@ -162,18 +170,13 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 
 ### Next, in order
 
-1. **Queue-depth autoscaling for the worker.** The API scales on CPU; a worker's load is
-   queue depth, and a worker blocked on a slow provider call uses almost no CPU while the
-   backlog grows — a CPU autoscaler would scale _down_ exactly when more consumers were
-   needed. Doing it properly means KEDA reading the BullMQ waiting list from Redis. Until
-   then `replicas` is a fixed number and says so.
-2. **Terraform.** The manifests assume a cluster, a Postgres with pgvector, a Redis and a
+1. **Terraform.** The manifests assume a cluster, a Postgres with pgvector, a Redis and a
    secret store already exist. Nothing describes how they come to exist.
-3. **Monitoring.** Every log line already carries an `event` field, which is most of the
+2. **Monitoring.** Every log line already carries an `event` field, which is most of the
    work — what is missing is anything that reads them, and an alert on the few conditions
    that matter: a mailbox stuck in `polling`, a queue backing up, the retention sweep
    failing quietly.
-4. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
 

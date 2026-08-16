@@ -33,6 +33,15 @@ data:
   GOOGLE_REDIRECT_URI: 'https://api.example.com/v1/oauth/google/callback'
   MICROSOFT_REDIRECT_URI: 'https://api.example.com/v1/oauth/microsoft/callback'
 
+  # Only KEDA reads this, and it is here rather than derived because KEDA's
+  # Redis scaler wants `host:port` while the application wants a `redis://` URL,
+  # and neither will accept the other's shape. Two representations of one fact
+  # is a drift hazard: change the Redis address in the Secret and forget this,
+  # and the autoscaler goes on polling a host that no longer exists — reading an
+  # empty list, reporting no backlog, and never scaling. There is no credential
+  # in it, which is why it is here and `REDIS_URL` is in the Secret.
+  REDIS_HOST_PORT: 'redis:6379'
+
   AI_PRIMARY_PROVIDER: 'openai'
   AI_FALLBACK_PROVIDER: 'none'
   AI_REQUEST_TIMEOUT_MS: '30000'

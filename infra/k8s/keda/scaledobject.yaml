@@ -1,0 +1,102 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: wea-worker
+  labels:
+    app.kubernetes.io/name: wea-worker
+    app.kubernetes.io/part-of: wea
+# Scales the worker on queue depth, which is the only signal that describes its
+# load.
+#
+# The API scales on CPU because CPU is what a request costs. A worker's work is
+# almost entirely waiting — on Gmail, on Graph, on a model provider, on Meta —
+# so a worker with a thousand jobs backed up behind a slow provider sits at
+# single-digit CPU. A CPU autoscaler would read that as idle and scale *down*
+# exactly when more consumers were needed, which is worse than not autoscaling
+# at all.
+#
+# This file lives apart from the rest because it depends on KEDA being installed
+# in the cluster. Without KEDA the CRD does not exist and `kubectl apply` fails
+# on it — so applying `infra/k8s/` cleanly must not require it, and the worker
+# runs at a fixed `replicas` until someone chooses to add the operator.
+spec:
+  scaleTargetRef:
+    name: wea-worker
+
+  # Never zero, deliberately. KEDA can activate from zero on the first job, but
+  # activation is a pod start — an image pull, a Nest bootstrap, a Prisma
+  # connection — measured in seconds. The product promise is a WhatsApp message
+  # within five seconds of an email arriving, and paying a cold start for the
+  # first message of every quiet period spends most of that budget on nothing.
+  minReplicaCount: 2
+  maxReplicaCount: 20
+
+  # How quickly it reacts. Thirty seconds is a compromise: mail arrives in
+  # bursts, so polling faster mostly measures noise, and polling slower means a
+  # burst is half-processed before the second replica is ready.
+  pollingInterval: 30
+
+  # Five minutes of quiet before scaling in. Deliberately long. Scaling in
+  # terminates a pod, which starts the 120-second drain in the Deployment — so a
+  # twitchy scale-in spends its time draining and re-starting workers rather
+  # than doing work.
+  cooldownPeriod: 300
+
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          # React to a burst in one step rather than doubling every 15 seconds.
+          # An inbox that just connected can produce thousands of jobs at once
+          # from the embedding backfill.
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+
+  # One trigger per queue that a user is waiting on, and none for the ones they
+  # are not.
+  #
+  # `commands` is first because it is the only queue with a person watching:
+  # someone has typed "archive" and is looking at their phone. `notify` is the
+  # other half of that promise — an email that arrived and has not been sent on
+  # yet. `send` carries replies that are already confirmed and must go out.
+  #
+  # `ingest`, `ai` and `sync` are deliberately absent. They are throughput
+  # queues, not latency queues: a backlog there means mail is summarised or
+  # indexed a few minutes later, which nobody perceives, and including them
+  # would let a backfill of ten thousand old emails scale the deployment to its
+  # ceiling for work no one is waiting on.
+  #
+  # `listLength` is the BullMQ waiting list. The key is `bull:<queue>:wait`,
+  # which is BullMQ's own layout — if that prefix is ever customised, these
+  # keys have to move with it or the trigger silently reads a list that is
+  # always empty and the deployment never scales.
+  triggers:
+    - type: redis
+      metadata:
+        addressFromEnv: REDIS_HOST_PORT
+        listName: 'bull:commands:wait'
+        # Per replica. Five queued commands per worker is roughly the point at
+        # which a reply stops feeling immediate.
+        listLength: '5'
+        enableTLS: 'false'
+    - type: redis
+      metadata:
+        addressFromEnv: REDIS_HOST_PORT
+        listName: 'bull:notify:wait'
+        listLength: '20'
+        enableTLS: 'false'
+    - type: redis
+      metadata:
+        addressFromEnv: REDIS_HOST_PORT
+        listName: 'bull:send:wait'
+        listLength: '10'
+        enableTLS: 'false'
