@@ -8,23 +8,23 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 472 tests** (1 193 unit + 279 integration
+Everything below has tests that run and pass. **1 477 tests** (1 198 unit + 279 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests            | What it does                                                                                                                                    |
-| --------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                         |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                    |
-| `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                                                        |
-| `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                         |
-| `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                                                      |
-| `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic |
-| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                            |
-| `apps/worker`   | 300 + 219 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health         |
-| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                              |
+| Package         | Tests            | What it does                                                                                                                                     |
+| --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                          |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                     |
+| `@wea/db`       | 8 (integration)  | Prisma schema, eleven migrations, seed. RLS verified against real Postgres 16 + pgvector                                                         |
+| `@wea/whatsapp` | 148              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                          |
+| `@wea/mail`     | 194              | Threading, forwarding, MIME, Gmail + Microsoft Graph adapters, OAuth, error classification                                                       |
+| `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic  |
+| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                             |
+| `apps/worker`   | 305 + 219 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics |
+| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                               |
 
 ```bash
-pnpm -r test          # 1 193 unit tests
+pnpm -r test          # 1 198 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -108,6 +108,14 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   in the environment it was written in: that proxy blocks `registry.terraform.io`, so `init`
   fails and there are no schemas to check against. Formatting was all that could be
   confirmed locally, which is exactly why the CI job exists.
+- The worker exports `wea_queue_depth` on `/metrics` — the one thing about this system's
+  health Kubernetes cannot see, since everything kube-state-metrics reports is about pods
+  and a backlog is about work. Served from the health listener rather than a second port:
+  same trust boundary, one less thing to secure. A scrape that cannot reach Redis answers
+  **503, not an empty 200**, because an empty scrape reads as "every queue is empty" — the
+  exact reading that would suppress a backlog alert during the outage causing the backlog.
+  A non-finite sample is dropped rather than emitted, since one unparseable line fails the
+  whole endpoint in Prometheus and takes every healthy series with it.
 - The alert rules are validated twice, because the two tools answer different questions.
   kubeconform checks the `PrometheusRule` is shaped correctly; the PromQL inside it is just
   a string to a schema, and a malformed expression is accepted by the cluster and then
@@ -190,12 +198,11 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
    insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
    subnet groups and security groups the module takes as inputs, and External Secrets wired
    from the Secrets Manager secret into the namespace.
-2. **A `/metrics` endpoint on both services.** The alert rules that exist cover
-   availability — nothing running, pods crashlooping, a failed migration — because those
-   read kube-state-metrics and need no instrumentation. Every _product_ condition worth
-   paging on is currently a log line and not a metric: a mailbox stuck in `polling`, a
-   specific queue backing up, the retention sweep failing quietly, a user's token budget
-   exhausted. The code already knows all of it; nothing exports it.
+2. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
+   the backlog alerts. Still unexported and still only a log line: a mailbox stuck in
+   `polling`, a user's token budget exhausted, the retention sweep failing quietly — and
+   anything at all from the API, which has no `/metrics` yet, so its latency and error rate
+   are invisible.
 3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
