@@ -137,6 +137,12 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
     to: z.string(),
     /** Raw text again, validated downstream by the same parser as `to`. */
     cc: z.string().optional(),
+    /**
+     * Blind copies. Same raw text, same validation — the only difference is
+     * that the other recipients never see this list, which is precisely why the
+     * sender has to.
+     */
+    bcc: z.string().optional(),
     subject: z.string().optional(),
     body: z.string().optional(),
   }),

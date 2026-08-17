@@ -84,7 +84,7 @@ export type PlannedEffect =
    * compose has no parent, so nothing in the resolution ladder applies and the
    * recipient comes from what the user typed rather than from a stored message.
    */
-  | { kind: 'compose'; to: string; cc?: string; subject: string; body: string }
+  | { kind: 'compose'; to: string; cc?: string; bcc?: string; subject: string; body: string }
   /**
    * Compose a reply and *ask*. The only effect here that produces words which
    * could leave the building — so unlike the two above, its result is not sent
@@ -415,17 +415,22 @@ function toOption(candidate: ResolutionCandidate) {
 function planCompose(intent: {
   to: string;
   cc?: string;
+  bcc?: string;
   subject?: string;
   body?: string;
 }): PlannedResponse {
   let recipients: EmailAddress[];
   let copies: EmailAddress[] = [];
+  let blind: EmailAddress[] = [];
 
   try {
     recipients = parseRecipientList(intent.to);
     // Validated to the same standard as `to`, and refused just as hard. A Cc is
-    // no less irreversible than a To — the message arrives either way.
+    // no less irreversible than a To — the message arrives either way. A Bcc is
+    // the least recoverable of the three: nobody on the message can see that it
+    // went to the wrong person, so nobody can tell the sender.
     if (intent.cc) copies = parseRecipientList(intent.cc);
+    if (intent.bcc) blind = parseRecipientList(intent.bcc);
   } catch (err) {
     // `parseRecipientList` refuses with a message written for a person; showing
     // it beats replacing it with something vaguer.
@@ -453,17 +458,29 @@ function planCompose(intent: {
   const subject = intent.subject?.trim() || '(no subject)';
   const to = recipients.map((r) => r.address).join(', ');
   const cc = copies.map((r) => r.address).join(', ');
+  const bcc = blind.map((r) => r.address).join(', ');
 
   return {
     payload: buildSendConfirmation(
       COMPOSE_TARGET,
       // Everyone who will receive it, shown before it is sent. A Cc the user
-      // cannot see on the confirmation is a Cc they did not agree to.
-      cc ? `${to}\n*Cc:* ${cc}` : to,
+      // cannot see on the confirmation is a Cc they did not agree to — and the
+      // Bcc is shown for the same reason and no other. Hiding it here because
+      // "the point of a Bcc is that it is hidden" would hide it from the one
+      // person it is not hidden from, who is the only one who can catch a
+      // mistake in it.
+      [to, ...(cc ? [`*Cc:* ${cc}`] : []), ...(bcc ? [`*Bcc:* ${bcc}`] : [])].join('\n'),
       `*Subject:* ${subject}\n\n${body}`,
     ),
     followUp: 'await_confirmation',
-    effect: { kind: 'compose', to, ...(cc ? { cc } : {}), subject, body },
+    effect: {
+      kind: 'compose',
+      to,
+      ...(cc ? { cc } : {}),
+      ...(bcc ? { bcc } : {}),
+      subject,
+      body,
+    },
   };
 }
 
@@ -509,6 +526,7 @@ const HELP_TEXT = [
   '• _email alice@acme.com about Q3 saying the numbers are attached_',
   '• _email alice@acme.com saying running ten minutes late_',
   '• _email alice@acme.com cc bob@acme.com saying …_',
+  '• _email alice@acme.com bcc bob@acme.com saying …_ — I show you the Bcc, nobody else sees it',
   '',
   '*Attaching a file*',
   '• Send me a photo or a document — I hold it for your next email',

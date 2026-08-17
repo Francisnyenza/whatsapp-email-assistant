@@ -46,6 +46,12 @@ export class ComposeComposer {
     userId: string;
     to: EmailAddress[];
     cc?: EmailAddress[];
+    /**
+     * Blind copies. Carried straight through to the draft, where they sit in
+     * their own column — the send path is what keeps them off the message the
+     * other recipients see, and nothing here is allowed to fold them into `cc`.
+     */
+    bcc?: EmailAddress[];
     subject: string;
     bodyText: string;
   }): Promise<{ draftId: string; recipients: number }> {
@@ -84,6 +90,7 @@ export class ComposeComposer {
       kind: 'new',
       to: input.to,
       ...(input.cc?.length ? { cc: input.cc } : {}),
+      ...(input.bcc?.length ? { bcc: input.bcc } : {}),
       subject,
       bodyText: body,
       bodyCipher: new Uint8Array(sealed.ciphertext),
@@ -113,12 +120,15 @@ export class ComposeComposer {
         accountId: account.id,
         // Counts, never addresses. A recipient list in a log is a contact list
         // in a log.
-        recipients: input.to.length + (input.cc?.length ?? 0),
+        recipients: input.to.length + (input.cc?.length ?? 0) + (input.bcc?.length ?? 0),
       },
       'New email composed and queued',
     );
 
-    return { draftId: draft.id, recipients: input.to.length + (input.cc?.length ?? 0) };
+    return {
+      draftId: draft.id,
+      recipients: input.to.length + (input.cc?.length ?? 0) + (input.bcc?.length ?? 0),
+    };
   }
 }
 

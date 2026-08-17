@@ -95,6 +95,31 @@ describe('a draft carrying files from the chat', () => {
   });
 });
 
+describe('a draft with a blind copy', () => {
+  it('hands the Bcc to the provider, in its own field', async () => {
+    // Not folded into `to`, which would show it to everyone, and not dropped,
+    // which the sender could never detect: nobody on the message can see that
+    // the blind copy did not arrive.
+    const { processor, sent } = build({
+      staged: [],
+      bcc: [{ address: 'carol@acme.com' }],
+    });
+
+    await processor.handle(job());
+
+    expect(sent().bcc).toEqual([{ address: 'carol@acme.com' }]);
+    expect(sent().to).toEqual([{ address: 'alice@acme.com' }]);
+  });
+
+  it('sends no bcc field at all when there is none', async () => {
+    const { processor, sent } = build({ staged: [] });
+
+    await processor.handle(job());
+
+    expect(sent()).not.toHaveProperty('bcc');
+  });
+});
+
 /* --------------------------------- helpers -------------------------------- */
 
 function file(filename: string, mimeType: string, content: Buffer) {
@@ -103,6 +128,7 @@ function file(filename: string, mimeType: string, content: Buffer) {
 
 function build(input: {
   kind?: string;
+  bcc?: Array<{ address: string }>;
   staged: Array<{
     id: string;
     whatsappMediaId: string;
@@ -152,6 +178,7 @@ function build(input: {
         kind: input.kind ?? 'reply',
         to: [{ address: 'alice@acme.com' }],
         cc: [],
+        bcc: input.bcc ?? [],
         subject: 'Re: Q3',
         bodyText: 'body',
         references: [],
@@ -181,7 +208,11 @@ function build(input: {
     markFailed,
     sent: () => {
       if (!sentMessage) throw new Error('nothing was sent');
-      return sentMessage as { attachments: Array<{ filename: string }> };
+      return sentMessage as {
+        attachments: Array<{ filename: string }>;
+        to: Array<{ address: string }>;
+        bcc?: Array<{ address: string }>;
+      };
     },
   };
 }

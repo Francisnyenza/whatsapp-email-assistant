@@ -18,6 +18,7 @@ export interface ClaimedDraft {
   kind: string;
   to: EmailAddress[];
   cc: EmailAddress[];
+  bcc: EmailAddress[];
   subject: string;
   bodyText: string;
   inReplyTo?: string;
@@ -64,6 +65,8 @@ export class DraftRepository {
     kind?: 'reply' | 'forward' | 'new';
     to: EmailAddress[];
     cc?: EmailAddress[];
+    /** Never merged into `cc`: the whole point is that the others cannot see it. */
+    bcc?: EmailAddress[];
     subject: string;
     bodyText: string;
     bodyCipher: Uint8Array;
@@ -84,6 +87,7 @@ export class DraftRepository {
           kind: input.kind ?? 'reply',
           toAddresses: input.to.map((a) => a.address),
           ccAddresses: (input.cc ?? []).map((a) => a.address),
+          bccAddresses: (input.bcc ?? []).map((a) => a.address),
           subject: input.subject,
           // Uint8Array rather than Buffer: Prisma's Bytes maps to
           // Uint8Array<ArrayBuffer>, and Node's Buffer widens to
@@ -164,6 +168,7 @@ export class DraftRepository {
         kind: draft.kind,
         to: draft.toAddresses.map((address) => ({ address })),
         cc: draft.ccAddresses.map((address) => ({ address })),
+        bcc: draft.bccAddresses.map((address) => ({ address })),
         subject: draft.subject,
         bodyText,
         ...(draft.inReplyToHeader ? { inReplyTo: draft.inReplyToHeader } : {}),

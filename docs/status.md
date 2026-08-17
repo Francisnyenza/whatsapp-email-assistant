@@ -8,7 +8,7 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 607 tests** (1 292 unit + 315 integration
+Everything below has tests that run and pass. **1 630 tests** (1 306 unit + 324 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                       |
@@ -16,15 +16,15 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                            |
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                       |
 | `@wea/db`       | 9 (integration)  | Prisma schema, twelve migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
-| `@wea/whatsapp` | 173              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                            |
+| `@wea/whatsapp` | 180              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                            |
 | `@wea/mail`     | 221              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                   |
 | `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic    |
 | `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                               |
-| `apps/worker`   | 347 + 255 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics   |
+| `apps/worker`   | 354 + 263 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics   |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                 |
 
 ```bash
-pnpm -r test          # 1 292 unit tests
+pnpm -r test          # 1 306 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -178,6 +178,15 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   WhatsApp renders as a voice note rather than as a file. A provider that cannot speak says
   so as a different sentence from a deployment with no provider at all, and neither is
   retried. An upload that fails produces a sentence, never a media message with no id.
+- A compose asks before it sends, like a delete and a forward do. It is the most
+  irreversible verb in the product — every other one acts on a message already in the
+  mailbox, so a mistake has a thread behind it to catch it, while a compose has a typed
+  address and nothing else. The planner had built that confirmation from the first day and
+  the processor sent the email anyway, discarding it: a payload written, never shown, and no
+  test noticed because every test asserted the draft. It surfaced only when Bcc was added
+  and the sender could not see the one field nobody else will ever see. The addresses and
+  the words are written to the pending slot server-side; the button carries a fixed
+  sentinel, so a crafted id can re-authorise this email and cannot redirect it.
 - A file sent **into** the chat is held rather than acted on, and the next email carries it.
   Holding is not a convenience: a chat has no draft window to keep open, and asking "who is
   this for?" before accepting the file would lose it the moment the user answered with a new
@@ -219,7 +228,7 @@ entirely from WhatsApp" is the product claim and this is the honest scoreboard f
 | **Attachments — into the chat**    | ✅         | `send me the attachment`. `QUEUE.MEDIA` now has both a producer and a consumer. One job per file, keyed on the attachment so asking twice does not send twice. Capped at 25 MB, measured while reading rather than trusting `sizeBytes`. Refuses a flagged file, and an inline signature logo, each with a sentence.                                                                                                                                                                            |
 | **Attachments — out of the chat**  | ✅         | A photo or document sent into the chat is _held_ — there is no draft window to keep open — and the next email carries it. The bytes stay on Meta's servers until send time, so a file staged and never sent is one that was never stored. Sized against the same 20 MB ceiling a forward is, at staging time rather than after "sending…". `drop the files` forgets them; they expire after a day. **Dictation is still not built: a voice note is ignored rather than attached as an `.ogg`.** |
 | **Voice note → email**             | ❌         | The webhook understands one and nothing transcribes it, so a voice note is ignored. The other direction — `read it aloud` — works.                                                                                                                                                                                                                                                                                                                                                              |
-| **CC / reply-all**                 | ✅         | `reply all saying …` and `email alice@x.com cc bob@x.com saying …`. Reply-all was implemented in `resolveReplyRecipients` from the start and no command ever set the flag — built, tested and unreachable. A Cc is validated as hard as a To and shown on the confirmation, since a Cc the user cannot see is one they did not agree to. **Bcc is still not reachable.**                                                                                                                        |
+| **CC / reply-all / Bcc**           | ✅         | `reply all saying …`, `email alice@x.com cc bob@x.com bcc carol@x.com saying …`. Both copy lists are parsed from one segment in either order and validated by the same `parseRecipientList` as the To. The Bcc is shown on the confirmation — to the one person it is not hidden from, who is the only one able to catch a mistake in it, because nobody on the message can see that it went astray.                                                                                            |
 | **Subject editing**                | ❌         | Subjects are derived (`Re: `, `Fwd: `). Compose needs one the user chooses.                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Folders / labels**               | ❌         | No move, no label add/remove, no listing. Archive is the only filing verb.                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | **Snooze**                         | ❌         | Nothing defers a message to a later time.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -246,31 +255,27 @@ discover_ which tenant a delivery belongs to — but the other three are a gap r
 design, and are pinned by an equality assertion in `tenant-isolation.integration.spec.ts`
 so the list cannot quietly grow.
 
-1. **Bcc.** `mime-builder.ts` emits it and nothing reaches it. Cc and reply-all are done;
-   Bcc needs a command phrasing and a decision about whether the confirmation shows it —
-   the whole point of a Bcc is that the other recipients cannot see it, but the _sender_
-   must.
-2. **Labels, folders and snooze.** Filing verbs beyond archive.
-3. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
+1. **Labels, folders and snooze.** Filing verbs beyond archive.
+2. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
    the secret; it deliberately does not create an EKS cluster, because every organisation
    with Kubernetes already has an opinion about how clusters are made and a module that
    insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
    subnet groups and security groups the module takes as inputs, and External Secrets wired
    from the Secrets Manager secret into the namespace.
-4. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
+3. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
    the backlog alerts. Still unexported and still only a log line: a mailbox stuck in
    `polling`, a user's token budget exhausted, the retention sweep failing quietly — and
    anything at all from the API, which has no `/metrics` yet, so its latency and error rate
    are invisible.
-5. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+4. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
 
 An earlier revision of this paragraph said every feature in the product spec was built.
 The parity audit above is what that claim looks like when it is checked verb by verb, and
-it is not true. Composing, attachments in both directions and Cc have since been built;
-what is still missing from the origination half is Bcc, and the filing verbs beyond
-archive — labels, folders and snooze — are missing from the other half.
+it is not true. Composing, attachments in both directions, Cc and Bcc have since been
+built; what is missing now is on the other half — the filing verbs beyond archive, which
+are labels, folders and snooze.
 
 ### After that
 

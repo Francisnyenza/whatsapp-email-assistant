@@ -96,6 +96,13 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
       const result = await provider.send(account, {
         to: draft.to,
         ...(draft.cc.length ? { cc: draft.cc } : {}),
+        // Both adapters keep this off what the other recipients receive: Gmail
+        // strips the header from the delivered copy, Graph sends
+        // `bccRecipients` separately. Neither is our doing, and both are the
+        // reason a Bcc has to go through the provider's own field rather than
+        // being appended to `to`.
+        ...(draft.bcc.length ? { bcc: draft.bcc } : {}),
+
         subject: draft.subject,
         bodyText: draft.bodyText,
         ...(attachments.length ? { attachments } : {}),

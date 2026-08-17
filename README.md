@@ -19,8 +19,9 @@ gives it away.
   sent through your own mailbox, so they land in your Sent folder and in the recipient's
   existing conversation.
 - **Full mailbox control** — compose, archive, delete, forward, mark read/unread/important,
-  search, CC and reply-all. (Bcc, labels, folders and snooze are **not built yet** — see the
-  parity table in [`docs/status.md`](docs/status.md).)
+  search, CC, Bcc and reply-all. Anything irreversible — a delete, a forward, a brand-new
+  email — asks first, with a button. (Labels, folders and snooze are **not built yet** — see
+  the parity table in [`docs/status.md`](docs/status.md).)
 - **AI throughout** — summarize, draft, rewrite, translate (10+ languages), classify, detect
   urgency and spam, extract deadlines, invoices, meeting times and action items.
 - **Attachments both ways** — ask for an email's files and they arrive in the chat; send a
@@ -72,7 +73,7 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 607 tests passing** (1 292 unit + 315 integration against real Postgres). See
+**1 630 tests passing** (1 306 unit + 324 integration against real Postgres). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 

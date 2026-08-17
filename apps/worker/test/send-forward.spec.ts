@@ -53,6 +53,7 @@ describe('forwarded attachments', () => {
       kind: 'forward',
       to: [{ address: 'colleague@acme.com' }],
       cc: [],
+      bcc: [],
       subject: 'Fwd: Q3 report',
       bodyText: '---------- Forwarded message ----------',
       references: [],

@@ -408,6 +408,25 @@ describeIfDb('command loop (real database)', () => {
    */
   const sends = () => enqueued.filter((job) => job.queue === 'send');
 
+  /**
+   * The tap that actually sends a compose.
+   *
+   * A compose asks first, like a delete and a forward do — it is the most
+   * irreversible verb in the product, because there is no thread behind it to
+   * catch a mistyped address. The button carries a fixed sentinel; the
+   * addresses and the words come from the pending slot, written server-side.
+   */
+  const composeTap = (action: 'confirm_send' | 'cancel' | 'reply' = 'confirm_send') =>
+    deliver({
+      type: 'interactive',
+      text: undefined,
+      interactive: {
+        type: 'button_reply',
+        id: encodeActionPayload({ action, targetId: 'compose' }),
+        title: '✅ Send',
+      },
+    });
+
   /** Files waiting for the next email — nothing claimed, nothing expired. */
   const stagedFiles = () =>
     withTenant(userId, (tx) => tx.stagedAttachment.findMany({ where: { userId, draftId: null } }));
@@ -844,6 +863,7 @@ describeIfDb('command loop (real database)', () => {
 
     it('queues a send with no threading headers at all', async () => {
       await deliver({ text: 'email bob@partner.com about Q3 saying the numbers are attached' });
+      await composeTap();
 
       expect(sends()).toHaveLength(1);
 
@@ -873,6 +893,7 @@ describeIfDb('command loop (real database)', () => {
       // the retention sweep and the send path work — rather than to a plaintext
       // column of its own.
       await deliver({ text: 'email bob@partner.com saying the numbers are attached' });
+      await composeTap();
 
       const draft = await withTenant(userId, (tx) =>
         tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
@@ -881,6 +902,89 @@ describeIfDb('command loop (real database)', () => {
       expect(draft!.bodyTextCipher.length).toBeGreaterThan(0);
       expect(draft!.bodyDek.length).toBeGreaterThan(0);
       expect(draft!.bodyKeyVersion).toBeGreaterThanOrEqual(0);
+    });
+
+    it('asks before sending, and sends nothing yet', async () => {
+      // A compose is the most irreversible verb here: every other one acts on a
+      // message already in the mailbox, so a mistake has a thread behind it to
+      // catch it. This has a typed address and nothing else. The planner built
+      // this confirmation from the start and the processor used to send the
+      // email anyway, which also meant a Bcc was never shown to the sender.
+      await deliver({ text: 'email bob@partner.com saying hi' });
+
+      expect(sends()).toHaveLength(0);
+      expect(await withTenant(userId, (tx) => tx.draft.count({ where: { kind: 'new' } }))).toBe(0);
+      expect(lastText()).toContain('bob@partner.com');
+    });
+
+    it('sends nothing when the confirmation is declined', async () => {
+      await deliver({ text: 'email bob@partner.com saying hi' });
+      await composeTap('cancel');
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText()).toContain('Nothing was sent');
+    });
+
+    it('cannot be sent twice by tapping twice', async () => {
+      // Reading the pending slot clears it, so the second tap has nothing to
+      // send rather than sending a second copy.
+      await deliver({ text: 'email bob@partner.com saying hi' });
+      await composeTap();
+      await composeTap();
+
+      expect(sends()).toHaveLength(1);
+      expect(lastText()).toContain('expired');
+    });
+
+    it('cannot be sent by a tap that was never offered', async () => {
+      await composeTap();
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText()).toContain('expired');
+    });
+
+    it('does not let a compose tap send a pending forward', async () => {
+      // One pending slot serves both, so the discriminant is what keeps a tap
+      // on one confirmation from spending the other — and a forward sent to a
+      // compose's recipient is mail going somewhere the user never approved.
+      await deliver({ context: { id: deliveries.sarah! }, text: 'forward to colleague@acme.com' });
+      await composeTap();
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText()).toContain('expired');
+    });
+
+    it('carries a Bcc in its own column, never folded into the Cc', async () => {
+      // The mistake with no recovery: a Bcc merged into Cc is visible to
+      // everyone on the message, and the sender finds out from the reply.
+      await deliver({
+        text: 'email bob@partner.com cc carol@partner.com bcc dan@partner.com saying hi',
+      });
+      await composeTap();
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+
+      expect(draft!.toAddresses).toEqual(['bob@partner.com']);
+      expect(draft!.ccAddresses).toEqual(['carol@partner.com']);
+      expect(draft!.bccAddresses).toEqual(['dan@partner.com']);
+    });
+
+    it('shows the Bcc to the sender before it goes', async () => {
+      await deliver({ text: 'email bob@partner.com bcc dan@partner.com saying hi' });
+
+      // Shown to the one person it is not hidden from, who is the only one who
+      // can catch a mistake in it.
+      expect(lastText()).toContain('dan@partner.com');
+    });
+
+    it('refuses a bad blind address, and sends nothing', async () => {
+      await deliver({ text: 'email bob@partner.com bcc not-an-address saying hi' });
+
+      expect(sends()).toHaveLength(0);
+      const count = await withTenant(userId, (tx) => tx.draft.count({ where: { kind: 'new' } }));
+      expect(count).toBe(0);
     });
 
     it('refuses an address it cannot send to, and sends nothing', async () => {
@@ -912,6 +1016,7 @@ describeIfDb('command loop (real database)', () => {
 
     it('defaults the subject rather than refusing over it', async () => {
       await deliver({ text: 'email bob@partner.com saying running ten minutes late' });
+      await composeTap();
 
       const draft = await withTenant(userId, (tx) =>
         tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
@@ -924,6 +1029,7 @@ describeIfDb('command loop (real database)', () => {
       await deliver({
         text: 'email bob@partner.com cc carol@partner.com about Q3 saying the numbers are attached',
       });
+      await composeTap();
 
       const draft = await withTenant(userId, (tx) =>
         tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
@@ -1734,6 +1840,7 @@ describeIfDb('command loop (real database)', () => {
     it('goes out on the next email the user sends', async () => {
       await deliver(photo() as never);
       await deliver({ text: 'email colleague@acme.com saying here it is' });
+      await composeTap();
 
       const draftId = sends().at(-1)!.payload.draftId as string;
       const carried = await withTenant(userId, (tx) =>
@@ -1756,6 +1863,7 @@ describeIfDb('command loop (real database)', () => {
       // "here's the invoice" with a photo attached is one action, not two, and
       // answering the file separately would be two messages for it.
       await deliver(photo({ text: 'email colleague@acme.com saying here it is' }) as never);
+      await composeTap();
 
       expect(sends()).toHaveLength(1);
       const draftId = sends().at(-1)!.payload.draftId as string;
@@ -1767,7 +1875,9 @@ describeIfDb('command loop (real database)', () => {
     it('is not sent twice when the user sends a second email', async () => {
       await deliver(photo() as never);
       await deliver({ text: 'email colleague@acme.com saying here it is' });
+      await composeTap();
       await deliver({ text: 'email colleague@acme.com saying and one more thing' });
+      await composeTap();
 
       const second = sends().at(-1)!.payload.draftId as string;
       expect(

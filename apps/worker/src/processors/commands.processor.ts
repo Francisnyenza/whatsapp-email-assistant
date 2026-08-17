@@ -25,7 +25,11 @@ import {
 } from '@wea/whatsapp';
 import { ConfigService } from '../config/config.service.js';
 import { ThreadResolver } from '../services/thread-resolver.js';
-import { ResponsePlanner, type PlannedEffect } from '../services/response-planner.js';
+import {
+  ResponsePlanner,
+  COMPOSE_TARGET,
+  type PlannedEffect,
+} from '../services/response-planner.js';
 import { OutboundService } from '../services/outbound.service.js';
 import { MailboxActionService } from '../services/mailbox-action.service.js';
 import { ReplyComposer } from '../services/reply-composer.js';
@@ -320,6 +324,15 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     const emailMessageId = tap.targetId;
     const effect = interpretTap(tap);
 
+    // A compose confirmation names no email, because there is none, so it
+    // carries a fixed sentinel instead. Everything below assumes a real message
+    // id — the subject lookup, the conversation state, the delivery record's
+    // foreign key — and would be handed a value that is not one.
+    if (emailMessageId === COMPOSE_TARGET) {
+      await this.handleComposeTap(userId, phoneNumber, message, tap);
+      return;
+    }
+
     // Confirm the target exists before anything references it. A button from an
     // old notification can name an email that has since been purged, and every
     // step below — the conversation state, the delivery record's foreign key —
@@ -373,6 +386,98 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     this.logger.info(
       { event: 'command.tap_handled', action: tap.action, effect: effect.kind, failed },
       'Button press handled',
+    );
+  }
+
+  /**
+   * The tap on a brand-new email's confirmation.
+   *
+   * Separate from every other tap because a compose has no parent message, so
+   * there is nothing to look up, nothing to make the conversation's subject and
+   * no foreign key to satisfy. What it shares with the rest is the part that
+   * matters: the addresses and the words come from the pending slot, written
+   * server-side when the user asked for them, and the button carries only the
+   * sentinel. A crafted id can re-authorize this email and cannot redirect it.
+   */
+  private async handleComposeTap(
+    userId: string,
+    phoneNumber: string,
+    message: InboundWhatsAppMessage,
+    tap: ActionPayload,
+  ): Promise<void> {
+    const { payload, failed } = await this.carryOutComposeTap(userId, tap.action);
+
+    await this.inbox.recordResolution(
+      userId,
+      message.id,
+      `tap:${tap.action}`,
+      'button',
+      failed ?? undefined,
+    );
+
+    await this.outbound.reply({
+      userId,
+      phoneNumber,
+      payload,
+      kind: 'reply_confirmation',
+      lastInboundAt: message.timestamp,
+    });
+
+    this.logger.info(
+      { event: 'command.compose_tap_handled', action: tap.action, failed },
+      'Compose confirmation handled',
+    );
+  }
+
+  private async carryOutComposeTap(
+    userId: string,
+    action: string,
+  ): Promise<{ payload: WhatsAppOutboundPayload; failed?: string }> {
+    // Cancel and edit both spend the pending slot. Leaving it would mean a
+    // later, unrelated tap could still send the email the user just declined.
+    if (action !== 'confirm_send') {
+      await this.inbox.takePendingAction(userId, PENDING_SEND);
+      return {
+        payload: buildText(
+          action === 'reply'
+            ? 'Nothing sent. Send it again with the wording you want — _email alice@acme.com saying …_'
+            : 'Cancelled. Nothing was sent.',
+        ),
+      };
+    }
+
+    const pending = await this.inbox.takePendingAction(userId, PENDING_SEND);
+
+    // Expired, already spent, or belonging to a forward rather than a compose.
+    // Never guess: an email to a typed address cannot be recalled, and there is
+    // no thread here to catch a mistake the way a reply's target would.
+    if (!pending || pending.kind !== 'compose' || typeof pending.to !== 'string') {
+      return {
+        payload: buildText(
+          "That confirmation has expired. Ask me again and I'll set it up once more.",
+        ),
+        failed: 'no pending compose',
+      };
+    }
+
+    const to = pending.to;
+    const cc = typeof pending.cc === 'string' ? pending.cc : undefined;
+    const bcc = typeof pending.bcc === 'string' ? pending.bcc : undefined;
+
+    return this.attempt(
+      () =>
+        this.composer.compose({
+          userId,
+          // Parsed here rather than stored parsed, so the addresses that reach
+          // the mailbox have been through the same validator on the same path
+          // every other recipient goes through.
+          to: parseRecipientList(to),
+          ...(cc ? { cc: parseRecipientList(cc) } : {}),
+          ...(bcc ? { bcc: parseRecipientList(bcc) } : {}),
+          subject: typeof pending.subject === 'string' ? pending.subject : '(no subject)',
+          bodyText: typeof pending.body === 'string' ? pending.body : '',
+        }),
+      () => buildText(`Sending to ${to}…`),
     );
   }
 
@@ -564,12 +669,33 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    // A compose is recorded the same way, and it is the case that most needed
+    // it. Every other verb acts on a message already in the mailbox, so a
+    // mistake has a thread behind it to catch it; a compose has a typed address
+    // and nothing else, and an email to the wrong one cannot be recalled. Until
+    // this slot existed the planner built a confirmation and the processor sent
+    // the email anyway — which also meant a Bcc was never shown to the one
+    // person allowed to see it.
+    if (planned.effect?.kind === 'compose') {
+      await this.inbox.setPendingAction(userId, PENDING_SEND, {
+        kind: 'compose',
+        emailMessageId: COMPOSE_TARGET,
+        to: planned.effect.to,
+        ...(planned.effect.cc ? { cc: planned.effect.cc } : {}),
+        ...(planned.effect.bcc ? { bcc: planned.effect.bcc } : {}),
+        subject: planned.effect.subject,
+        body: planned.effect.body,
+      });
+    }
+
     // Step 4 — carry it out, *then* answer. The planner's payload describes a
     // completed action ("Archived."), so sending it before the action succeeds
-    // would make it a false statement.
-    const { payload, failed } = planned.effect
-      ? await this.carryOutPlan(userId, planned.emailMessageId, planned.effect, planned.payload)
-      : { payload: planned.payload, failed: undefined as string | undefined };
+    // would make it a false statement. A compose is the exception: its payload
+    // is a question, and it is answered by the tap rather than here.
+    const { payload, failed } =
+      planned.effect && planned.effect.kind !== 'compose'
+        ? await this.carryOutPlan(userId, planned.emailMessageId, planned.effect, planned.payload)
+        : { payload: planned.payload, failed: undefined as string | undefined };
 
     await this.inbox.recordResolution(
       userId,
@@ -652,28 +778,15 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     effect: PlannedEffect,
     intended: WhatsAppOutboundPayload,
   ): Promise<{ payload: WhatsAppOutboundPayload; failed?: string }> {
-    // Handled before the target check, because a compose is the one effect with
-    // no email behind it. Everything below acts on a message that already
-    // exists; this originates one, so there is nothing to resolve and nothing
-    // to guard against.
+    // A compose never reaches here: it is written to the pending slot and sent
+    // by the tap, so that the user reads the addresses — including a Bcc, which
+    // nobody else will ever see — before the email exists. `handleText` is what
+    // holds it back.
     if (effect.kind === 'compose') {
-      return this.attempt(
-        () =>
-          this.composer.compose({
-            userId,
-            to: parseRecipientList(effect.to),
-            ...(effect.cc ? { cc: parseRecipientList(effect.cc) } : {}),
-            subject: effect.subject,
-            bodyText: effect.body,
-          }),
-        ({ recipients }) =>
-          buildText(
-            recipients === 1 ? `Sending to ${effect.to}…` : `Sending to ${recipients} recipients…`,
-          ),
-      );
+      return { payload: buildText(GENERIC_FAILURE), failed: 'compose reached carryOutPlan' };
     }
 
-    // Also before the target check, and for the same reason: what it acts on is
+    // Handled before the target check, because what it acts on is
     // the set of files waiting for the next email, which belongs to the
     // conversation rather than to any message in it.
     if (effect.kind === 'discard_files') {

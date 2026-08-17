@@ -363,3 +363,50 @@ describe('what it says matches what it does', () => {
     });
   });
 });
+
+describe('bcc on a compose', () => {
+  const compose = (over: Record<string, unknown>) =>
+    plan({ intent: 'compose', to: 'alice@acme.com', body: 'here it is', ...over } as never, {
+      // A compose names no email, so the ladder has nothing to resolve — the
+      // planner answers it before the resolution is consulted at all.
+      outcome: 'none',
+      basis: 'a compose has no parent',
+    });
+
+  it('shows the Bcc to the sender, who is the only one who will see it', () => {
+    // Hiding it here because "a Bcc is meant to be hidden" would hide it from
+    // the one person it is not hidden from — and they are the only one who can
+    // catch a mistake in it, because nobody on the message can see it went
+    // astray.
+    const result = compose({ bcc: 'carol@acme.com' });
+
+    expect(textOf(result)).toContain('Bcc:');
+    expect(textOf(result)).toContain('carol@acme.com');
+  });
+
+  it('keeps it out of the Cc, which everyone can see', () => {
+    const result = compose({ bcc: 'carol@acme.com' });
+
+    expect(result.effect).toMatchObject({ kind: 'compose', bcc: 'carol@acme.com' });
+    expect(result.effect).not.toHaveProperty('cc');
+  });
+
+  it('refuses a bad blind address as hard as a bad To', () => {
+    const result = compose({ bcc: 'not-an-address' });
+
+    expect(result.effect).toBeUndefined();
+    expect(textOf(result).toLowerCase()).toContain('not an email address');
+  });
+
+  it('says nothing about a Bcc when there is none', () => {
+    expect(textOf(compose({}))).not.toContain('Bcc');
+  });
+
+  it('carries both lists through, separately', () => {
+    const result = compose({ cc: 'bob@acme.com', bcc: 'carol@acme.com' });
+
+    expect(result.effect).toMatchObject({ cc: 'bob@acme.com', bcc: 'carol@acme.com' });
+    expect(textOf(result)).toContain('Cc:');
+    expect(textOf(result)).toContain('Bcc:');
+  });
+});

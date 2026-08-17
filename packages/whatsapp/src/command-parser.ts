@@ -92,6 +92,45 @@ const EXACT_COMMANDS: Record<string, CommandIntent> = {
 };
 
 /**
+ * Splits "cc bob@x.com bcc carol@x.com" into its two lists.
+ *
+ * Both come out as raw text, exactly as the recipient does, and are validated
+ * downstream by `parseRecipientList`. Recognising the shape of a request and
+ * deciding where mail may go are different jobs, and a second, laxer parse here
+ * is how an address the validator would refuse gets accepted on the way past.
+ *
+ * The marker has to be a whole word followed by a space — `\b` alone would find
+ * one inside `cc.dept@acme.com` and cut the address in half.
+ */
+function splitCopyList(segment: string): { cc?: string; bcc?: string } {
+  const marker = /(?:^|\s)(bcc|blind\s+cop(?:y|ying)|cc|copy(?:ing)?)\s+/gi;
+
+  const found: Array<{ kind: 'cc' | 'bcc'; from: number; at: number }> = [];
+  for (const match of segment.matchAll(marker)) {
+    found.push({
+      // "blind copy" and "bcc" both start with b; "copying" and "cc" do not.
+      kind: match[1]!.toLowerCase().startsWith('b') ? 'bcc' : 'cc',
+      at: match.index!,
+      from: match.index! + match[0].length,
+    });
+  }
+
+  const lists: { cc?: string; bcc?: string } = {};
+  for (const [index, entry] of found.entries()) {
+    const value = segment
+      .slice(entry.from, found[index + 1]?.at ?? segment.length)
+      .trim()
+      .replace(/[,;]+$/, '');
+    if (!value) continue;
+
+    // "cc a@x.com cc b@x.com" is one list, not the second replacing the first.
+    lists[entry.kind] = lists[entry.kind] ? `${lists[entry.kind]}, ${value}` : value;
+  }
+
+  return lists;
+}
+
+/**
  * Ordered patterns. First match wins, so more specific expressions come first —
  * "reply with X" must be tried before the bare "reply".
  */
@@ -124,13 +163,16 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
   { re: /^(?:reply|respond|answer)$/i, build: () => ({ intent: 'reply' }) },
 
   {
-    // "email alice@x.com cc bob@x.com about Q3 saying …" — the copy list sits
-    // between the recipient and the subject, which is where people put it.
-    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+?)\s+(?:cc|copy(?:ing)?)\s+([^]+?)\s+(?:about\s+(.{1,200}?)\s+)?(?:saying|that\s+says|:)\s+(.+)$/is,
+    // "email alice@x.com cc bob@x.com bcc carol@x.com about Q3 saying …" — the
+    // copy lists sit between the recipient and the subject, which is where
+    // people put them. Both are captured as one segment and split afterwards,
+    // rather than as a rule per combination: cc-then-bcc and bcc-then-cc and
+    // either alone are four regexes that would drift apart.
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+?)\s+((?:bcc|cc|blind\s+cop(?:y|ying)|copy(?:ing)?)\s+[^]+?)\s+(?:about\s+(.{1,200}?)\s+)?(?:saying|that\s+says|:)\s+(.+)$/is,
     build: (m) => ({
       intent: 'compose',
       to: m[1]!.trim().replace(/[,;]$/, ''),
-      cc: m[2]!.trim(),
+      ...splitCopyList(m[2]!),
       ...(m[3] ? { subject: m[3].trim() } : {}),
       body: m[4]!.trim(),
     }),
@@ -353,5 +395,13 @@ function looksLikeProse(text: string): boolean {
  * these are the verbs whose consequences a user cannot undo (ADR 0004).
  */
 export function needsConfirmation(intent: CommandIntent): boolean {
-  return intent.intent === 'delete' || intent.intent === 'forward';
+  return (
+    intent.intent === 'delete' ||
+    intent.intent === 'forward' ||
+    // A compose is the most irreversible of the three. A delete goes to trash
+    // and a forward at least names a message the user was looking at; a compose
+    // has a typed address and nothing behind it, so nothing else in the system
+    // is in a position to catch a mistake in it.
+    intent.intent === 'compose'
+  );
 }

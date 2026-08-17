@@ -441,3 +441,63 @@ describe('dropping the files the user sent in', () => {
     expect(intentOf('clear the files')).not.toMatchObject({ intent: 'draft' });
   });
 });
+
+describe('bcc on a compose', () => {
+  it('takes a blind copy list', () => {
+    expect(intentOf('email alice@acme.com bcc bob@acme.com saying here it is')).toEqual({
+      intent: 'compose',
+      to: 'alice@acme.com',
+      bcc: 'bob@acme.com',
+      body: 'here it is',
+    });
+  });
+
+  it('takes both lists, in either order', () => {
+    expect(
+      intentOf('email alice@acme.com cc bob@acme.com bcc carol@acme.com saying hi'),
+    ).toMatchObject({ cc: 'bob@acme.com', bcc: 'carol@acme.com' });
+
+    expect(
+      intentOf('email alice@acme.com bcc carol@acme.com cc bob@acme.com saying hi'),
+    ).toMatchObject({ cc: 'bob@acme.com', bcc: 'carol@acme.com' });
+  });
+
+  it('understands "blind copy"', () => {
+    expect(intentOf('email alice@acme.com blind copy bob@acme.com saying hi')).toMatchObject({
+      bcc: 'bob@acme.com',
+    });
+  });
+
+  it('does not read a bcc as a cc, which would show it to everyone', () => {
+    // The one mistake with no recovery: nobody on the message can see that it
+    // went to someone it should not have, so nobody can tell the sender.
+    expect(intentOf('email alice@acme.com bcc bob@acme.com saying hi')).not.toHaveProperty('cc');
+  });
+
+  it('joins two lists of the same kind rather than dropping the first', () => {
+    expect(
+      intentOf('email alice@acme.com cc bob@acme.com cc dan@acme.com saying hi'),
+    ).toMatchObject({ cc: 'bob@acme.com, dan@acme.com' });
+  });
+
+  it('does not cut an address that happens to contain the marker', () => {
+    // `\bcc\b` matches inside `cc.dept@acme.com`, which would split the address
+    // in half and hand the validator a fragment.
+    expect(intentOf('email alice@acme.com cc cc.dept@acme.com saying hi')).toMatchObject({
+      cc: 'cc.dept@acme.com',
+    });
+  });
+
+  it('still takes a subject alongside both lists', () => {
+    expect(
+      intentOf('email alice@acme.com cc bob@acme.com bcc carol@acme.com about Q3 saying hi'),
+    ).toEqual({
+      intent: 'compose',
+      to: 'alice@acme.com',
+      cc: 'bob@acme.com',
+      bcc: 'carol@acme.com',
+      subject: 'Q3',
+      body: 'hi',
+    });
+  });
+});
