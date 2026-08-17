@@ -14,6 +14,7 @@ export type {
   OutboundAttachment,
   SendResult,
   MailOperation,
+  MailLabel,
   ChangeEvent,
   SyncCursor,
   WatchHandle,

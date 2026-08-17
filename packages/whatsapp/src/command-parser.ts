@@ -286,6 +286,30 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
     build: () => ({ intent: 'mark_spam', isSpam: true }),
   },
 
+  // Filing under a name. `remove` is matched first for the same reason "not
+  // spam" is: "remove the Receipts label" contains "the Receipts label", and the
+  // wrong order would file a message the user asked to unfile.
+  {
+    re: /^(?:remove|take\s+off|un-?label|delete)\s+(?:the\s+)?(?:label\s+)?["'“]?(.{1,60}?)["'”]?(?:\s+label)?$/i,
+    build: (m) => ({ intent: 'label', remove: m[1]!.trim() }),
+  },
+  {
+    re: /^(?:label|tag|file|categorise|categorize)\s+(?:this|it)?\s*(?:as|under|with|in)\s+["'“]?(.{1,60}?)["'”]?(?:\s+label)?$/i,
+    build: (m) => ({ intent: 'label', add: m[1]!.trim() }),
+  },
+  {
+    re: /^(?:add\s+(?:the\s+)?)?(?:label|tag)\s+["'“]?(.{1,60}?)["'”]?(?:\s+label)?$/i,
+    build: (m) => ({ intent: 'label', add: m[1]!.trim() }),
+  },
+  {
+    re: /^(?:what|which)\s+(?:labels?|tags?|categories)\s*(?:do\s+i\s+have|are\s+there|exist)?\??$/i,
+    build: () => ({ intent: 'list_labels' }),
+  },
+  {
+    re: /^(?:my\s+|show\s+(?:me\s+)?(?:my\s+)?|list\s+(?:my\s+)?)(?:labels?|tags?|categories)$/i,
+    build: () => ({ intent: 'list_labels' }),
+  },
+
   {
     re: /^(?:summarize|summarise|tldr|sum\s?up)(?:\s+(?:this|it))?$/i,
     build: () => ({ intent: 'summarize' }),

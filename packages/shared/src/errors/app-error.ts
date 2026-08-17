@@ -110,6 +110,17 @@ export class AppError extends Error {
   readonly code: ErrorCode;
   readonly statusCode: number;
   readonly publicMessage: string;
+  /**
+   * True when `publicMessage` was written for this specific failure rather than
+   * defaulted from the code.
+   *
+   * The distinction matters wherever a layer has its own phrasing for a code —
+   * the WhatsApp command processor turns NOT_FOUND into "I couldn't find that
+   * email any more", which is right for a missing message and wrong for a
+   * missing label. Without this flag that layer has to choose one of them for
+   * every NOT_FOUND, and the specific message loses.
+   */
+  readonly hasSpecificPublicMessage: boolean;
   readonly context: Record<string, unknown>;
   readonly retryable: boolean;
   readonly retryAfterSeconds?: number;
@@ -121,6 +132,7 @@ export class AppError extends Error {
     this.statusCode = STATUS[code];
     this.publicMessage =
       options.publicMessage ?? GENERIC_PUBLIC_MESSAGE[code] ?? 'Something went wrong.';
+    this.hasSpecificPublicMessage = options.publicMessage !== undefined;
     this.context = options.context ?? {};
     this.retryable = options.retryable ?? RETRYABLE.has(code);
     this.retryAfterSeconds = options.retryAfterSeconds;

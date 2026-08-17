@@ -1,5 +1,6 @@
 import type {
   ChangeEvent,
+  MailLabel,
   MailOperation,
   MailProviderKind,
   NormalizedMessage,
@@ -80,6 +81,31 @@ export interface MailProvider {
     providerMessageId: string,
     operation: MailOperation,
   ): Promise<void>;
+
+  /**
+   * The mailbox's own filing names, and the ids `mutate` expects for them.
+   *
+   * Both halves are necessary because the providers disagree about what a label
+   * *is*. Gmail's `addLabelIds` takes ids and rejects names; Outlook's
+   * categories are names and have no ids at all. A caller that guessed either
+   * way would work against one mailbox and silently no-op against the other, so
+   * the adapter is the only thing that knows the difference — it returns both,
+   * and `mutate` is always given `id`.
+   *
+   * System labels (Gmail's INBOX, SENT, SPAM) are excluded. They are not things
+   * a user files mail under, and offering to add one is offering to break their
+   * mailbox in ways no other client would.
+   */
+  listLabels(account: ProviderAccount): Promise<MailLabel[]>;
+
+  /**
+   * Creates a label the mailbox does not have yet.
+   *
+   * Separate from `listLabels` rather than a `create: true` flag, because
+   * creating one is a change to the mailbox's own structure and the caller
+   * should have to ask for it in as many words.
+   */
+  createLabel(account: ProviderAccount, name: string): Promise<MailLabel>;
 
   /** Confirms the grant still works, for the health check and reconnect flow. */
   verifyAccess(

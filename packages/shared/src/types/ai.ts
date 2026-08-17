@@ -167,6 +167,21 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
    * Phase 7 and nothing in a chat could ask for it.
    */
   z.object({ intent: z.literal('mark_spam'), isSpam: z.boolean() }),
+  /**
+   * "label this as Receipts", "remove the Receipts label".
+   *
+   * The name is the user's raw text, resolved against the mailbox's own list
+   * downstream — Gmail wants an id and Outlook wants a name, and a command that
+   * passed words straight through would no-op against one of them while
+   * reporting success.
+   */
+  z.object({
+    intent: z.literal('label'),
+    add: z.string().optional(),
+    remove: z.string().optional(),
+  }),
+  /** "what labels do I have" — the mailbox's filing names, not a message's. */
+  z.object({ intent: z.literal('list_labels') }),
   z.object({ intent: z.literal('summarize'), target: z.string().optional() }),
   z.object({ intent: z.literal('translate'), language: z.string() }),
   z.object({ intent: z.literal('read_aloud'), target: z.string().optional() }),

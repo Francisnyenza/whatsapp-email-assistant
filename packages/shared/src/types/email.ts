@@ -124,6 +124,18 @@ export type MailOperation =
   | { kind: 'label'; add?: string[]; remove?: string[] }
   | { kind: 'spam'; isSpam: boolean };
 
+/**
+ * A filing name in the user's mailbox, with whatever `mutate` needs to apply it.
+ *
+ * `id` and `name` are the same string for Outlook, whose categories have no ids,
+ * and differ for Gmail, whose `addLabelIds` rejects names. Callers pass `id` and
+ * show `name`; nothing above the adapter needs to know which mailbox it is.
+ */
+export interface MailLabel {
+  id: string;
+  name: string;
+}
+
 /** One change reported by a provider's push or delta channel. */
 export interface ChangeEvent {
   type: 'messageAdded' | 'messageDeleted' | 'labelsChanged';

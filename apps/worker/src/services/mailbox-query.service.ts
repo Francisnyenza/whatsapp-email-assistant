@@ -12,6 +12,7 @@ import {
 } from '../repositories/search.repository.js';
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
 import { AssistantService } from './assistant.service.js';
+import { LabelService } from './label.service.js';
 
 /**
  * Reads over the mailbox: "find the invoice from Tom", "what's unread".
@@ -34,6 +35,7 @@ export class MailboxQueryService {
     private readonly ai: AiService,
     private readonly analyses: AnalysisRepository,
     private readonly assistant: AssistantService,
+    private readonly labels: LabelService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
@@ -46,7 +48,11 @@ export class MailboxQueryService {
       LIST_KINDS[intent.intent] !== undefined ||
       intent.intent === 'search' ||
       intent.intent === 'question' ||
-      intent.intent === 'list_deadlines'
+      intent.intent === 'list_deadlines' ||
+      // A read over the mailbox's filing names rather than over its messages,
+      // but a read all the same: it concerns no particular email, so it is
+      // answered here rather than through the resolution ladder.
+      intent.intent === 'list_labels'
     );
   }
 
@@ -61,6 +67,15 @@ export class MailboxQueryService {
 
     if (intent.intent === 'list_deadlines') {
       return this.renderDeadlines(await this.search.deadlines(userId));
+    }
+
+    if (intent.intent === 'list_labels') {
+      const names = await this.labels.list(userId);
+      return buildText(
+        names.length === 0
+          ? "You don't have any labels yet. Say _label this as Receipts_ and I'll make one."
+          : `Your labels:\n${names.map((name) => `• ${name}`).join('\n')}`,
+      );
     }
 
     const kind = LIST_KINDS[intent.intent];

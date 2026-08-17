@@ -75,6 +75,12 @@ export type PlannedEffect =
   /** Send this email's files into the chat, one queued job each. */
   | { kind: 'attachments' }
   /**
+   * File it under a name. Names rather than ids, because the planner is pure and
+   * resolving one against the mailbox is a network call — the processor does it,
+   * and it is what stops a Gmail mailbox being handed a name it ignores.
+   */
+  | { kind: 'label'; add?: string; remove?: string }
+  /**
    * Forget the files the user sent *into* the chat. Like a compose, it names no
    * email — what it acts on is the set of files waiting for the next one.
    */
@@ -289,6 +295,22 @@ export class ResponsePlanner {
           ),
           followUp: 'queue_action',
           effect: { kind: 'mutate', operation: { kind: 'spam', isSpam: intent.isSpam } },
+          emailMessageId,
+        };
+
+      // The answer names the labels as the *mailbox* spells them, which the
+      // planner cannot know, so the payload here is a placeholder the processor
+      // replaces. Saying "Filed under receipts" when the mailbox filed it under
+      // "Receipts" is a small lie that makes the next command fail.
+      case 'label':
+        return {
+          payload: buildText('Filing…'),
+          followUp: 'queue_query',
+          effect: {
+            kind: 'label',
+            ...(intent.add ? { add: intent.add } : {}),
+            ...(intent.remove ? { remove: intent.remove } : {}),
+          },
           emailMessageId,
         };
 
@@ -523,6 +545,8 @@ const HELP_TEXT = [
   '• _delete_ — asks you to confirm first',
   '• _mark unread_ · _important_',
   '• _this is spam_ · _not spam_',
+  '• _label this as Receipts_ · _remove the Receipts label_',
+  '• _what labels do I have_',
   '',
   '*Finding and reading*',
   '• _search invoices from Tom_',

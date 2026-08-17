@@ -526,3 +526,57 @@ describe('spam and not spam', () => {
     expect(intentOf('search spam from tom')).not.toMatchObject({ intent: 'mark_spam' });
   });
 });
+
+describe('filing under a label', () => {
+  it('understands the ways people say it', () => {
+    for (const text of [
+      'label this as Receipts',
+      'label it as Receipts',
+      'tag this as Receipts',
+      'file this under Receipts',
+      'categorise this as Receipts',
+    ]) {
+      expect(intentOf(text)).toEqual({ intent: 'label', add: 'Receipts' });
+    }
+  });
+
+  it('takes a bare "label Receipts"', () => {
+    expect(intentOf('label Receipts')).toEqual({ intent: 'label', add: 'Receipts' });
+  });
+
+  it('understands taking one off', () => {
+    for (const text of [
+      'remove the Receipts label',
+      'remove Receipts',
+      'take off Receipts',
+      'unlabel Receipts',
+    ]) {
+      expect(intentOf(text)).toEqual({ intent: 'label', remove: 'Receipts' });
+    }
+  });
+
+  it('reads a removal as a removal, never as a filing', () => {
+    // The ordering bug: "remove the Receipts label" contains a label name, and
+    // the wrong rule first files a message the user asked to unfile.
+    expect(intentOf('remove the Receipts label')).not.toHaveProperty('add');
+  });
+
+  it('keeps a multi-word name whole', () => {
+    expect(intentOf('label this as Tax 2026')).toEqual({ intent: 'label', add: 'Tax 2026' });
+  });
+
+  it('strips quotes people put round a name', () => {
+    expect(intentOf('label this as "Tax 2026"')).toEqual({ intent: 'label', add: 'Tax 2026' });
+  });
+
+  it('answers "what labels do I have"', () => {
+    for (const text of ['what labels do I have', 'my labels', 'show me my labels', 'list tags']) {
+      expect(intentOf(text)).toEqual({ intent: 'list_labels' });
+    }
+  });
+
+  it('does not claim "delete", which is still the delete verb', () => {
+    expect(intentOf('delete')).toEqual({ intent: 'delete' });
+    expect(intentOf('delete this')).toEqual({ intent: 'delete' });
+  });
+});

@@ -621,3 +621,52 @@ describe('which failures are worth retrying', () => {
     );
   });
 });
+
+describe('labels', () => {
+  it('returns categories with the display name as the id', async () => {
+    // Categories have no ids of their own — the name *is* the identifier, and
+    // `mutate` writes names into the `categories` array. Graph does return a
+    // GUID per category, and using it would be the bug: a message patched with
+    // a GUID gets a category nobody can see.
+    const { fetchImpl } = graph([
+      {
+        match: (u, m) => m === 'GET' && u.includes('masterCategories'),
+        body: {
+          value: [
+            { id: '9d1b-guid', displayName: 'Receipts', color: 'preset0' },
+            { id: '3f2a-guid', displayName: 'Travel', color: 'preset4' },
+          ],
+        },
+      },
+    ]);
+
+    const labels = await provider(fetchImpl as never).listLabels(account);
+
+    expect(labels).toEqual([
+      { id: 'Receipts', name: 'Receipts' },
+      { id: 'Travel', name: 'Travel' },
+    ]);
+  });
+
+  it('skips a category with no display name', async () => {
+    const { fetchImpl } = graph([
+      {
+        match: (u, m) => m === 'GET' && u.includes('masterCategories'),
+        body: { value: [{ id: 'x' }, { displayName: 'Receipts' }] },
+      },
+    ]);
+
+    expect(await provider(fetchImpl as never).listLabels(account)).toHaveLength(1);
+  });
+
+  it('creates one with a colour, which Graph requires', async () => {
+    const { fetchImpl, calls } = graph([
+      { match: (u, m) => m === 'POST' && u.includes('masterCategories'), body: {} },
+    ]);
+
+    const created = await provider(fetchImpl as never).createLabel(account, 'Tax 2026');
+
+    expect(JSON.parse(calls[0]!.body!)).toEqual({ displayName: 'Tax 2026', color: 'preset0' });
+    expect(created).toEqual({ id: 'Tax 2026', name: 'Tax 2026' });
+  });
+});

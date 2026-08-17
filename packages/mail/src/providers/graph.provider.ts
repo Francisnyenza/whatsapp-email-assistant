@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import {
   AppError,
   type ChangeEvent,
+  type MailLabel,
   type MailOperation,
   type MailProviderKind,
   type NormalizedMessage,
@@ -662,6 +663,42 @@ export class GraphProvider implements MailProvider {
         return this.patch(account, id, { categories: [...next] }, 'mutate.label');
       }
     }
+  }
+
+  /* --------------------------------- labels -------------------------------- */
+
+  /**
+   * Outlook's master category list.
+   *
+   * Categories have no ids of their own — the display name *is* the identifier,
+   * and `mutate` writes names into the `categories` array. So `id` and `name`
+   * come back equal here, which is not a shortcut: it is the difference between
+   * the two mailboxes that the `MailLabel` shape exists to absorb. Graph does
+   * return a GUID per category, and using it would be the bug — patching a
+   * message with a GUID produces a category nobody can see.
+   */
+  async listLabels(account: ProviderAccount): Promise<MailLabel[]> {
+    const response = await this.request<{ value?: Array<{ displayName?: string }> }>(
+      account,
+      '/me/outlook/masterCategories',
+      { method: 'GET', op: 'labels.list' },
+    );
+
+    return (response.value ?? [])
+      .filter((category) => category.displayName)
+      .map((category) => ({ id: category.displayName!, name: category.displayName! }));
+  }
+
+  async createLabel(account: ProviderAccount, name: string): Promise<MailLabel> {
+    await this.request<{ displayName?: string }>(account, '/me/outlook/masterCategories', {
+      method: 'POST',
+      op: 'labels.create',
+      // A colour is required by the API. `preset0` is the first of the
+      // twenty-five Outlook offers; leaving it out is rejected outright.
+      body: JSON.stringify({ displayName: name, color: 'preset0' }),
+    });
+
+    return { id: name, name };
   }
 
   private async patch(

@@ -37,6 +37,7 @@ import { ForwardComposer } from '../services/forward-composer.js';
 import { ComposeComposer } from '../services/compose-composer.js';
 import { MailboxQueryService } from '../services/mailbox-query.service.js';
 import { AssistantService } from '../services/assistant.service.js';
+import { LabelService } from '../services/label.service.js';
 import {
   AttachmentStagingService,
   type StagingOutcome,
@@ -85,6 +86,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly composer: ComposeComposer,
     private readonly queries: MailboxQueryService,
     private readonly assistant: AssistantService,
+    private readonly labels: LabelService,
     private readonly staging: AttachmentStagingService,
     private readonly inbox: InboxRepository,
     private readonly attachments: AttachmentRepository,
@@ -859,6 +861,28 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       // discarded rather than sent. Sending both would be two notifications for
       // one question, and sending only the placeholder would be the "Archived."
       // failure in a new costume.
+      // The answer names the labels as the mailbox spells them, which is why
+      // this is a query rather than an action: "receipts" filed under an
+      // existing "Receipts" should say so, or the user's next command — typed
+      // from what they read — names a label that does not exist.
+      case 'label':
+        return this.attempt(
+          () =>
+            this.labels.apply(userId, emailMessageId, {
+              ...(effect.add ? { add: [effect.add] } : {}),
+              ...(effect.remove ? { remove: [effect.remove] } : {}),
+            }),
+          ({ added, removed }) =>
+            buildText(
+              [
+                added.length ? `Filed under *${added.join('*, *')}*.` : '',
+                removed.length ? `Took off *${removed.join('*, *')}*.` : '',
+              ]
+                .filter(Boolean)
+                .join(' '),
+            ),
+        );
+
       case 'summarize':
         return this.attempt(
           () => this.assistant.summarize(userId, emailMessageId),
@@ -1022,6 +1046,12 @@ function describeAttachments(count: number): string {
  * noise at best and a disclosure at worst.
  */
 function userFacingFailure(error: AppError): string {
+  // A message written for this specific failure beats this function's phrasing
+  // for the code. "I couldn't find that email any more" is right for a missing
+  // message and wrong for a missing label, and the layer that knows which is
+  // the one that raised it.
+  if (error.hasSpecificPublicMessage) return error.publicMessage;
+
   switch (error.code) {
     case 'NOT_FOUND':
       return "I couldn't find that email any more — it may have been deleted or moved.";

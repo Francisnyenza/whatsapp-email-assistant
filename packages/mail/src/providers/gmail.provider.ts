@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import {
   AppError,
   type ChangeEvent,
+  type MailLabel,
   type MailOperation,
   type MailProviderKind,
   type NormalizedMessage,
@@ -377,6 +378,57 @@ export class GmailProvider implements MailProvider {
         accountId: account.id,
         op: `mutate.${operation.kind}`,
       });
+    }
+  }
+
+  /* --------------------------------- labels -------------------------------- */
+
+  /**
+   * The user's own labels.
+   *
+   * `type: 'system'` is filtered out, and that filter is the whole reason this
+   * cannot be a pass-through: Gmail returns INBOX, SENT, SPAM, TRASH, DRAFT and
+   * the category tabs alongside the user's own. None of them are things anyone
+   * files mail under by name, and adding TRASH to a message on request is
+   * deleting it by a route with no confirmation.
+   */
+  async listLabels(account: ProviderAccount): Promise<MailLabel[]> {
+    const gmail = this.client(account);
+
+    try {
+      const response = await gmail.users.labels.list({ userId: 'me' });
+
+      return (response.data.labels ?? [])
+        .filter((label) => label.type !== 'system' && label.id && label.name)
+        .map((label) => ({ id: label.id!, name: label.name! }));
+    } catch (err) {
+      throw mapGmailError(err, { accountId: account.id, op: 'labels.list' });
+    }
+  }
+
+  async createLabel(account: ProviderAccount, name: string): Promise<MailLabel> {
+    const gmail = this.client(account);
+
+    try {
+      const response = await gmail.users.labels.create({
+        userId: 'me',
+        requestBody: {
+          name,
+          // Both default to hidden, which produces a label the user cannot find
+          // in their own mailbox — indistinguishable, to them, from us having
+          // failed to create it.
+          labelListVisibility: 'labelShow',
+          messageListVisibility: 'show',
+        },
+      });
+
+      if (!response.data.id) {
+        throw new AppError('PROVIDER_ERROR', 'Gmail created a label without returning its id');
+      }
+
+      return { id: response.data.id, name: response.data.name ?? name };
+    } catch (err) {
+      throw mapGmailError(err, { accountId: account.id, op: 'labels.create' });
     }
   }
 

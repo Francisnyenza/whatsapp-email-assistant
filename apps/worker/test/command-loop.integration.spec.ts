@@ -14,6 +14,7 @@ import { ComposeComposer } from '../src/services/compose-composer.js';
 import { MailboxQueryService } from '../src/services/mailbox-query.service.js';
 import { AssistantService } from '../src/services/assistant.service.js';
 import { AttachmentStagingService } from '../src/services/attachment-staging.service.js';
+import { LabelService } from '../src/services/label.service.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
 import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
 import { MessageRepository } from '../src/repositories/message.repository.js';
@@ -71,6 +72,9 @@ describeIfDb('command loop (real database)', () => {
 
   /** Every audio blob staged with Meta, in order. */
   let uploads: Array<{ bytes: number; mimeType: string }> = [];
+
+  /** The mailbox's own labels, as the stubbed adapter reports them. */
+  let providerLabels: Array<{ id: string; name: string }> = [];
 
   /** What Meta says an inbound file is, which is where its size comes from. */
   let mediaMetadata = { mimeType: 'application/pdf', sizeBytes: 1024 };
@@ -138,6 +142,7 @@ describeIfDb('command loop (real database)', () => {
     enqueued = [];
     mutateFailure = null;
     providerAttachments = [];
+    providerLabels = [];
 
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
@@ -162,6 +167,14 @@ describeIfDb('command loop (real database)', () => {
         bodyText: 'Could you send the Q3 report before Friday?',
         attachments: providerAttachments,
       })),
+      // Gmail's label directory. Names in, ids out — the whole reason the label
+      // path cannot pass the user's words straight through.
+      listLabels: vi.fn(async () => providerLabels),
+      createLabel: vi.fn(async (_a: unknown, name: string) => {
+        const label = { id: `Label_${providerLabels.length + 1}`, name };
+        providerLabels.push(label);
+        return label;
+      }),
     };
 
     const accounts = {
@@ -226,11 +239,27 @@ describeIfDb('command loop (real database)', () => {
       logger as never,
     );
 
+    // One instance, shared: the processor acts through it and the label service
+    // applies through it, exactly as the module wires them.
+    const mailboxActions = new MailboxActionService(
+      service as never,
+      accounts as never,
+      logger as never,
+    );
+
+    const labels = new LabelService(
+      service as never,
+      accounts as never,
+      mailboxActions,
+      logger as never,
+    );
+
     const mailboxQueries = new MailboxQueryService(
       new SearchRepository(service as never),
       ai as never,
       { recordUsage: vi.fn() } as never,
       assistant,
+      labels,
       logger as never,
     );
 
@@ -241,7 +270,7 @@ describeIfDb('command loop (real database)', () => {
       new ThreadResolver(),
       new ResponsePlanner(),
       outbound as never,
-      new MailboxActionService(service as never, accounts as never, logger as never),
+      mailboxActions,
       new ReplyComposer(
         accounts as never,
         new DraftRepository(service as never, staged),
@@ -263,6 +292,7 @@ describeIfDb('command loop (real database)', () => {
       ),
       mailboxQueries,
       assistant,
+      labels,
       new AttachmentStagingService(outbound as never, staged, logger as never),
       inbox,
       new AttachmentRepository(service as never),
@@ -361,6 +391,7 @@ describeIfDb('command loop (real database)', () => {
     mutateFailure = null;
     providerAttachments.length = 0;
     mediaMetadata = { mimeType: 'application/pdf', sizeBytes: 1024 };
+    providerLabels.length = 0;
     await withTenant(userId, async (tx) => {
       await tx.conversationState.deleteMany({ where: { userId } });
       // Files held in one test must not ride out on the next test's email.
@@ -1414,6 +1445,74 @@ describeIfDb('command loop (real database)', () => {
       await deliver({ context: { id: deliveries.sarah! }, text: 'spam' });
 
       expect(lastText().toLowerCase()).not.toContain('moved to spam');
+    });
+  });
+
+  describe('filing under a label', () => {
+    // `MailOperation` has carried `{ kind: 'label' }` since the schema was
+    // written and both adapters implement it. What was missing is the
+    // translation: Gmail wants ids, Outlook wants names, and a command that
+    // passed the user's words through would no-op against Gmail while saying
+    // it worked.
+
+    it('creates a label the mailbox does not have, and applies its id', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'label this as Receipts' });
+
+      expect(mutations.at(-1)).toMatchObject({
+        operation: { kind: 'label', add: ['Label_1'] },
+      });
+      expect(lastText()).toContain('Receipts');
+    });
+
+    it('reuses one that exists, whatever case the user typed', async () => {
+      providerLabels.push({ id: 'Label_9', name: 'Receipts' });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'label this as receipts' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { add: ['Label_9'] } });
+      // Reported as the mailbox spells it, because the next command is typed
+      // from what the user just read.
+      expect(lastText()).toContain('Receipts');
+    });
+
+    it('takes one off by id', async () => {
+      providerLabels.push({ id: 'Label_9', name: 'Receipts' });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'remove the Receipts label' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { remove: ['Label_9'] } });
+    });
+
+    it('refuses to remove one the mailbox never had, and says which it has', async () => {
+      providerLabels.push({ id: 'Label_9', name: 'Receipts' });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'remove the Recipts label' });
+
+      expect(mutations).toHaveLength(0);
+      expect(lastText()).toContain('Receipts');
+    });
+
+    it('lists the mailbox’s labels when asked', async () => {
+      providerLabels.push({ id: 'Label_9', name: 'Travel' }, { id: 'Label_8', name: 'Receipts' });
+
+      await deliver({ text: 'what labels do I have' });
+
+      expect(lastText()).toContain('Receipts');
+      expect(lastText().indexOf('Receipts')).toBeLessThan(lastText().indexOf('Travel'));
+    });
+
+    it('says so plainly when there are none', async () => {
+      await deliver({ text: 'my labels' });
+
+      expect(lastText().toLowerCase()).toContain("don't have any labels");
+    });
+
+    it('does not claim it filed anything when the provider refuses', async () => {
+      mutateFailure = new Error('upstream refused');
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'label this as Receipts' });
+
+      expect(lastText()).not.toContain('Filed under');
     });
   });
 
