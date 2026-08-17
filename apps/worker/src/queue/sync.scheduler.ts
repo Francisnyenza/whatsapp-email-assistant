@@ -10,6 +10,7 @@ import {
 import {
   DIGEST_SWEEP_INTERVAL_MS,
   BACKFILL_SWEEP_INTERVAL_MS,
+  REMINDER_SWEEP_INTERVAL_MS,
 } from '../services/digest-schedule.js';
 
 /** Scheduler identities. Stable, because changing one leaves the old schedule running. */
@@ -18,6 +19,7 @@ const RETENTION_SWEEP_ID = 'retention-sweep';
 const DIGEST_SWEEP_ID = 'digest-sweep';
 const POLL_SWEEP_ID = 'polling-sweep';
 const BACKFILL_SWEEP_ID = 'embedding-backfill-sweep';
+const REMINDER_SWEEP_ID = 'reminder-sweep';
 
 /**
  * The clock.
@@ -70,6 +72,13 @@ export class SyncScheduler implements OnModuleInit {
       POLL_INTERVAL_MS,
       JOB.SWEEP_POLLING,
       'mailboxes without a push subscription will receive nothing',
+    );
+
+    await this.register(
+      REMINDER_SWEEP_ID,
+      REMINDER_SWEEP_INTERVAL_MS,
+      JOB.CHECK_REMINDERS,
+      'snoozed mail will never come back — which is worse than never having snoozed it',
     );
 
     await this.register(

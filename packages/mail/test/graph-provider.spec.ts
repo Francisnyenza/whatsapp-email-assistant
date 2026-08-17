@@ -435,6 +435,14 @@ describe('mutations', () => {
     expect(JSON.parse(calls[0]!.body!)).toEqual({ destinationId: 'archive' });
   });
 
+  it('unarchives by moving back to the inbox', async () => {
+    // The inverse of archive, and what snooze needs to bring a message back.
+    const calls = await mutate({ kind: 'unarchive' });
+
+    expect(calls[0]!.url).toContain('/move');
+    expect(JSON.parse(calls[0]!.body!)).toEqual({ destinationId: 'inbox' });
+  });
+
   it('trashes by moving to Deleted Items, never by deleting', async () => {
     const calls = await mutate({ kind: 'delete', permanent: false });
 

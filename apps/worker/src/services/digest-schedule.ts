@@ -181,3 +181,20 @@ export const BACKFILL_USER_BATCH = 200;
  * suddenly.
  */
 export const BACKFILL_BATCH_PER_USER = 50;
+
+/**
+ * How often the reminder sweep runs.
+ *
+ * Snooze times have minute precision but nobody notices five minutes on "until
+ * Monday morning", and the sweep costs one indexed query per user per tick.
+ */
+export const REMINDER_SWEEP_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Reminders returned per user per tick.
+ *
+ * A cap rather than a limit on correctness: someone who snoozed forty messages
+ * to the same morning gets them over successive ticks rather than as forty
+ * notifications at once, which is also the kinder outcome.
+ */
+export const REMINDERS_PER_USER = 10;

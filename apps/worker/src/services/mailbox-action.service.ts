@@ -103,6 +103,8 @@ function localEffectOf(operation: MailOperation): Record<string, unknown> | null
   switch (operation.kind) {
     case 'archive':
       return { isArchived: true };
+    case 'unarchive':
+      return { isArchived: false };
     case 'delete':
       return { deletedAt: new Date() };
     case 'markRead':

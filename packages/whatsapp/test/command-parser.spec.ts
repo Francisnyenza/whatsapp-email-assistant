@@ -580,3 +580,34 @@ describe('filing under a label', () => {
     expect(intentOf('delete this')).toEqual({ intent: 'delete' });
   });
 });
+
+describe('putting a message down until later', () => {
+  it('understands the ways people say it', () => {
+    expect(intentOf('snooze until tomorrow')).toEqual({
+      intent: 'snooze',
+      until: 'until tomorrow',
+    });
+    expect(intentOf('snooze for 2 hours')).toEqual({ intent: 'snooze', until: 'for 2 hours' });
+    expect(intentOf('remind me tomorrow')).toEqual({ intent: 'snooze', until: 'tomorrow' });
+    expect(intentOf('remind me about this on monday')).toMatchObject({ intent: 'snooze' });
+  });
+
+  it('carries the time through as raw text', () => {
+    // Resolving it needs the user's own timezone — "tomorrow morning" is a
+    // different instant in Nairobi than in New York — and the parser has no
+    // business knowing which.
+    expect(intentOf('snooze until monday 9am')).toEqual({
+      intent: 'snooze',
+      until: 'until monday 9am',
+    });
+  });
+
+  it('takes a bare "snooze", so the worker can ask when', () => {
+    expect(intentOf('snooze')).toEqual({ intent: 'snooze', until: '' });
+  });
+
+  it('does not swallow other verbs that start a message', () => {
+    expect(intentOf('summarise')).toMatchObject({ intent: 'summarize' });
+    expect(intentOf('archive')).toMatchObject({ intent: 'archive' });
+  });
+});

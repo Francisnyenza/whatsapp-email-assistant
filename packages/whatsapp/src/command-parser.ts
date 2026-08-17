@@ -310,6 +310,14 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
     build: () => ({ intent: 'list_labels' }),
   },
 
+  // Putting a message down until later. The time is captured as raw text and
+  // resolved against the user's own timezone downstream — "tomorrow morning" is
+  // a different instant in Nairobi than in New York.
+  {
+    re: /^(?:snooze|remind\s+me(?:\s+about\s+(?:this|it))?|defer|postpone|later)\s*(?:this|it)?\s*(.{0,60})$/i,
+    build: (m) => ({ intent: 'snooze', until: m[1]!.trim() }),
+  },
+
   {
     re: /^(?:summarize|summarise|tldr|sum\s?up)(?:\s+(?:this|it))?$/i,
     build: () => ({ intent: 'summarize' }),

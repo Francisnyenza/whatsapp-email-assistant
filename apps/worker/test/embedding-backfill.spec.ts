@@ -47,6 +47,8 @@ describe('embedding backfill', () => {
       {} as never,
       {} as never,
       { findUsersNeedingBackfill, findUnembedded, markBackfilled } as never,
+      { findDueFor: vi.fn().mockResolvedValue([]) } as never,
+      { fire: vi.fn() } as never,
       { isOverBudget } as never,
       { enqueue } as never,
       logger,

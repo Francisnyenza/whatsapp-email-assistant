@@ -7,6 +7,8 @@ import { AccountService } from '../services/account.service.js';
 import { WatchRepository } from '../repositories/watch.repository.js';
 import { RetentionRepository } from '../repositories/retention.repository.js';
 import { SearchRepository } from '../repositories/search.repository.js';
+import { ReminderRepository } from '../repositories/reminder.repository.js';
+import { SnoozeService } from '../services/snooze.service.js';
 import { AiService } from '../services/ai.service.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 import {
@@ -24,6 +26,7 @@ import {
   DIGEST_SWEEP_INTERVAL_MS,
   BACKFILL_USER_BATCH,
   BACKFILL_BATCH_PER_USER,
+  REMINDERS_PER_USER,
 } from '../services/digest-schedule.js';
 import { startWorker } from './base.processor.js';
 
@@ -71,6 +74,8 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly watches: WatchRepository,
     private readonly retention: RetentionRepository,
     private readonly search: SearchRepository,
+    private readonly reminders: ReminderRepository,
+    private readonly snooze: SnoozeService,
     private readonly ai: AiService,
     private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
@@ -99,6 +104,8 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
         return this.sweepPolling();
       case JOB.SWEEP_EMBEDDINGS:
         return this.sweepEmbeddings();
+      case JOB.CHECK_REMINDERS:
+        return this.sweepReminders();
       default:
         // Not retryable: an unknown job name will still be unknown on the
         // fourth attempt. Straight to the dead letter, where it is visible.
@@ -247,6 +254,57 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
    * read every mailbox. Users with nothing waiting are skipped on a single
    * indexed count.
    */
+  /**
+   * Returns messages the user put down until later.
+   *
+   * Shaped exactly like the digest sweep, and for the same reason: `reminders`
+   * is under row-level security, so a timer with no tenant cannot ask the
+   * question across users. It enumerates ids from `users` — which carries no
+   * policy, because a user *is* the tenant — and asks once per user inside their
+   * own transaction.
+   *
+   * Firing happens here rather than through a queued job per reminder. There is
+   * no fan-out to gain: the work is one mailbox call and one enqueue, and a
+   * failure is already recoverable because the claim is released.
+   */
+  private async sweepReminders(): Promise<void> {
+    const now = new Date();
+    let returned = 0;
+    let failed = 0;
+    let cursor: string | undefined;
+
+    for (;;) {
+      const batch = await this.retention.findUserIds(DIGEST_USER_BATCH, cursor);
+      if (batch.length === 0) break;
+
+      for (const userId of batch) {
+        const due = await this.reminders.findDueFor(userId, now, REMINDERS_PER_USER);
+
+        for (const reminder of due) {
+          try {
+            if (await this.snooze.fire(userId, reminder.id, reminder.emailMessageId)) returned++;
+          } catch (err) {
+            // One user's provider being down must not stop everyone else's mail
+            // coming back. The claim was released, so the next sweep retries.
+            failed++;
+            this.logger.warn(
+              { event: 'sync.reminder_failed', reminderId: reminder.id, err },
+              'Could not return a snoozed message',
+            );
+          }
+        }
+      }
+
+      cursor = batch.at(-1);
+      if (batch.length < DIGEST_USER_BATCH) break;
+    }
+
+    this.logger.info(
+      { event: 'sync.reminder_sweep_completed', returned, failed },
+      'Reminder sweep completed',
+    );
+  }
+
   private async sweepDigests(): Promise<void> {
     const now = new Date();
     let due = 0;

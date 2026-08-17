@@ -98,6 +98,9 @@ describeIfDb('retention (real database)', () => {
       {} as never,
       retention,
       {} as never,
+      // The reminder sweep has its own spec; this one only purges.
+      {} as never,
+      {} as never,
       {} as never,
       {} as never,
       { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,

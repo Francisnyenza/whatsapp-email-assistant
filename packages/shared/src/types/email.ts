@@ -118,6 +118,16 @@ export interface SendResult {
 /** Mailbox mutations, expressed provider-neutrally. */
 export type MailOperation =
   | { kind: 'archive' }
+  /**
+   * Back to the inbox.
+   *
+   * The inverse of `archive`, and it exists because snooze needs it: taking a
+   * message out of the inbox until Monday is an archive, and putting it back is
+   * this. Neither provider calls it that — Gmail adds the INBOX label, Graph
+   * moves the message — which is exactly the kind of difference the port
+   * absorbs.
+   */
+  | { kind: 'unarchive' }
   | { kind: 'delete'; permanent: boolean }
   | { kind: 'markRead'; read: boolean }
   | { kind: 'star'; starred: boolean }

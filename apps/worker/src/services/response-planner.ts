@@ -81,6 +81,12 @@ export type PlannedEffect =
    */
   | { kind: 'label'; add?: string; remove?: string }
   /**
+   * Put it down until later. The time is raw text for the same reason a label
+   * name is: resolving it needs the user's timezone, which this class does not
+   * have and should not acquire.
+   */
+  | { kind: 'snooze'; until: string }
+  /**
    * Forget the files the user sent *into* the chat. Like a compose, it names no
    * email — what it acts on is the set of files waiting for the next one.
    */
@@ -311,6 +317,18 @@ export class ResponsePlanner {
             ...(intent.add ? { add: intent.add } : {}),
             ...(intent.remove ? { remove: intent.remove } : {}),
           },
+          emailMessageId,
+        };
+
+      // The answer is the resolved time, in the user's own terms, which is the
+      // only version they can catch a mistake in — so the payload here is a
+      // placeholder the processor replaces. "Snoozed until Monday" when the
+      // system understood next Monday is a promise that will be broken quietly.
+      case 'snooze':
+        return {
+          payload: buildText('Putting it down…'),
+          followUp: 'queue_query',
+          effect: { kind: 'snooze', until: intent.until },
           emailMessageId,
         };
 
@@ -546,6 +564,7 @@ const HELP_TEXT = [
   '• _mark unread_ · _important_',
   '• _this is spam_ · _not spam_',
   '• _label this as Receipts_ · _remove the Receipts label_',
+  '• _snooze until tomorrow_ · _snooze for 2 hours_ — I bring it back then',
   '• _what labels do I have_',
   '',
   '*Finding and reading*',

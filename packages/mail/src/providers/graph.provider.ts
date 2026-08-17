@@ -617,6 +617,10 @@ export class GraphProvider implements MailProvider {
         // this works without looking the folder id up first.
         return this.move(account, id, 'archive', 'mutate.archive');
 
+      case 'unarchive':
+        // Symmetrical with archive, and by the same well-known folder name.
+        return this.move(account, id, 'inbox', 'mutate.unarchive');
+
       case 'delete':
         if (operation.permanent) {
           // Irreversible, and not reachable from a WhatsApp command — only from

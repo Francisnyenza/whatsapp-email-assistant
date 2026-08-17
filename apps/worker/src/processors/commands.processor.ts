@@ -38,6 +38,7 @@ import { ComposeComposer } from '../services/compose-composer.js';
 import { MailboxQueryService } from '../services/mailbox-query.service.js';
 import { AssistantService } from '../services/assistant.service.js';
 import { LabelService } from '../services/label.service.js';
+import { SnoozeService } from '../services/snooze.service.js';
 import {
   AttachmentStagingService,
   type StagingOutcome,
@@ -87,6 +88,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly queries: MailboxQueryService,
     private readonly assistant: AssistantService,
     private readonly labels: LabelService,
+    private readonly snoozes: SnoozeService,
     private readonly staging: AttachmentStagingService,
     private readonly inbox: InboxRepository,
     private readonly attachments: AttachmentRepository,
@@ -492,13 +494,19 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     switch (effect.kind) {
       case 'mutate':
         return this.attempt(
-          () => this.mailbox.apply(userId, emailMessageId, effect.operation),
+          async () => {
+            await this.mailbox.apply(userId, emailMessageId, effect.operation);
+            await this.dealtWith(userId, emailMessageId, effect.operation.kind);
+          },
           () => buildText(effect.confirmation),
         );
 
       case 'reply':
         return this.attempt(
-          () => this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body }),
+          async () => {
+            await this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body });
+            await this.dealtWith(userId, emailMessageId, 'reply');
+          },
           () => buildText(`Sending: “${effect.body}”`),
         );
 
@@ -815,19 +823,24 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     switch (effect.kind) {
       case 'mutate':
         return this.attempt(
-          () => this.mailbox.apply(userId, emailMessageId, effect.operation),
+          async () => {
+            await this.mailbox.apply(userId, emailMessageId, effect.operation);
+            await this.dealtWith(userId, emailMessageId, effect.operation.kind);
+          },
           () => intended,
         );
 
       case 'reply':
         return this.attempt(
-          () =>
-            this.replies.composeReply({
+          async () => {
+            await this.replies.composeReply({
               userId,
               emailMessageId,
               bodyText: effect.body,
               ...(effect.replyAll ? { replyAll: true } : {}),
-            }),
+            });
+            await this.dealtWith(userId, emailMessageId, 'reply');
+          },
           () => intended,
         );
 
@@ -881,6 +894,16 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
                 .filter(Boolean)
                 .join(' '),
             ),
+        );
+
+      // The answer is the resolved time, said back in the user's own terms —
+      // "Monday 24 Aug, 08:00" rather than "until Monday", because that is the
+      // only version a mistake is visible in.
+      case 'snooze':
+        return this.attempt(
+          () => this.snoozes.snooze(userId, emailMessageId, effect.until),
+          ({ description }) =>
+            buildText(`Put down until *${description}*. I'll bring it back then.`),
         );
 
       case 'summarize':
@@ -950,6 +973,31 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
    * silently swallowed error here is indistinguishable to the user from the
    * feature not existing.
    */
+  /**
+   * Forgets a snooze on a message the user has now dealt with themselves.
+   *
+   * This lives here rather than in `MailboxActionService` because the fact being
+   * recorded is "the user acted on it", which is a command-layer fact. Snooze
+   * archives through that same service, and a rule down there would cancel the
+   * reminder it had just created.
+   *
+   * Only the verbs that mean *finished with*. Starring a snoozed message, or
+   * marking it read, is not a reason to stop bringing it back.
+   *
+   * Best-effort: a snooze that outlives the reply is one redundant notification.
+   * Failing the user's actual command over it would be worse.
+   */
+  private async dealtWith(userId: string, emailMessageId: string, verb: string): Promise<void> {
+    if (!DEALT_WITH_VERBS.has(verb)) return;
+
+    await this.snoozes.cancelFor(userId, emailMessageId).catch((err) => {
+      this.logger.warn(
+        { event: 'command.snooze_cancel_failed', emailMessageId, err },
+        'Could not cancel the snooze on a message the user dealt with',
+      );
+    });
+  }
+
   private async attempt<T>(
     action: () => Promise<T>,
     onSuccess: (result: T) => WhatsAppOutboundPayload,
@@ -978,6 +1026,9 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
 }
 
 const GENERIC_FAILURE = "Something went wrong and I couldn't do that. Please try again.";
+
+/** Verbs that mean the user is finished with a message, so a snooze on it is stale. */
+const DEALT_WITH_VERBS = new Set(['archive', 'delete', 'spam', 'reply']);
 
 /**
  * What to say when a file arrives with nothing to do with it.

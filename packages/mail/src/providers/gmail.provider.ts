@@ -322,6 +322,16 @@ export class GmailProvider implements MailProvider {
           });
           return;
 
+        case 'unarchive':
+          // Symmetrical with archive: Gmail has no verb for either, and the
+          // INBOX label is what the words mean.
+          await gmail.users.messages.modify({
+            userId: 'me',
+            id: providerMessageId,
+            requestBody: { addLabelIds: ['INBOX'] },
+          });
+          return;
+
         case 'delete':
           if (operation.permanent) {
             // Irreversible, and not reachable from a WhatsApp command — only

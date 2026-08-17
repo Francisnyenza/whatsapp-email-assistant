@@ -137,6 +137,10 @@ describe('the sync processor', () => {
         findUnembedded: vi.fn(),
         markBackfilled: vi.fn(),
       } as never,
+      // The reminder sweep has its own spec; here these only need to exist so
+      // the constructor's shape is honest.
+      { findDueFor: vi.fn().mockResolvedValue([]) } as never,
+      { fire: vi.fn() } as never,
       { isOverBudget: vi.fn().mockResolvedValue(false) } as never,
       { enqueue } as never,
       logger,

@@ -182,6 +182,12 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
   }),
   /** "what labels do I have" — the mailbox's filing names, not a message's. */
   z.object({ intent: z.literal('list_labels') }),
+  /**
+   * "snooze until Monday". `until` is raw text, resolved against the user's own
+   * timezone downstream — "tomorrow morning" is a different instant in Nairobi
+   * than in New York, and the parser has no business knowing which.
+   */
+  z.object({ intent: z.literal('snooze'), until: z.string() }),
   z.object({ intent: z.literal('summarize'), target: z.string().optional() }),
   z.object({ intent: z.literal('translate'), language: z.string() }),
   z.object({ intent: z.literal('read_aloud'), target: z.string().optional() }),

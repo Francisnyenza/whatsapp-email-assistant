@@ -15,6 +15,8 @@ import { MailboxQueryService } from '../src/services/mailbox-query.service.js';
 import { AssistantService } from '../src/services/assistant.service.js';
 import { AttachmentStagingService } from '../src/services/attachment-staging.service.js';
 import { LabelService } from '../src/services/label.service.js';
+import { SnoozeService } from '../src/services/snooze.service.js';
+import { ReminderRepository } from '../src/repositories/reminder.repository.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
 import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
 import { MessageRepository } from '../src/repositories/message.repository.js';
@@ -293,6 +295,13 @@ describeIfDb('command loop (real database)', () => {
       mailboxQueries,
       assistant,
       labels,
+      new SnoozeService(
+        service as never,
+        mailboxActions,
+        new ReminderRepository(service as never),
+        queue as never,
+        logger as never,
+      ),
       new AttachmentStagingService(outbound as never, staged, logger as never),
       inbox,
       new AttachmentRepository(service as never),
@@ -396,6 +405,7 @@ describeIfDb('command loop (real database)', () => {
       await tx.conversationState.deleteMany({ where: { userId } });
       // Files held in one test must not ride out on the next test's email.
       await tx.stagedAttachment.deleteMany({ where: { userId } });
+      await tx.reminder.deleteMany({ where: { userId } });
       await tx.draft.deleteMany({ where: { userId } });
       // Actions in one test must not carry into the next.
       // Analyses outlive a test's own writes, so a second one hits the unique
@@ -1513,6 +1523,73 @@ describeIfDb('command loop (real database)', () => {
       await deliver({ context: { id: deliveries.sarah! }, text: 'label this as Receipts' });
 
       expect(lastText()).not.toContain('Filed under');
+    });
+  });
+
+  describe('putting a message down until later', () => {
+    // The `reminders` table has existed since the first migration, with an index
+    // whose comment reads "drives the due-reminder sweep", and there was no
+    // sweep, no producer and no repository.
+
+    const reminders = () => withTenant(userId, (tx) => tx.reminder.findMany({ where: { userId } }));
+
+    it('archives it and writes a reminder', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until tomorrow' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'archive' } });
+
+      const rows = await reminders();
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.emailMessageId).toBe(emails.sarah!);
+      expect(rows[0]!.remindAt.getTime()).toBeGreaterThan(Date.now());
+    });
+
+    it('says the resolved time back, not the words the user typed', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until tomorrow' });
+
+      // "Until tomorrow" is not a confirmation; a date and a clock time is.
+      expect(lastText()).toMatch(/\d{2}:\d{2}/);
+    });
+
+    it('leaves the message alone when the time makes no sense', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until whenever' });
+
+      expect(mutations).toHaveLength(0);
+      expect(await reminders()).toHaveLength(0);
+      expect(lastText()).toContain('snooze until tomorrow');
+    });
+
+    it('replaces an earlier snooze rather than returning the message twice', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until tomorrow' });
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze for 2 hours' });
+
+      const live = (await reminders()).filter((r) => !r.cancelledAt);
+      expect(live).toHaveLength(1);
+    });
+
+    it('forgets the snooze when the user archives it themselves', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until tomorrow' });
+      await deliver({ context: { id: deliveries.sarah! }, text: 'archive' });
+
+      const live = (await reminders()).filter((r) => !r.cancelledAt);
+      expect(live).toHaveLength(0);
+    });
+
+    it('forgets the snooze when the user replies instead', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until tomorrow' });
+      await deliver({ context: { id: deliveries.sarah! }, text: 'reply saying on it' });
+
+      const live = (await reminders()).filter((r) => !r.cancelledAt);
+      expect(live).toHaveLength(0);
+    });
+
+    it('keeps the snooze when the user only reads it', async () => {
+      // Marking something read is not being finished with it.
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until tomorrow' });
+      await deliver({ context: { id: deliveries.sarah! }, text: 'mark read' });
+
+      const live = (await reminders()).filter((r) => !r.cancelledAt);
+      expect(live).toHaveLength(1);
     });
   });
 
