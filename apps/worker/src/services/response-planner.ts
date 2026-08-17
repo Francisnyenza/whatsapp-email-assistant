@@ -280,6 +280,18 @@ export class ResponsePlanner {
           emailMessageId,
         };
 
+      case 'mark_spam':
+        return {
+          payload: buildText(
+            intent.isSpam
+              ? 'Moved to spam. Future mail from them may go there too.'
+              : "Moved back to your inbox, and marked as not spam so it doesn't happen again.",
+          ),
+          followUp: 'queue_action',
+          effect: { kind: 'mutate', operation: { kind: 'spam', isSpam: intent.isSpam } },
+          emailMessageId,
+        };
+
       // --- asking the assistant about this email ---------------------------
       // Reads, both of them. Nothing here can send, move or delete anything, so
       // there is no confirmation to ask for — the answer is the response.
@@ -510,6 +522,7 @@ const HELP_TEXT = [
   '• _archive_ — file it away',
   '• _delete_ — asks you to confirm first',
   '• _mark unread_ · _important_',
+  '• _this is spam_ · _not spam_',
   '',
   '*Finding and reading*',
   '• _search invoices from Tom_',

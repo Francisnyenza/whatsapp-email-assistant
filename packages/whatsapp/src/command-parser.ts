@@ -271,6 +271,21 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
     build: () => ({ intent: 'mark_important', important: true }),
   },
 
+  // Not spam first: "not spam" contains "spam", and the wrong order would file
+  // a rescued message straight back into junk.
+  {
+    re: /^(?:(?:this|it|that)\s*(?:'s|\s+is)\s+)?(?:not|isn'?t)\s+(?:spam|junk)$/i,
+    build: () => ({ intent: 'mark_spam', isSpam: false }),
+  },
+  {
+    re: /^(?:mark\s+(?:as\s+)?|move\s+to\s+)?(?:not\s+)?(?:un-?(?:spam|junk))$/i,
+    build: () => ({ intent: 'mark_spam', isSpam: false }),
+  },
+  {
+    re: /^(?:(?:this|it|that)\s*(?:'s|\s+is)\s+)?(?:mark\s+(?:as\s+)?|move\s+to\s+|report\s+(?:as\s+)?)?(?:spam|junk)$/i,
+    build: () => ({ intent: 'mark_spam', isSpam: true }),
+  },
+
   {
     re: /^(?:summarize|summarise|tldr|sum\s?up)(?:\s+(?:this|it))?$/i,
     build: () => ({ intent: 'summarize' }),

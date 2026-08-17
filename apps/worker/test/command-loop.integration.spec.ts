@@ -1384,6 +1384,39 @@ describeIfDb('command loop (real database)', () => {
     });
   });
 
+  describe('spam and not spam', () => {
+    // Both adapters have implemented the move since Phase 7 — Gmail by label,
+    // Graph by folder — and until now nothing in a chat could ask for it.
+
+    it('files it as spam upstream and locally', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'this is spam' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'spam', isSpam: true } });
+
+      const stored = await withTenant(userId, (tx) =>
+        tx.emailMessage.findUnique({ where: { id: emails.sarah! } }),
+      );
+      expect(stored!.isSpam).toBe(true);
+    });
+
+    it('rescues it back to the inbox', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'not spam' });
+
+      // The ordering bug worth guarding at this level too: "not spam" contains
+      // "spam", and filing a rescued message back into junk is the opposite of
+      // what the user asked for.
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'spam', isSpam: false } });
+    });
+
+    it('does not report success when the provider refuses', async () => {
+      mutateFailure = new Error('upstream refused');
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'spam' });
+
+      expect(lastText().toLowerCase()).not.toContain('moved to spam');
+    });
+  });
+
   it('records how each message was interpreted', async () => {
     await deliver({ context: { id: deliveries.sarah! }, text: 'archive' });
 

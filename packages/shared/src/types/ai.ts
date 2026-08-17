@@ -162,6 +162,11 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
   z.object({ intent: z.literal('forward'), recipient: z.string(), target: z.string().optional() }),
   z.object({ intent: z.literal('mark_read'), read: z.boolean() }),
   z.object({ intent: z.literal('mark_important'), important: z.boolean() }),
+  /**
+   * "this is spam" / "not spam". Both adapters have implemented the move since
+   * Phase 7 and nothing in a chat could ask for it.
+   */
+  z.object({ intent: z.literal('mark_spam'), isSpam: z.boolean() }),
   z.object({ intent: z.literal('summarize'), target: z.string().optional() }),
   z.object({ intent: z.literal('translate'), language: z.string() }),
   z.object({ intent: z.literal('read_aloud'), target: z.string().optional() }),

@@ -501,3 +501,28 @@ describe('bcc on a compose', () => {
     });
   });
 });
+
+describe('spam and not spam', () => {
+  it('understands filing something as spam', () => {
+    for (const text of ['spam', 'this is spam', 'mark as spam', 'report as spam', 'move to junk']) {
+      expect(intentOf(text)).toEqual({ intent: 'mark_spam', isSpam: true });
+    }
+  });
+
+  it('understands rescuing something from it', () => {
+    for (const text of ['not spam', "it's not spam", 'this is not junk', 'not junk', 'unspam']) {
+      expect(intentOf(text)).toEqual({ intent: 'mark_spam', isSpam: false });
+    }
+  });
+
+  it('reads "not spam" as the rescue, never the filing', () => {
+    // The ordering bug this exists to prevent: "not spam" contains "spam", and
+    // the wrong rule first files a rescued message straight back into junk.
+    expect(intentOf('not spam')).toMatchObject({ isSpam: false });
+    expect(intentOf('this is not spam')).toMatchObject({ isSpam: false });
+  });
+
+  it('does not claim a message that merely mentions spam', () => {
+    expect(intentOf('search spam from tom')).not.toMatchObject({ intent: 'mark_spam' });
+  });
+});

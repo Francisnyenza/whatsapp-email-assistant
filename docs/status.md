@@ -8,7 +8,7 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 630 tests** (1 306 unit + 324 integration
+Everything below has tests that run and pass. **1 634 tests** (1 310 unit + 324 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                       |
@@ -16,15 +16,15 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/shared`   | 42               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                            |
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                       |
 | `@wea/db`       | 9 (integration)  | Prisma schema, twelve migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
-| `@wea/whatsapp` | 180              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                            |
+| `@wea/whatsapp` | 184              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                            |
 | `@wea/mail`     | 221              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                   |
 | `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic    |
 | `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                               |
-| `apps/worker`   | 354 + 263 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics   |
+| `apps/worker`   | 354 + 266 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics   |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                 |
 
 ```bash
-pnpm -r test          # 1 306 unit tests
+pnpm -r test          # 1 310 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -232,7 +232,7 @@ entirely from WhatsApp" is the product claim and this is the honest scoreboard f
 | **Subject editing**                | ❌         | Subjects are derived (`Re: `, `Fwd: `). Compose needs one the user chooses.                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Folders / labels**               | ❌         | No move, no label add/remove, no listing. Archive is the only filing verb.                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | **Snooze**                         | ❌         | Nothing defers a message to a later time.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| **Spam / not spam**                | ❌         | Analysis produces a `spamScore` and nothing acts on it.                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| **Spam / not spam**                | ✅         | `this is spam`, `not spam`. Both adapters had implemented the move since Phase 7 — Gmail by label, Graph by folder — and nothing in a chat could ask for it. The rescue is matched before the filing, because "not spam" contains "spam" and the wrong order files a rescued message straight back into junk.                                                                                                                                                                                   |
 | **Undo**                           | ❌         | Parsed as an intent, answers "not built".                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **Multi-account send selection**   | ❌         | Several mailboxes connect and the primary is used; a user cannot choose which to send from.                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **Contacts**                       | ❌         | No address book, so compose has only literal addresses to work with.                                                                                                                                                                                                                                                                                                                                                                                                                            |
