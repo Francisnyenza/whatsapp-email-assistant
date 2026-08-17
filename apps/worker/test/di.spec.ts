@@ -51,7 +51,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
 
   const cases: Array<[string, string, number]> = [
     ['processors/sync.processor.js', 'SyncProcessor', 8],
-    ['processors/commands.processor.js', 'CommandsProcessor', 14],
+    ['processors/commands.processor.js', 'CommandsProcessor', 15],
     ['processors/notify.processor.js', 'NotifyProcessor', 4],
     ['processors/ai.processor.js', 'AiProcessor', 8],
     ['services/ai.service.js', 'AiService', 3],
@@ -59,7 +59,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
     ['queue/sync.scheduler.js', 'SyncScheduler', 2],
     ['repositories/watch.repository.js', 'WatchRepository', 1],
     ['repositories/retention.repository.js', 'RetentionRepository', 1],
-    ['services/forward-composer.js', 'ForwardComposer', 4],
+    ['services/forward-composer.js', 'ForwardComposer', 5],
     ['processors/ingest.processor.js', 'IngestProcessor', 5],
     ['queue/queue.producer.js', 'QueueProducer', 1],
     ['repositories/search.repository.js', 'SearchRepository', 1],

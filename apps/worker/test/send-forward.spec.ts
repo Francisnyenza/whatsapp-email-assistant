@@ -99,6 +99,7 @@ describe('forwarded attachments', () => {
       { env: { REDIS_URL: 'redis://unused' } } as never,
       accounts as never,
       drafts as never,
+      { listForDraft: async () => [] } as never,
       { reply } as never,
       { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as never,
     );

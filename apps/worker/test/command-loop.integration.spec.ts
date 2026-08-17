@@ -4,6 +4,7 @@ import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { InboxRepository } from '../src/repositories/inbox.repository.js';
 import { AttachmentRepository } from '../src/repositories/attachment.repository.js';
 import { DraftRepository } from '../src/repositories/draft.repository.js';
+import { StagedAttachmentRepository } from '../src/repositories/staged-attachment.repository.js';
 import { ThreadResolver } from '../src/services/thread-resolver.js';
 import { ResponsePlanner } from '../src/services/response-planner.js';
 import { MailboxActionService } from '../src/services/mailbox-action.service.js';
@@ -12,6 +13,7 @@ import { ForwardComposer } from '../src/services/forward-composer.js';
 import { ComposeComposer } from '../src/services/compose-composer.js';
 import { MailboxQueryService } from '../src/services/mailbox-query.service.js';
 import { AssistantService } from '../src/services/assistant.service.js';
+import { AttachmentStagingService } from '../src/services/attachment-staging.service.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
 import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
 import { MessageRepository } from '../src/repositories/message.repository.js';
@@ -70,6 +72,9 @@ describeIfDb('command loop (real database)', () => {
   /** Every audio blob staged with Meta, in order. */
   let uploads: Array<{ bytes: number; mimeType: string }> = [];
 
+  /** What Meta says an inbound file is, which is where its size comes from. */
+  let mediaMetadata = { mimeType: 'application/pdf', sizeBytes: 1024 };
+
   /** The outbound stub itself, so a test can make one of its calls fail. */
   let outboundStub: { uploadAudio: ReturnType<typeof vi.fn> };
 
@@ -120,6 +125,10 @@ describeIfDb('command loop (real database)', () => {
           ...(input.emailMessageId ? { emailMessageId: input.emailMessageId } : {}),
         });
       }),
+      // Meta's media metadata, which is where a staged file's size comes from —
+      // the webhook carries none. A stub that invented a size would let a file
+      // past the budget check that production would refuse.
+      describeMedia: vi.fn(async () => mediaMetadata),
       acknowledgeRead: vi.fn(),
     };
 
@@ -225,6 +234,8 @@ describeIfDb('command loop (real database)', () => {
       logger as never,
     );
 
+    const staged = new StagedAttachmentRepository(service as never);
+
     processor = new CommandsProcessor(
       { env: { REDIS_URL: 'redis://unused' } } as never,
       new ThreadResolver(),
@@ -233,24 +244,26 @@ describeIfDb('command loop (real database)', () => {
       new MailboxActionService(service as never, accounts as never, logger as never),
       new ReplyComposer(
         accounts as never,
-        new DraftRepository(service as never),
+        new DraftRepository(service as never, staged),
         queue as never,
         logger as never,
       ),
       new ForwardComposer(
         accounts as never,
-        new DraftRepository(service as never),
+        new DraftRepository(service as never, staged),
+        staged,
         queue as never,
         logger as never,
       ),
       new ComposeComposer(
         accounts as never,
-        new DraftRepository(service as never),
+        new DraftRepository(service as never, staged),
         queue as never,
         logger as never,
       ),
       mailboxQueries,
       assistant,
+      new AttachmentStagingService(outbound as never, staged, logger as never),
       inbox,
       new AttachmentRepository(service as never),
       queue as never,
@@ -347,8 +360,11 @@ describeIfDb('command loop (real database)', () => {
     enqueued.length = 0;
     mutateFailure = null;
     providerAttachments.length = 0;
+    mediaMetadata = { mimeType: 'application/pdf', sizeBytes: 1024 };
     await withTenant(userId, async (tx) => {
       await tx.conversationState.deleteMany({ where: { userId } });
+      // Files held in one test must not ride out on the next test's email.
+      await tx.stagedAttachment.deleteMany({ where: { userId } });
       await tx.draft.deleteMany({ where: { userId } });
       // Actions in one test must not carry into the next.
       // Analyses outlive a test's own writes, so a second one hits the unique
@@ -391,6 +407,10 @@ describeIfDb('command loop (real database)', () => {
    * concern and would otherwise make every count here off by one.
    */
   const sends = () => enqueued.filter((job) => job.queue === 'send');
+
+  /** Files waiting for the next email — nothing claimed, nothing expired. */
+  const stagedFiles = () =>
+    withTenant(userId, (tx) => tx.stagedAttachment.findMany({ where: { userId, draftId: null } }));
 
   const lastText = () => {
     const payload = sent.at(-1)!.payload;
@@ -1687,6 +1707,112 @@ describeIfDb('command loop (real database)', () => {
       await forwardTap(emails.sarah!);
 
       expect(sends()).toHaveLength(1);
+    });
+  });
+  /* ------------------------- files sent into the chat --------------------- */
+
+  describe('a file the user sends in', () => {
+    // `text` is cleared explicitly: a photo with no caption is the common case,
+    // and the shared fixture supplies one.
+    const photo = (over: Record<string, unknown> = {}) => ({
+      type: 'image',
+      text: undefined,
+      media: { id: `media-${randomUUID().slice(0, 8)}`, mimeType: 'image/jpeg', sha256: '' },
+      ...over,
+    });
+
+    it('is held, and says so', async () => {
+      // Silence here is the worst outcome: a photo sent into a chat that
+      // answers nothing is indistinguishable from a photo that was ignored,
+      // and the user finds out which when the email arrives without it.
+      await deliver(photo() as never);
+
+      expect(lastText()).toContain('holding');
+      expect(await stagedFiles()).toHaveLength(1);
+    });
+
+    it('goes out on the next email the user sends', async () => {
+      await deliver(photo() as never);
+      await deliver({ text: 'email colleague@acme.com saying here it is' });
+
+      const draftId = sends().at(-1)!.payload.draftId as string;
+      const carried = await withTenant(userId, (tx) =>
+        tx.stagedAttachment.findMany({ where: { draftId } }),
+      );
+      expect(carried).toHaveLength(1);
+    });
+
+    it('goes out on a reply just as readily', async () => {
+      await deliver(photo() as never);
+      await deliver({ context: { id: deliveries.sarah! }, text: 'reply saying here it is' });
+
+      const draftId = sends().at(-1)!.payload.draftId as string;
+      expect(
+        await withTenant(userId, (tx) => tx.stagedAttachment.count({ where: { draftId } })),
+      ).toBe(1);
+    });
+
+    it('runs the caption as a command, in the one message', async () => {
+      // "here's the invoice" with a photo attached is one action, not two, and
+      // answering the file separately would be two messages for it.
+      await deliver(photo({ text: 'email colleague@acme.com saying here it is' }) as never);
+
+      expect(sends()).toHaveLength(1);
+      const draftId = sends().at(-1)!.payload.draftId as string;
+      expect(
+        await withTenant(userId, (tx) => tx.stagedAttachment.count({ where: { draftId } })),
+      ).toBe(1);
+    });
+
+    it('is not sent twice when the user sends a second email', async () => {
+      await deliver(photo() as never);
+      await deliver({ text: 'email colleague@acme.com saying here it is' });
+      await deliver({ text: 'email colleague@acme.com saying and one more thing' });
+
+      const second = sends().at(-1)!.payload.draftId as string;
+      expect(
+        await withTenant(userId, (tx) => tx.stagedAttachment.count({ where: { draftId: second } })),
+      ).toBe(0);
+    });
+
+    it('can be dropped', async () => {
+      await deliver(photo() as never);
+      await deliver({ text: 'drop the files' });
+
+      expect(lastText()).toContain('Dropped');
+      expect(await stagedFiles()).toHaveLength(0);
+    });
+
+    it('says so, and holds nothing, when the file is too large', async () => {
+      mediaMetadata = { mimeType: 'image/jpeg', sizeBytes: 40 * 1024 * 1024 };
+
+      await deliver(photo() as never);
+
+      expect(lastText()).toContain('20 MB');
+      expect(await stagedFiles()).toHaveLength(0);
+    });
+
+    it('ignores a voice note rather than emailing a four-second .ogg', async () => {
+      await deliver({
+        type: 'audio',
+        media: { id: 'media-voice', mimeType: 'audio/ogg', sha256: '', voice: true },
+      } as never);
+
+      expect(await stagedFiles()).toHaveLength(0);
+    });
+
+    it('answers a redelivered webhook once', async () => {
+      // Meta retries on any non-2xx. The second delivery must attach nothing
+      // and say nothing — the first was already answered.
+      const id = `wamid.IN.${randomUUID().slice(0, 8)}`;
+      const file = photo();
+
+      await deliver({ ...file, id } as never);
+      sent.length = 0;
+      await deliver({ ...file, id } as never);
+
+      expect(sent).toHaveLength(0);
+      expect(await stagedFiles()).toHaveLength(1);
     });
   });
 });

@@ -409,3 +409,35 @@ describe('cc on a compose', () => {
     expect(intentOf('email alice@acme.com saying hi')).not.toHaveProperty('cc');
   });
 });
+
+describe('dropping the files the user sent in', () => {
+  it('understands the ways people say it', () => {
+    for (const text of [
+      'drop the files',
+      'discard the attachments',
+      'forget those photos',
+      'clear my files',
+      'remove the documents',
+      'cancel the images',
+      'drop all the files',
+    ]) {
+      expect(intentOf(text)).toEqual({ intent: 'discard_files' });
+    }
+  });
+
+  it('is not confused with asking for an email’s attachments', () => {
+    // The two are opposite directions and share most of their vocabulary.
+    expect(intentOf('send me the attachments')).toEqual({ intent: 'get_attachment' });
+    expect(intentOf('attachments')).toEqual({ intent: 'get_attachment' });
+  });
+
+  it('does not swallow "cancel", which stops a pending send', () => {
+    expect(intentOf('cancel')).toEqual({ intent: 'cancel' });
+  });
+
+  it('is matched before drafting, which claims the bare verb', () => {
+    // `write|compose|draft` matches almost anything after it, and "clear the
+    // files" reaching it would become an instruction to draft something.
+    expect(intentOf('clear the files')).not.toMatchObject({ intent: 'draft' });
+  });
+});

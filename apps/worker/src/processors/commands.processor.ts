@@ -33,6 +33,10 @@ import { ForwardComposer } from '../services/forward-composer.js';
 import { ComposeComposer } from '../services/compose-composer.js';
 import { MailboxQueryService } from '../services/mailbox-query.service.js';
 import { AssistantService } from '../services/assistant.service.js';
+import {
+  AttachmentStagingService,
+  type StagingOutcome,
+} from '../services/attachment-staging.service.js';
 import { interpretTap, type TapEffect } from '../services/tap-interpreter.js';
 import { InboxRepository } from '../repositories/inbox.repository.js';
 import { AttachmentRepository } from '../repositories/attachment.repository.js';
@@ -77,6 +81,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly composer: ComposeComposer,
     private readonly queries: MailboxQueryService,
     private readonly assistant: AssistantService,
+    private readonly staging: AttachmentStagingService,
     private readonly inbox: InboxRepository,
     private readonly attachments: AttachmentRepository,
     private readonly queue: QueueProducer,
@@ -150,6 +155,15 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     // message us, not the main path.
     await this.flushDeferred(user.id, message.timestamp);
 
+    // A file the user sent in. It is held rather than acted on — see
+    // `AttachmentStagingService` for why holding is the only model that works
+    // here — and the caption, when there is one, is still a command, so this
+    // falls through to the usual path once the file is safely recorded.
+    if (AttachmentStagingService.isFile(message)) {
+      const answered = await this.handleFile(user.id, phoneNumber, message);
+      if (answered) return;
+    }
+
     const tap = message.interactive?.id ? decodeActionPayload(message.interactive.id) : null;
     if (tap) {
       await this.handleTap(user.id, phoneNumber, message, tap);
@@ -157,6 +171,72 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.handleText(user.id, phoneNumber, message);
+  }
+
+  /* -------------------------------- files -------------------------------- */
+
+  /**
+   * Holds a file the user sent, so the next email they send carries it.
+   *
+   * @returns true when this message has been fully answered — no caption to act
+   *   on, a refusal, or a webhook Meta redelivered. False means the file is
+   *   staged and the caption is a command still to run, which is what makes
+   *   "email alice@acme.com saying here it is" work in one message with a photo
+   *   attached to it.
+   */
+  private async handleFile(
+    userId: string,
+    phoneNumber: string,
+    message: InboundWhatsAppMessage,
+  ): Promise<boolean> {
+    let outcome: StagingOutcome;
+    let failed: string | undefined;
+
+    try {
+      outcome = await this.staging.stage(userId, message);
+    } catch (err) {
+      const error = AppError.from(err);
+      outcome = { kind: 'refused', reason: userFacingFailure(error) };
+      failed = error.code;
+      this.logger.warn(
+        { event: 'command.file_staging_failed', code: error.code, err: error },
+        'Could not hold the file the user sent',
+      );
+    }
+
+    await this.inbox.recordResolution(
+      userId,
+      message.id,
+      'stage_file',
+      'media',
+      failed ?? (outcome.kind === 'refused' ? 'refused' : undefined),
+    );
+
+    this.logger.info(
+      { event: 'command.file_staged', mediaType: message.type, outcome: outcome.kind, failed },
+      'File from the chat handled',
+    );
+
+    // Meta redelivers a webhook on any non-2xx, and the first delivery was
+    // already answered. Answering again is two messages for one file.
+    if (outcome.kind === 'duplicate') return true;
+
+    // The caption is a command, and it now runs against a chat that is holding
+    // the file — so the acknowledgement is skipped and the command's own answer
+    // is what the user reads. Two messages for one action is noise.
+    if (outcome.kind === 'staged' && message.text?.trim()) return false;
+
+    await this.outbound.reply({
+      userId,
+      phoneNumber,
+      payload: buildText(
+        outcome.kind === 'refused' ? outcome.reason : describeHeld(outcome.pendingCount),
+      ),
+      kind: outcome.kind === 'refused' ? 'error' : 'command_response',
+      lastInboundAt: message.timestamp,
+    });
+
+    return true;
   }
 
   /**
@@ -593,6 +673,23 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    // Also before the target check, and for the same reason: what it acts on is
+    // the set of files waiting for the next email, which belongs to the
+    // conversation rather than to any message in it.
+    if (effect.kind === 'discard_files') {
+      return this.attempt(
+        () => this.staging.discard(userId),
+        (count) =>
+          buildText(
+            count === 0
+              ? "I wasn't holding any files."
+              : count === 1
+                ? "Dropped it. I'm not holding any files now."
+                : `Dropped ${count} files. I'm not holding any now.`,
+          ),
+      );
+    }
+
     if (!emailMessageId) {
       // The planner only produces an effect alongside a resolved email, so this
       // is a bug rather than a user-facing condition — but reporting it as a
@@ -744,6 +841,28 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
 }
 
 const GENERIC_FAILURE = "Something went wrong and I couldn't do that. Please try again.";
+
+/**
+ * What to say when a file arrives with nothing to do with it.
+ *
+ * It has to say something. A photo sent into a chat that answers nothing is
+ * indistinguishable from a photo that was ignored, and the user finds out which
+ * only when the email arrives without it. It also has to say what happens next,
+ * because "held" is not a state any other messaging app has.
+ */
+function describeHeld(pendingCount: number): string {
+  const held =
+    pendingCount === 1
+      ? "Got it — I'm holding that file."
+      : `Got it — I'm holding ${pendingCount} files.`;
+
+  return (
+    `${held} The next email you send will carry ` +
+    `${pendingCount === 1 ? 'it' : 'them'}.\n\n` +
+    'Try _reply saying here it is_, or _email alice@acme.com saying here it is_. ' +
+    `Say _drop the files_ to forget ${pendingCount === 1 ? 'it' : 'them'}.`
+  );
+}
 
 /**
  * The verification code as the user actually sent it.

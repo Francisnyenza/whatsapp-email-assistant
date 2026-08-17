@@ -170,26 +170,26 @@ model User {
   /// across the whole system: two accounts cannot share a WhatsApp number.
   /// Only ever written by the verification flow. A number nobody proved decides
   /// where private mail is delivered, so an unverified one is not stored at all.
-  phoneNumber   String?    @unique @map("phone_number")
-  phoneVerified Boolean    @default(false) @map("phone_verified")
+  phoneNumber   String? @unique @map("phone_number")
+  phoneVerified Boolean @default(false) @map("phone_verified")
 
   /// SHA-256 of the code the user must send us from the phone they are claiming.
   /// Hashed because it is a bearer credential that binds a number to an account.
-  phoneVerificationCodeHash String?   @map("phone_verification_code_hash")
-  phoneVerificationExpiresAt DateTime? @map("phone_verification_expires_at")
-  status        UserStatus @default(pending_verification)
-  emailVerified Boolean    @default(false) @map("email_verified")
+  phoneVerificationCodeHash  String?    @map("phone_verification_code_hash")
+  phoneVerificationExpiresAt DateTime?  @map("phone_verification_expires_at")
+  status                     UserStatus @default(pending_verification)
+  emailVerified              Boolean    @default(false) @map("email_verified")
 
   /// TOTP secret, encrypted (ADR 0002).
-  twoFactorEnabled       Boolean  @default(false) @map("two_factor_enabled")
-  twoFactorSecretCipher  Bytes?   @map("two_factor_secret_cipher")
-  twoFactorSecretDek     Bytes?   @map("two_factor_secret_dek")
-  twoFactorSecretKeyVer  Int?     @map("two_factor_secret_key_ver")
+  twoFactorEnabled       Boolean   @default(false) @map("two_factor_enabled")
+  twoFactorSecretCipher  Bytes?    @map("two_factor_secret_cipher")
+  twoFactorSecretDek     Bytes?    @map("two_factor_secret_dek")
+  twoFactorSecretKeyVer  Int?      @map("two_factor_secret_key_ver")
   /// SHA-256 of each single-use recovery code; entries are removed as they're used.
-  twoFactorRecoveryCodes String[] @map("two_factor_recovery_codes")
+  twoFactorRecoveryCodes String[]  @map("two_factor_recovery_codes")
   /// The last TOTP step redeemed. Anything at or below it is refused, which is
   /// what makes a one-time password one-time.
-  twoFactorLastUsedStep  BigInt?  @map("two_factor_last_used_step")
+  twoFactorLastUsedStep  BigInt?   @map("two_factor_last_used_step")
   /// Set when enrolment was completed by proving a code works. A secret without
   /// this is enrolled but unconfirmed, and must not gate sign-in.
   twoFactorConfirmedAt   DateTime? @map("two_factor_confirmed_at")
@@ -231,6 +231,7 @@ model User {
   conversationState ConversationState?
   aiUsage           AiUsageRecord[]
   subscription      Subscription?
+  stagedAttachments StagedAttachment[]
 
   @@index([status])
   @@index([deletedAt])
@@ -838,13 +839,58 @@ model Draft {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
 
-  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  account          EmailAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  inReplyToMessage EmailMessage? @relation(fields: [inReplyToMessageId], references: [id], onDelete: SetNull)
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  account           EmailAccount       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  inReplyToMessage  EmailMessage?      @relation(fields: [inReplyToMessageId], references: [id], onDelete: SetNull)
+  stagedAttachments StagedAttachment[]
 
   @@index([userId, status, createdAt(sort: Desc)])
   @@index([status, createdAt])
   @@map("drafts")
+}
+
+/// A file the user sent into the WhatsApp chat, waiting to go out on an email.
+///
+/// The bytes are not here. Meta holds inbound media for 30 days and hands it
+/// back against the media id, so what this table stores is a *reference* —
+/// which means a file the user staged and never sent is one we never held. The
+/// download happens once, at send time, into the MIME message and nowhere else.
+model StagedAttachment {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  /// Meta's media id. Fetched against at send time, not stored bytes.
+  whatsappMediaId String @map("whatsapp_media_id")
+
+  /// The inbound message that carried the file. Unique, because Meta redelivers
+  /// a webhook on any non-2xx and staging the same photo twice would attach it
+  /// twice.
+  whatsappMessageId String @unique @map("whatsapp_message_id")
+
+  filename  String
+  mimeType  String @map("mime_type")
+  /// From Meta's media metadata, resolved at staging time — the webhook itself
+  /// carries no size, and the budget has to be checked before the user is
+  /// promised anything.
+  sizeBytes Int    @map("size_bytes")
+
+  /// Set when a draft claims it. Null means still waiting for the user to say
+  /// what to do with it.
+  draftId String? @map("draft_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at")
+  /// Meta's own retention is the ceiling; this is shorter, so an unclaimed file
+  /// stops following the user around a day later.
+  expiresAt DateTime @map("expires_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  draft Draft? @relation(fields: [draftId], references: [id], onDelete: SetNull)
+
+  /// The pending-set lookup: this user's unclaimed, unexpired files.
+  @@index([userId, draftId, createdAt])
+  @@index([draftId])
+  @@index([expiresAt])
+  @@map("staged_attachments")
 }
 
 // ============================================================================

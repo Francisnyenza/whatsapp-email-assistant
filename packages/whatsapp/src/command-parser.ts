@@ -189,6 +189,14 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
     build: () => ({ intent: 'get_attachment' }),
   },
 
+  // The other direction: files the user sent *in*, which wait for the next
+  // email they send. Matched before `draft|compose|write`, which claims a bare
+  // verb and would read "clear the files" as an instruction to draft something.
+  {
+    re: /^(?:drop|discard|forget|clear|remove|cancel)\s+(?:the\s+|my\s+|those\s+|these\s+|all\s+(?:the\s+)?)?(?:files?|attachments?|photos?|pictures?|images?|documents?|uploads?)$/i,
+    build: () => ({ intent: 'discard_files' }),
+  },
+
   // Drafting is explicitly not sending.
   {
     re: /^(?:draft|compose|write)\s+(?:a\s+)?(?:reply|response|answer)?\s*(?:that\s+)?(.*)$/is,

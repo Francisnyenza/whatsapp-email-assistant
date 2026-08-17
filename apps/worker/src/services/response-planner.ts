@@ -75,6 +75,11 @@ export type PlannedEffect =
   /** Send this email's files into the chat, one queued job each. */
   | { kind: 'attachments' }
   /**
+   * Forget the files the user sent *into* the chat. Like a compose, it names no
+   * email — what it acts on is the set of files waiting for the next one.
+   */
+  | { kind: 'discard_files' }
+  /**
    * Send a brand-new email. The only effect here with no email behind it — a
    * compose has no parent, so nothing in the resolution ladder applies and the
    * recipient comes from what the user typed rather than from a stored message.
@@ -151,6 +156,18 @@ export class ResponsePlanner {
 
       case 'compose':
         return planCompose(intent);
+
+      // Untargeted for the same reason a compose is: the files the user is
+      // holding belong to the conversation, not to any one email. The count
+      // comes back from the effect, so the payload here is a placeholder the
+      // processor replaces — saying "dropped 3 files" before checking would be
+      // the "Archived." failure again.
+      case 'discard_files':
+        return {
+          payload: buildText('Dropping them…'),
+          followUp: 'queue_query',
+          effect: { kind: 'discard_files' },
+        };
 
       // `question`, `search` and every `list_*` are deliberately absent. They are
       // reads over the whole mailbox rather than actions on one email, so they
@@ -492,6 +509,10 @@ const HELP_TEXT = [
   '• _email alice@acme.com about Q3 saying the numbers are attached_',
   '• _email alice@acme.com saying running ten minutes late_',
   '• _email alice@acme.com cc bob@acme.com saying …_',
+  '',
+  '*Attaching a file*',
+  '• Send me a photo or a document — I hold it for your next email',
+  '• _drop the files_ — forget what I am holding',
   '',
   '*Writing*',
   '• _draft a polite no_ — I write it, you approve it',

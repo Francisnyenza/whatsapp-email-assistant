@@ -1,9 +1,16 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger } from 'pino';
-import { AppError, QUEUE, JOB, type SendEmailJob } from '@wea/shared';
+import {
+  AppError,
+  QUEUE,
+  JOB,
+  MAX_OUTBOUND_ATTACHMENT_BYTES,
+  type SendEmailJob,
+} from '@wea/shared';
 import { buildForwardBody, buildForwardSubject } from '@wea/mail';
 import { AccountService } from './account.service.js';
 import { DraftRepository } from '../repositories/draft.repository.js';
+import { StagedAttachmentRepository } from '../repositories/staged-attachment.repository.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 
 /**
@@ -33,8 +40,12 @@ import { QueueProducer } from '../queue/queue.producer.js';
  * Providers cap a message at 25 MB. Composing right up to the line and failing
  * at send would be the worst place to discover it, so the budget is lower and
  * the check happens before the user is promised anything.
+ *
+ * The same number governs files the user sends into the chat, and it is shared
+ * rather than repeated — a forward carrying 18 MB of originals plus a staged
+ * photo has to be measured against one ceiling, not two.
  */
-export const MAX_FORWARD_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_FORWARD_ATTACHMENT_BYTES = MAX_OUTBOUND_ATTACHMENT_BYTES;
 
 /** Deliberately narrow. A malformed address is a bounce, and a bounce the user never sees. */
 const ADDRESS_RE = /^[^\s@<>",;]+@[^\s@<>",;.]+(\.[^\s@<>",;.]+)+$/;
@@ -51,6 +62,7 @@ export class ForwardComposer {
   constructor(
     private readonly accounts: AccountService,
     private readonly drafts: DraftRepository,
+    private readonly staged: StagedAttachmentRepository,
     private readonly queue: QueueProducer,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
@@ -85,7 +97,15 @@ export class ForwardComposer {
     // Inline images belong to the HTML body we are not reproducing; counting
     // them towards the budget would refuse forwards that would have been fine.
     const attachments = original.attachments.filter((a) => a.disposition !== 'inline');
-    const attachmentBytes = attachments.reduce((total, a) => total + a.sizeBytes, 0);
+    const originalBytes = attachments.reduce((total, a) => total + a.sizeBytes, 0);
+
+    // Any file the user sent into the chat rides along on this draft, because
+    // `createForSend` claims the pending set. It therefore counts against the
+    // same ceiling: a 18 MB forward and a 15 MB photo are each fine and together
+    // are a message the provider rejects — after the user has been told it went.
+    const pending = await this.staged.listPending(input.userId);
+    const attachmentBytes =
+      originalBytes + pending.reduce((total, file) => total + file.sizeBytes, 0);
 
     if (attachmentBytes > MAX_FORWARD_ATTACHMENT_BYTES) {
       throw new AppError(
@@ -142,7 +162,7 @@ export class ForwardComposer {
         event: 'forward.composed',
         draftId: draft.id,
         emailMessageId: input.emailMessageId,
-        attachmentCount: attachments.length,
+        attachmentCount: attachments.length + draft.attachmentCount,
         attachmentBytes,
         // The recipient is deliberately absent: the logger redacts addresses,
         // and naming one here would defeat that.
@@ -153,7 +173,7 @@ export class ForwardComposer {
     return {
       draftId: draft.id,
       recipient,
-      attachmentCount: attachments.length,
+      attachmentCount: attachments.length + draft.attachmentCount,
       attachmentBytes,
     };
   }

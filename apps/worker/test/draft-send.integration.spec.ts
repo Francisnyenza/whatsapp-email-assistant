@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { DraftRepository } from '../src/repositories/draft.repository.js';
+import { StagedAttachmentRepository } from '../src/repositories/staged-attachment.repository.js';
 import { composeReplyFrom } from '../src/processors/send.processor.js';
 import { EnvelopeEncryption, LocalKmsProvider } from '@wea/crypto';
 import { randomBytes } from 'node:crypto';
@@ -62,7 +63,10 @@ describeIfDb('draft sending (real database)', () => {
     const service = Object.assign(prisma, {
       forUser: <T>(id: string, fn: (tx: never) => Promise<T>) => scopedTx(prisma, id, fn as never),
     });
-    drafts = new DraftRepository(service as never);
+    drafts = new DraftRepository(
+      service as never,
+      new StagedAttachmentRepository(service as never),
+    );
 
     await prisma.user.create({
       data: {

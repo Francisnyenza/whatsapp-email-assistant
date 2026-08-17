@@ -2,13 +2,20 @@ import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@ne
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
 import type { Readable } from 'node:stream';
-import { AppError, QUEUE, type SendEmailJob, type OutboundAttachment } from '@wea/shared';
+import {
+  AppError,
+  QUEUE,
+  MAX_OUTBOUND_ATTACHMENT_BYTES,
+  type SendEmailJob,
+  type OutboundAttachment,
+} from '@wea/shared';
 import { buildReplyHeaders, resolveReplyRecipients, type ProviderAccount } from '@wea/mail';
 import { buildText } from '@wea/whatsapp';
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
 import { OutboundService } from '../services/outbound.service.js';
 import { DraftRepository } from '../repositories/draft.repository.js';
+import { StagedAttachmentRepository } from '../repositories/staged-attachment.repository.js';
 import { startWorker } from './base.processor.js';
 
 /**
@@ -37,6 +44,7 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly config: ConfigService,
     private readonly accounts: AccountService,
     private readonly drafts: DraftRepository,
+    private readonly staged: StagedAttachmentRepository,
     private readonly outbound: OutboundService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
@@ -75,10 +83,15 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
       // A forward carries the original's files. They are fetched here rather
       // than stored at compose time, so the forwarded copy ends up in two
       // mailboxes and in neither of our stores.
-      const attachments =
-        draft.kind === 'forward' && draft.inReplyToMessageId
+      const attachments = [
+        ...(draft.kind === 'forward' && draft.inReplyToMessageId
           ? await this.collectForwardedAttachments(userId, account, draft.inReplyToMessageId)
-          : [];
+          : []),
+        // Files the user sent into the chat, fetched from Meta for the same
+        // reason a forward's are fetched from the provider: the bytes pass
+        // through on their way to the recipient and are stored nowhere.
+        ...(await this.collectStagedAttachments(userId, draftId)),
+      ];
 
       const result = await provider.send(account, {
         to: draft.to,
@@ -98,7 +111,12 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
       await this.outbound.reply({
         userId,
         phoneNumber: draft.phoneNumber,
-        payload: buildText(`Sent to ${draft.to[0]?.address ?? 'them'}.`),
+        // The attachment count is named because the user cannot see the sent
+        // message. "Sent to alice@acme.com." is indistinguishable from an email
+        // that went without the file they attached to it.
+        payload: buildText(
+          `Sent to ${draft.to[0]?.address ?? 'them'}${describeAttachments(attachments.length)}.`,
+        ),
         kind: 'reply_confirmation',
         ...(draft.inReplyToMessageId ? { emailMessageId: draft.inReplyToMessageId } : {}),
         lastInboundAt: draft.lastInboundAt,
@@ -185,6 +203,50 @@ export class SendProcessor implements OnModuleInit, OnModuleDestroy {
     return collected;
   }
 
+  /**
+   * Fetches the files the user sent into the chat.
+   *
+   * Sized at staging time against the same budget a forward is sized against,
+   * so this is not where the decision is made about whether they fit. What is
+   * decided here is what happens when one cannot be fetched — and the answer is
+   * the same as for a forward: fail the send. Meta keeps inbound media for 30
+   * days, so a miss means the file is genuinely gone, and delivering the email
+   * without the photo the user watched themselves attach is the failure they
+   * cannot see and cannot undo.
+   *
+   * The cap passed to the client is the *whole message* budget rather than a
+   * per-file one, deliberately: staging enforced the total, and a lower number
+   * here would refuse a single large file that was already accepted.
+   */
+  private async collectStagedAttachments(
+    userId: string,
+    draftId: string,
+  ): Promise<OutboundAttachment[]> {
+    const files = await this.staged.listForDraft(userId, draftId);
+    if (files.length === 0) return [];
+
+    const collected: OutboundAttachment[] = [];
+    for (const file of files) {
+      collected.push({
+        filename: file.filename,
+        mimeType: file.mimeType,
+        content: await this.outbound.fetchMedia(
+          file.whatsappMediaId,
+          MAX_OUTBOUND_ATTACHMENT_BYTES,
+        ),
+      });
+    }
+
+    this.logger.info(
+      // Counts and bytes, never filenames: they are facts about the user's own
+      // documents, exactly as on the delivery side.
+      { event: 'send.staged_attachments_collected', draftId, count: collected.length },
+      'Staged attachments fetched',
+    );
+
+    return collected;
+  }
+
   async onModuleDestroy(): Promise<void> {
     // Never abandon an in-flight send: the provider call may already be in
     // progress, and killing it mid-request is how a message gets sent twice.
@@ -231,4 +293,10 @@ export function composeReplyFrom(
     inReplyTo: headers.inReplyTo,
     references: headers.references,
   };
+}
+
+/** " with 2 files" — or nothing at all, which is the common case. */
+function describeAttachments(count: number): string {
+  if (count === 0) return '';
+  return count === 1 ? ' with the file' : ` with ${count} files`;
 }

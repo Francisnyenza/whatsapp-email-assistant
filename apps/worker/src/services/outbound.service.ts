@@ -168,6 +168,34 @@ export class OutboundService {
     return mediaId;
   }
 
+  /**
+   * Asks Meta what a piece of inbound media is, without downloading it.
+   *
+   * The webhook names the file and its type but never its size, and the size is
+   * the one fact needed *before* the user is told their email is going. One
+   * metadata call is cheap; discovering at send time that the attachment does
+   * not fit, having already said "sending…", is not.
+   */
+  async describeMedia(mediaId: string): Promise<{ mimeType: string; sizeBytes: number }> {
+    const meta = await this.client.getMediaUrl(mediaId);
+    return { mimeType: meta.mimeType, sizeBytes: meta.sizeBytes };
+  }
+
+  /**
+   * Downloads inbound media.
+   *
+   * The URL is resolved here rather than stored, because Meta's expires within
+   * minutes while the media id is good for 30 days — which is what lets a file
+   * be staged now and attached to an email later without holding the bytes.
+   *
+   * `maxBytes` is enforced by the client against what it actually reads, not
+   * against the declared length.
+   */
+  async fetchMedia(mediaId: string, maxBytes: number): Promise<Buffer> {
+    const meta = await this.client.getMediaUrl(mediaId);
+    return this.client.downloadMedia(meta.url, maxBytes);
+  }
+
   /** Marks the user's message read, so they see the blue ticks while we work. */
   async acknowledgeRead(whatsappMessageId: string): Promise<void> {
     try {

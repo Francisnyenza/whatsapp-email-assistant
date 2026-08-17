@@ -18,13 +18,16 @@ gives it away.
 - **Reply from WhatsApp** — replies are threaded correctly (`In-Reply-To`, `References`) and
   sent through your own mailbox, so they land in your Sent folder and in the recipient's
   existing conversation.
-- **Full mailbox control** — archive, delete, forward, mark read/unread/important, search.
-  (Composing a brand-new email, attachments in either direction, and CC/BCC are **not built
-  yet** — see the parity table in [`docs/status.md`](docs/status.md).)
+- **Full mailbox control** — compose, archive, delete, forward, mark read/unread/important,
+  search, CC and reply-all. (Bcc, labels, folders and snooze are **not built yet** — see the
+  parity table in [`docs/status.md`](docs/status.md).)
 - **AI throughout** — summarize, draft, rewrite, translate (10+ languages), classify, detect
   urgency and spam, extract deadlines, invoices, meeting times and action items.
-- **Voice** — send a voice note, get an email; have your email read aloud.
-- **Attachments** — receive and send PDF, Office documents, images, audio, video and archives.
+- **Attachments both ways** — ask for an email's files and they arrive in the chat; send a
+  photo or a document and the next email you send carries it. The bytes are never stored:
+  they pass through on their way to the recipient.
+- **Voice** — have any email read aloud, as a voice note. (Dictating one _to_ us is not
+  built: a voice note you send is ignored rather than transcribed.)
 - **Dashboard** — a web app for setup, analytics, automations, billing and administration.
 
 ## Documentation
@@ -69,7 +72,7 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 574 tests passing** (1 283 unit + 291 integration against real Postgres). See
+**1 607 tests passing** (1 292 unit + 315 integration against real Postgres). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 

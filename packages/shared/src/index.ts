@@ -86,6 +86,11 @@ export {
   type SupportedLanguage,
 } from './constants/languages.js';
 
+export {
+  MAX_OUTBOUND_ATTACHMENT_BYTES,
+  STAGED_ATTACHMENT_TTL_MS,
+} from './constants/attachments.js';
+
 // errors
 export { AppError, type ErrorCode, type AppErrorOptions } from './errors/app-error.js';
 

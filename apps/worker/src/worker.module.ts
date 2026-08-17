@@ -9,10 +9,12 @@ import { AccountService } from './services/account.service.js';
 import { MailboxActionService } from './services/mailbox-action.service.js';
 import { ReplyComposer } from './services/reply-composer.js';
 import { ForwardComposer } from './services/forward-composer.js';
+import { AttachmentStagingService } from './services/attachment-staging.service.js';
 import { ComposeComposer } from './services/compose-composer.js';
 import { MediaProcessor } from './processors/media.processor.js';
 import { AttachmentRepository } from './repositories/attachment.repository.js';
 import { DraftRepository } from './repositories/draft.repository.js';
+import { StagedAttachmentRepository } from './repositories/staged-attachment.repository.js';
 import { SendProcessor } from './processors/send.processor.js';
 import { IngestProcessor } from './processors/ingest.processor.js';
 import { NotifyProcessor } from './processors/notify.processor.js';
@@ -42,10 +44,12 @@ import { AssistantService } from './services/assistant.service.js';
     MailboxActionService,
     ReplyComposer,
     ForwardComposer,
+    AttachmentStagingService,
     ComposeComposer,
     MediaProcessor,
     AttachmentRepository,
     DraftRepository,
+    StagedAttachmentRepository,
     MessageRepository,
     WatchRepository,
     RetentionRepository,

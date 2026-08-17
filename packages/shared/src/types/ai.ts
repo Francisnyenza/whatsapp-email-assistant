@@ -142,6 +142,12 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
   }),
   /** "send me the attachment" — the files on an email, into the chat. */
   z.object({ intent: z.literal('get_attachment') }),
+  /**
+   * "drop the files" — the other direction. Files the user sent into the chat
+   * wait for the next email they send, so there has to be a way to say that the
+   * next email is not the one they were for.
+   */
+  z.object({ intent: z.literal('discard_files') }),
   z.object({ intent: z.literal('send') }),
   z.object({ intent: z.literal('cancel') }),
   z.object({ intent: z.literal('undo') }),

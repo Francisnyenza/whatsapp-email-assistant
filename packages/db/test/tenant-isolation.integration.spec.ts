@@ -125,7 +125,73 @@ describeIfDb('tenant isolation (RLS)', () => {
     );
     expect(found).toHaveLength(0);
   });
+
+  /**
+   * Every tenant table, not the handful this file names.
+   *
+   * The policies are applied by a loop over a hardcoded list in the hardening
+   * migration, so a table added later is protected only if someone remembered
+   * to protect it. Nothing about writing the model makes that happen, and
+   * nothing about forgetting it fails — the table simply works, for every
+   * tenant, until the day it matters. This asks Postgres itself which tables
+   * carry a `user_id` and holds each of them to the same rule.
+   *
+   * The exceptions are named rather than filtered out, and the assertion is an
+   * equality: a new unprotected table fails it, and so does protecting one of
+   * these four, which is what keeps the list from outliving its reasons.
+   */
+  it('protects every table that carries a user_id', async () => {
+    const rows = await prisma.$queryRawUnsafe<
+      Array<{ tablename: string; rowsecurity: boolean; forced: boolean; policies: bigint }>
+    >(`
+      SELECT c.relname          AS tablename,
+             c.relrowsecurity   AS rowsecurity,
+             c.relforcerowsecurity AS forced,
+             (SELECT count(*) FROM pg_policy p
+                WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation') AS policies
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public'
+         AND c.relkind = 'r'
+         AND EXISTS (
+           SELECT 1 FROM information_schema.columns col
+            WHERE col.table_schema = 'public'
+              AND col.table_name = c.relname
+              AND col.column_name = 'user_id'
+         )
+    `);
+
+    expect(rows.length).toBeGreaterThan(10);
+
+    const unprotected = rows
+      .filter((r) => !r.rowsecurity || !r.forced || Number(r.policies) === 0)
+      .map((r) => r.tablename)
+      .sort();
+
+    expect(unprotected).toEqual(KNOWN_EXCEPTIONS);
+  });
 });
+
+/**
+ * Tables carrying a `user_id` that deliberately have no tenant policy.
+ *
+ * Only the first is unarguable. `provider_account_routes` is read by the
+ * webhook endpoints *to discover which tenant a delivery belongs to*, so a
+ * policy requiring the tenant context would make it unreadable at exactly the
+ * moment it is needed.
+ *
+ * The other three are weaker, and are recorded here rather than quietly
+ * excluded: `org_memberships` is scoped by organization rather than by user,
+ * `subscriptions` is one row per user and could carry a policy, and
+ * `audit_logs` is append-only by grant but readable across tenants by the app
+ * role. See docs/status.md — this is a gap, not a design.
+ */
+const KNOWN_EXCEPTIONS = [
+  'audit_logs',
+  'org_memberships',
+  'provider_account_routes',
+  'subscriptions',
+];
 
 function id_short(id: string): string {
   return id.slice(0, 8);

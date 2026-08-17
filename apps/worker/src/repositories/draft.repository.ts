@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import type { EmailAddress } from '@wea/shared';
 import { PrismaService } from '../common/prisma.service.js';
+import { StagedAttachmentRepository } from './staged-attachment.repository.js';
 
 /**
  * Drafts, and the state machine that stops a reply being sent twice.
@@ -31,7 +32,10 @@ export interface ClaimedDraft {
 
 @Injectable()
 export class DraftRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly staged: StagedAttachmentRepository,
+  ) {}
 
   /**
    * Creates a draft ready to send.
@@ -39,6 +43,13 @@ export class DraftRepository {
    * The threading headers are captured now and never recomputed. The thread may
    * move on between composing and sending, and a recomputed `References` would
    * detach the reply from its own conversation (ADR 0003).
+   *
+   * Any file the user sent into the chat and has not yet spent is claimed here,
+   * in the same transaction. Doing it here rather than in each composer is the
+   * point: a composer that forgot would produce an email the user watched
+   * themselves attach a file to, arriving without it. Whichever email they send
+   * next carries them — which is what "attach" means in a chat, where there is
+   * no draft window to hold a file open.
    */
   async createForSend(input: {
     userId: string;
@@ -61,11 +72,11 @@ export class DraftRepository {
     inReplyTo?: string;
     references?: string[];
     providerThreadId?: string;
-  }): Promise<{ id: string; idempotencyKey: string }> {
+  }): Promise<{ id: string; idempotencyKey: string; attachmentCount: number }> {
     const idempotencyKey = randomUUID();
 
-    const draft = await this.prisma.forUser(input.userId, async (tx) =>
-      tx.draft.create({
+    const draft = await this.prisma.forUser(input.userId, async (tx) => {
+      const created = await tx.draft.create({
         data: {
           userId: input.userId,
           accountId: input.accountId,
@@ -87,10 +98,14 @@ export class DraftRepository {
           idempotencyKey,
         },
         select: { id: true },
-      }),
-    );
+      });
 
-    return { id: draft.id, idempotencyKey };
+      const attachmentCount = await this.staged.claimForDraft(tx, input.userId, created.id);
+
+      return { id: created.id, attachmentCount };
+    });
+
+    return { id: draft.id, idempotencyKey, attachmentCount: draft.attachmentCount };
   }
 
   /**
