@@ -91,6 +91,11 @@ export type PlannedEffect =
    */
   | { kind: 'label'; add?: string; remove?: string }
   /**
+   * Put it somewhere. Distinct from a label for a reason the user can see: a
+   * label leaves the message in the inbox and a move takes it out.
+   */
+  | { kind: 'move'; to: string }
+  /**
    * Put it down until later. The time is raw text for the same reason a label
    * name is: resolving it needs the user's timezone, which this class does not
    * have and should not acquire.
@@ -344,6 +349,16 @@ export class ResponsePlanner {
           ),
           followUp: 'queue_action',
           effect: { kind: 'mutate', operation: { kind: 'spam', isSpam: intent.isSpam } },
+          emailMessageId,
+        };
+
+      // Same shape as a label change and for the same reason: the destination
+      // is named as the mailbox spells it, which this class cannot know.
+      case 'move':
+        return {
+          payload: buildText('Moving…'),
+          followUp: 'queue_query',
+          effect: { kind: 'move', to: intent.to },
           emailMessageId,
         };
 
@@ -614,6 +629,8 @@ const HELP_TEXT = [
   '• _mark unread_ · _important_',
   '• _this is spam_ · _not spam_',
   '• _label this as Receipts_ · _remove the Receipts label_',
+  '• _move this to Projects_ — takes it out of the inbox',
+  '• _what folders do I have_',
   '• _snooze until tomorrow_ · _snooze for 2 hours_ — I bring it back then',
   '• _undo_ — takes back the last thing, for ten minutes afterwards',
   '• _what labels do I have_',

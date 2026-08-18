@@ -630,6 +630,70 @@ describe('which failures are worth retrying', () => {
   });
 });
 
+describe('folders', () => {
+  it('flattens the tree and qualifies nested names', async () => {
+    // Two folders called "2026" under different parents are different places,
+    // and a flat list of bare names would make them indistinguishable to
+    // whatever resolves what the user typed.
+    const { fetchImpl } = graph([
+      {
+        match: (u, m) => m === 'GET' && u.includes('/me/mailFolders?'),
+        body: {
+          value: [
+            { id: 'f1', displayName: 'Inbox', childFolderCount: 0 },
+            { id: 'f2', displayName: 'Clients', childFolderCount: 1 },
+          ],
+        },
+      },
+      {
+        match: (u, m) => m === 'GET' && u.includes('/f2/childFolders'),
+        body: { value: [{ id: 'f3', displayName: '2026', childFolderCount: 0 }] },
+      },
+    ]);
+
+    const folders = await provider(fetchImpl as never).listFolders(account);
+
+    expect(folders).toEqual([
+      { id: 'f1', name: 'Inbox', isSystem: true },
+      { id: 'f2', name: 'Clients', isSystem: false },
+      { id: 'f3', name: 'Clients/2026', isSystem: false },
+    ]);
+  });
+
+  it('leaves out the folders reachable by their own verb', async () => {
+    // Each of those asks the user first. Offering them here would be a second
+    // route to the same places with none of the confirmation.
+    const { fetchImpl } = graph([
+      {
+        match: (u, m) => m === 'GET' && u.includes('mailFolders'),
+        body: {
+          value: [
+            { id: 'f1', displayName: 'Deleted Items' },
+            { id: 'f2', displayName: 'Junk Email' },
+            { id: 'f3', displayName: 'Projects' },
+          ],
+        },
+      },
+    ]);
+
+    expect(await provider(fetchImpl as never).listFolders(account)).toEqual([
+      { id: 'f3', name: 'Projects', isSystem: false },
+    ]);
+  });
+
+  it('moves by id, which is what a folder is addressed by', async () => {
+    const { fetchImpl, calls } = graph([{ match: () => true, status: 204 }]);
+
+    await provider(fetchImpl as never).mutate(account, 'm1', {
+      kind: 'move',
+      destinationId: 'f-projects',
+    });
+
+    expect(calls[0]!.url).toContain('/move');
+    expect(JSON.parse(calls[0]!.body!)).toEqual({ destinationId: 'f-projects' });
+  });
+});
+
 describe('labels', () => {
   it('returns categories with the display name as the id', async () => {
     // Categories have no ids of their own — the name *is* the identifier, and

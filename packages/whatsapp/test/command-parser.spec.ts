@@ -704,3 +704,40 @@ describe('composing to a name rather than an address', () => {
     expect(intentOf('reply saying on it')).toMatchObject({ intent: 'reply' });
   });
 });
+
+describe('moving a message somewhere', () => {
+  it('understands the ways people say it', () => {
+    for (const text of [
+      'move this to Projects',
+      'move it to Projects',
+      'move to Projects',
+      'put this in Projects',
+      'put it into Projects',
+    ]) {
+      expect(intentOf(text)).toEqual({ intent: 'move', to: 'Projects' });
+    }
+  });
+
+  it('drops a trailing "folder"', () => {
+    expect(intentOf('move this to the Projects folder')).toEqual({
+      intent: 'move',
+      to: 'Projects',
+    });
+  });
+
+  it('keeps a nested path whole', () => {
+    expect(intentOf('move this to Clients/2026')).toMatchObject({ to: 'Clients/2026' });
+  });
+
+  it('is not confused with labelling, which leaves it in the inbox', () => {
+    // The two verbs overlap in English and mean different things.
+    expect(intentOf('label this as Projects')).toEqual({ intent: 'label', add: 'Projects' });
+    expect(intentOf('move this to Projects')).toEqual({ intent: 'move', to: 'Projects' });
+  });
+
+  it('answers "what folders do I have"', () => {
+    for (const text of ['what folders do I have', 'my folders', 'list folders']) {
+      expect(intentOf(text)).toEqual({ intent: 'list_folders' });
+    }
+  });
+});

@@ -4,6 +4,7 @@ import { Readable } from 'node:stream';
 import {
   AppError,
   type ChangeEvent,
+  type MailFolder,
   type MailLabel,
   type MailOperation,
   type MailProviderKind,
@@ -378,6 +379,19 @@ export class GmailProvider implements MailProvider {
           });
           return;
 
+        case 'move':
+          // Gmail has no folders. Its own "Move to" applies the label and drops
+          // the message out of the inbox, and that is what this means here.
+          await gmail.users.messages.modify({
+            userId: 'me',
+            id: providerMessageId,
+            requestBody: {
+              addLabelIds: [operation.destinationId],
+              removeLabelIds: ['INBOX'],
+            },
+          });
+          return;
+
         case 'label':
           await gmail.users.messages.modify({
             userId: 'me',
@@ -419,6 +433,39 @@ export class GmailProvider implements MailProvider {
         .map((label) => ({ id: label.id!, name: label.name! }));
     } catch (err) {
       throw mapGmailError(err, { accountId: account.id, op: 'labels.list' });
+    }
+  }
+
+  /**
+   * Where a message can be put.
+   *
+   * On Gmail that is the label list again — the same objects, because Gmail has
+   * no folders. System labels are *included* here where `listLabels` drops
+   * them, and the difference is the point: "move it to Archive" is an ordinary
+   * request, while "label it as Trash" is deleting a message by a route with no
+   * confirmation.
+   */
+  async listFolders(account: ProviderAccount): Promise<MailFolder[]> {
+    const gmail = this.client(account);
+
+    try {
+      const response = await gmail.users.labels.list({ userId: 'me' });
+
+      return (
+        (response.data.labels ?? [])
+          .filter((label) => label.id && label.name)
+          // Trash and Spam are reachable by their own verbs, each of which asks
+          // first. Offering them here would be a second route to the same places
+          // with none of the confirmation.
+          .filter((label) => !UNMOVABLE_TO.has(label.id!))
+          .map((label) => ({
+            id: label.id!,
+            name: label.name!,
+            isSystem: label.type === 'system',
+          }))
+      );
+    } catch (err) {
+      throw mapGmailError(err, { accountId: account.id, op: 'folders.list' });
     }
   }
 
@@ -520,3 +567,12 @@ export const GMAIL_SCOPES = [
   'https://www.googleapis.com/auth/gmail.send',
   'https://www.googleapis.com/auth/userinfo.email',
 ];
+
+/**
+ * System labels a "move" must never target.
+ *
+ * Both are reachable by their own verbs, each of which asks the user first.
+ * Offering them as destinations would be a second route to the same places with
+ * none of the confirmation.
+ */
+const UNMOVABLE_TO = new Set(['TRASH', 'SPAM']);

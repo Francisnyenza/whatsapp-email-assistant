@@ -119,6 +119,11 @@ function localEffectOf(operation: MailOperation): Record<string, unknown> | null
       // Labels are reconciled from the provider on the next sync rather than
       // guessed at here; a partial local view of them would be worse than none.
       return null;
+    case 'move':
+      // Wherever it went, it is not in the inbox any more — which is the one
+      // thing our own lists need to know, and the one thing true of a move on
+      // both providers.
+      return { isArchived: true };
     default:
       return null;
   }

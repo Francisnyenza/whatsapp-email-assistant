@@ -13,6 +13,7 @@ import {
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
 import { AssistantService } from './assistant.service.js';
 import { LabelService } from './label.service.js';
+import { FolderService } from './folder.service.js';
 import { MailboxPickerService } from './mailbox-picker.service.js';
 
 /**
@@ -37,6 +38,7 @@ export class MailboxQueryService {
     private readonly analyses: AnalysisRepository,
     private readonly assistant: AssistantService,
     private readonly labels: LabelService,
+    private readonly folders: FolderService,
     private readonly mailboxes: MailboxPickerService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
@@ -55,7 +57,8 @@ export class MailboxQueryService {
       // but a read all the same: it concerns no particular email, so it is
       // answered here rather than through the resolution ladder.
       intent.intent === 'list_labels' ||
-      intent.intent === 'list_mailboxes'
+      intent.intent === 'list_mailboxes' ||
+      intent.intent === 'list_folders'
     );
   }
 
@@ -84,6 +87,15 @@ export class MailboxQueryService {
                   (box.isPrimary ? ' _(default)_' : ''),
               )
               .join('\n')}\n\nSay _email alice@acme.com from work saying …_ to pick one.`,
+      );
+    }
+
+    if (intent.intent === 'list_folders') {
+      const names = await this.folders.list(userId);
+      return buildText(
+        names.length === 0
+          ? "I couldn't find any folders in that mailbox."
+          : `Your folders:\n${names.map((name) => `• ${name}`).join('\n')}`,
       );
     }
 

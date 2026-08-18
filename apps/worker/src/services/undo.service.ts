@@ -183,6 +183,16 @@ export function inverseOf(operation: MailOperation): MailOperation | null {
       // ids came from a directory lookup, and reversing them means resolving
       // against the same one.
       return null;
+    case 'move':
+      // Back to the inbox, which is a complete reversal on Outlook — its
+      // folders are exclusive, so moving out of one is moving into another.
+      //
+      // On Gmail it is a partial one: a move there is a label plus leaving the
+      // inbox, and this puts the message back without taking the label off. The
+      // message is where the user expects it and carries one extra label, which
+      // `remove the X label` takes off. Claiming a full reversal and delivering
+      // that would be the worse of the two.
+      return { kind: 'unarchive' };
   }
 }
 
@@ -195,6 +205,8 @@ function describeUndo(verb: string): string {
       return "Out of the trash and back in your inbox — that's undone.";
     case 'spam':
       return 'Out of spam and back in your inbox.';
+    case 'move':
+      return "Back in your inbox. If it kept the folder's label, say _remove the … label_.";
     case 'not_spam':
       return 'Back in spam.';
     case 'mark_read':

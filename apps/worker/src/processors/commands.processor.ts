@@ -39,6 +39,7 @@ import { ComposeComposer } from '../services/compose-composer.js';
 import { MailboxQueryService } from '../services/mailbox-query.service.js';
 import { AssistantService } from '../services/assistant.service.js';
 import { LabelService } from '../services/label.service.js';
+import { FolderService } from '../services/folder.service.js';
 import { SnoozeService } from '../services/snooze.service.js';
 import { UndoService, inverseOf } from '../services/undo.service.js';
 import { MailboxPickerService } from '../services/mailbox-picker.service.js';
@@ -93,6 +94,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly queries: MailboxQueryService,
     private readonly assistant: AssistantService,
     private readonly labels: LabelService,
+    private readonly folders: FolderService,
     private readonly snoozes: SnoozeService,
     private readonly undos: UndoService,
     private readonly mailboxes: MailboxPickerService,
@@ -1070,6 +1072,27 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
             buildText(`Put down until *${description}*. I'll bring it back then.`),
         );
 
+      // The destination is named as the mailbox spells it, for the same reason
+      // a label is: the user's next command is typed from what they read.
+      case 'move':
+        return this.attempt(
+          async () => {
+            const landed = await this.folders.move(userId, emailMessageId, effect.to);
+            await this.dealtWith(userId, emailMessageId, 'move');
+            // Recorded here rather than through `remember`, because the inverse
+            // does not depend on where it went: back to the inbox is the
+            // reversal either way. See `inverseOf` for what that does and does
+            // not undo on each provider.
+            await this.undos.record(userId, {
+              emailMessageId,
+              verb: 'move',
+              operation: { kind: 'unarchive' },
+            });
+            return landed;
+          },
+          (landed) => buildText(`Moved to *${landed}*.`),
+        );
+
       case 'summarize':
         return this.attempt(
           () => this.assistant.summarize(userId, emailMessageId),
@@ -1226,7 +1249,7 @@ function isVoiceNote(message: InboundWhatsAppMessage): boolean {
 }
 
 /** Verbs that mean the user is finished with a message, so a snooze on it is stale. */
-const DEALT_WITH_VERBS = new Set(['archive', 'delete', 'spam', 'reply']);
+const DEALT_WITH_VERBS = new Set(['archive', 'delete', 'spam', 'reply', 'move']);
 
 /**
  * What to say when a file arrives with nothing to do with it.

@@ -192,6 +192,14 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
   /** "what labels do I have" — the mailbox's filing names, not a message's. */
   z.object({ intent: z.literal('list_labels') }),
   /**
+   * "move this to Projects". Distinct from `label`: a label leaves the message
+   * where it is, a move takes it out of the inbox. The name is raw text,
+   * resolved against the mailbox's own folders downstream.
+   */
+  z.object({ intent: z.literal('move'), to: z.string() }),
+  /** "what folders do I have" — where mail can be put. */
+  z.object({ intent: z.literal('list_folders') }),
+  /**
    * "snooze until Monday". `until` is raw text, resolved against the user's own
    * timezone downstream — "tomorrow morning" is a different instant in Nairobi
    * than in New York, and the parser has no business knowing which.

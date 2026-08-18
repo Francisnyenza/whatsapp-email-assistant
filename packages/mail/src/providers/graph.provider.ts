@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import {
   AppError,
   type ChangeEvent,
+  type MailFolder,
   type MailLabel,
   type MailOperation,
   type MailProviderKind,
@@ -657,6 +658,12 @@ export class GraphProvider implements MailProvider {
       case 'spam':
         return this.move(account, id, operation.isSpam ? 'junkemail' : 'inbox', 'mutate.spam');
 
+      case 'move':
+        // Outlook's folders are exclusive: this takes the message out of
+        // wherever it is. `destinationId` came from `listFolders`, which is why
+        // it works for a user's own folder as well as a well-known name.
+        return this.move(account, id, operation.destinationId, 'mutate.move');
+
       case 'label': {
         // Categories are Outlook's labels, and Graph replaces the whole array on
         // PATCH rather than merging — so the current set has to be read first or
@@ -710,6 +717,54 @@ export class GraphProvider implements MailProvider {
     });
 
     return { id: name, name };
+  }
+
+  /**
+   * The user's folder tree, flattened.
+   *
+   * Graph nests folders arbitrarily and returns one level per request. The tree
+   * is walked to a bounded depth and the names are qualified with their parent
+   * — two folders called "2026" under "Clients" and "Suppliers" are different
+   * places, and a flat list of names would make them indistinguishable to
+   * whatever resolves what the user typed.
+   *
+   * Deleted Items and Junk are left out: each is reachable by its own verb,
+   * which asks first, and offering them here would be a second route to the
+   * same places with none of the confirmation.
+   */
+  async listFolders(account: ProviderAccount): Promise<MailFolder[]> {
+    const collected: MailFolder[] = [];
+
+    const walk = async (parentId: string | null, prefix: string, depth: number): Promise<void> => {
+      if (depth > MAX_FOLDER_DEPTH) return;
+
+      const path = parentId
+        ? `/me/mailFolders/${parentId}/childFolders?$top=100`
+        : '/me/mailFolders?$top=100';
+
+      const response = await this.request<{
+        value?: Array<{ id?: string; displayName?: string; childFolderCount?: number }>;
+      }>(account, path, { method: 'GET', op: 'folders.list' });
+
+      for (const folder of response.value ?? []) {
+        if (!folder.id || !folder.displayName) continue;
+        if (UNMOVABLE_TO.has(folder.displayName.toLowerCase())) continue;
+
+        const name = prefix ? `${prefix}/${folder.displayName}` : folder.displayName;
+        collected.push({
+          id: folder.id,
+          name,
+          isSystem: SYSTEM_FOLDERS.has(folder.displayName.toLowerCase()),
+        });
+
+        if (folder.childFolderCount && folder.childFolderCount > 0) {
+          await walk(folder.id, name, depth + 1);
+        }
+      }
+    };
+
+    await walk(null, '', 0);
+    return collected;
   }
 
   private async patch(
@@ -853,3 +908,18 @@ interface GraphDeltaPage {
   '@odata.nextLink'?: string;
   '@odata.deltaLink'?: string;
 }
+
+/**
+ * How deep the folder walk goes.
+ *
+ * Outlook lets a user nest without limit, and each level is another request.
+ * Four is deeper than anyone files by hand and bounds a pathological mailbox to
+ * a handful of round trips.
+ */
+const MAX_FOLDER_DEPTH = 4;
+
+/** Folders reachable by their own verb, which asks first. */
+const UNMOVABLE_TO = new Set(['deleted items', 'junk email']);
+
+/** Outlook's own, which are perfectly ordinary destinations. */
+const SYSTEM_FOLDERS = new Set(['inbox', 'archive', 'sent items', 'drafts', 'outbox']);

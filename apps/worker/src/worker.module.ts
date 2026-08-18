@@ -11,6 +11,7 @@ import { ReplyComposer } from './services/reply-composer.js';
 import { ForwardComposer } from './services/forward-composer.js';
 import { AttachmentStagingService } from './services/attachment-staging.service.js';
 import { LabelService } from './services/label.service.js';
+import { FolderService } from './services/folder.service.js';
 import { SnoozeService } from './services/snooze.service.js';
 import { UndoService } from './services/undo.service.js';
 import { MailboxPickerService } from './services/mailbox-picker.service.js';
@@ -54,6 +55,7 @@ import { AssistantService } from './services/assistant.service.js';
     ForwardComposer,
     AttachmentStagingService,
     LabelService,
+    FolderService,
     SnoozeService,
     UndoService,
     MailboxPickerService,

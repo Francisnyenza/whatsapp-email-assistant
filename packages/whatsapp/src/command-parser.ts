@@ -343,6 +343,26 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
     build: () => ({ intent: 'list_labels' }),
   },
   {
+    re: /^(?:what|which)\s+folders?\s*(?:do\s+i\s+have|are\s+there|exist)?\??$/i,
+    build: () => ({ intent: 'list_folders' }),
+  },
+  {
+    re: /^(?:my\s+|show\s+(?:me\s+)?(?:my\s+)?|list\s+(?:my\s+)?)folders?$/i,
+    build: () => ({ intent: 'list_folders' }),
+  },
+
+  // Moving. Matched before the label rules, which claim "file this in X" —
+  // the two verbs overlap in English and mean different things: a label leaves
+  // the message in the inbox and a move takes it out.
+  {
+    re: /^(?:move|put|filing)\s+(?:this|it)?\s*(?:in|into|to|under)\s+(?:the\s+)?["'“]?(.{1,60}?)["'”]?(?:\s+folder)?$/i,
+    build: (m) => ({ intent: 'move', to: m[1]!.trim() }),
+  },
+  {
+    re: /^(?:move|put)\s+(?:this|it)\s+(?:in|into|to)\s+["'“]?(.{1,60}?)["'”]?$/i,
+    build: (m) => ({ intent: 'move', to: m[1]!.trim() }),
+  },
+  {
     re: /^(?:what|which)\s+(?:mailboxes|accounts|addresses|inboxes)\s*(?:do\s+i\s+have|are\s+(?:there|connected))?\??$/i,
     build: () => ({ intent: 'list_mailboxes' }),
   },

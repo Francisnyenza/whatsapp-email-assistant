@@ -1,5 +1,6 @@
 import type {
   ChangeEvent,
+  MailFolder,
   MailLabel,
   MailOperation,
   MailProviderKind,
@@ -106,6 +107,19 @@ export interface MailProvider {
    * should have to ask for it in as many words.
    */
   createLabel(account: ProviderAccount, name: string): Promise<MailLabel>;
+
+  /**
+   * Where a message can be put, and the ids `mutate` expects for them.
+   *
+   * Distinct from `listLabels` even where the underlying objects coincide: on
+   * Gmail a folder *is* a label, and saying so in the adapter is cheaper than
+   * every caller above knowing it. On Outlook they are separate APIs entirely.
+   *
+   * System folders are marked rather than filtered, because unlike a system
+   * label they are exactly where a user means to put things — "move it to
+   * Archive" is an ordinary request.
+   */
+  listFolders(account: ProviderAccount): Promise<MailFolder[]>;
 
   /** Confirms the grant still works, for the health check and reconnect flow. */
   verifyAccess(

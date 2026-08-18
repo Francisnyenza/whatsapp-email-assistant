@@ -140,6 +140,20 @@ export type MailOperation =
   | { kind: 'markRead'; read: boolean }
   | { kind: 'star'; starred: boolean }
   | { kind: 'label'; add?: string[]; remove?: string[] }
+  /**
+   * Put it somewhere.
+   *
+   * The two mailboxes mean genuinely different things by this, and the port
+   * absorbs the difference rather than pretending it away. Outlook has folders,
+   * which are exclusive: a message is in exactly one. Gmail has none at all —
+   * its own "Move to" applies a label and removes `INBOX`, and that is what this
+   * means there.
+   *
+   * `destinationId` is whatever `listFolders` returned for that mailbox, never a
+   * name: Gmail wants a label id and Outlook a folder id, and neither accepts
+   * what the user typed.
+   */
+  | { kind: 'move'; destinationId: string }
   | { kind: 'spam'; isSpam: boolean };
 
 /**
@@ -152,6 +166,21 @@ export type MailOperation =
 export interface MailLabel {
   id: string;
   name: string;
+}
+
+/**
+ * A place a message can be put.
+ *
+ * Same shape as a label and a different idea, which is why it has its own name:
+ * a message carries any number of labels and lives in exactly one folder. On
+ * Gmail the two coincide, because Gmail has no folders — and the adapter is the
+ * only thing that needs to know that.
+ */
+export interface MailFolder {
+  id: string;
+  name: string;
+  /** True for Inbox, Sent, Archive and the rest the provider defines itself. */
+  isSystem: boolean;
 }
 
 /** One change reported by a provider's push or delta channel. */

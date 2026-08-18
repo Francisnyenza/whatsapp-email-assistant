@@ -112,3 +112,38 @@ function account() {
     accessToken: 'token',
   };
 }
+
+describe('Gmail folders', () => {
+  it('is the label list again, because Gmail has no folders', async () => {
+    // System labels are *included* here where `listLabels` drops them, and the
+    // difference is the point: "move it to Archive" is an ordinary request,
+    // while "label it as Trash" is deleting a message by a route with no
+    // confirmation.
+    const { provider } = build({
+      labels: [
+        { id: 'INBOX', name: 'INBOX', type: 'system' },
+        { id: 'Label_7', name: 'Receipts', type: 'user' },
+      ],
+    });
+
+    expect(await provider.listFolders(account())).toEqual([
+      { id: 'INBOX', name: 'INBOX', isSystem: true },
+      { id: 'Label_7', name: 'Receipts', isSystem: false },
+    ]);
+  });
+
+  it('never offers Trash or Spam as a destination', async () => {
+    // Both are reachable by their own verb, which asks first.
+    const { provider } = build({
+      labels: [
+        { id: 'TRASH', name: 'TRASH', type: 'system' },
+        { id: 'SPAM', name: 'SPAM', type: 'system' },
+        { id: 'Label_7', name: 'Receipts', type: 'user' },
+      ],
+    });
+
+    expect(await provider.listFolders(account())).toEqual([
+      { id: 'Label_7', name: 'Receipts', isSystem: false },
+    ]);
+  });
+});

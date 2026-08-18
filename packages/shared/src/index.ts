@@ -15,6 +15,7 @@ export type {
   SendResult,
   MailOperation,
   MailLabel,
+  MailFolder,
   ChangeEvent,
   SyncCursor,
   WatchHandle,

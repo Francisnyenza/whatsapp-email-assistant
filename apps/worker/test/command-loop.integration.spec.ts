@@ -15,6 +15,7 @@ import { MailboxQueryService } from '../src/services/mailbox-query.service.js';
 import { AssistantService } from '../src/services/assistant.service.js';
 import { AttachmentStagingService } from '../src/services/attachment-staging.service.js';
 import { LabelService } from '../src/services/label.service.js';
+import { FolderService } from '../src/services/folder.service.js';
 import { SnoozeService } from '../src/services/snooze.service.js';
 import { ReminderRepository } from '../src/repositories/reminder.repository.js';
 import { UndoService } from '../src/services/undo.service.js';
@@ -83,6 +84,9 @@ describeIfDb('command loop (real database)', () => {
 
   /** The mailbox's own labels, as the stubbed adapter reports them. */
   let providerLabels: Array<{ id: string; name: string }> = [];
+
+  /** Where mail can be put, as the stubbed adapter reports them. */
+  let providerFolders: Array<{ id: string; name: string; isSystem: boolean }> = [];
 
   /** What Meta says an inbound file is, which is where its size comes from. */
   let mediaMetadata = { mimeType: 'application/pdf', sizeBytes: 1024 };
@@ -153,6 +157,7 @@ describeIfDb('command loop (real database)', () => {
     mutateFailure = null;
     providerAttachments = [];
     providerLabels = [];
+    providerFolders = [];
 
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
@@ -180,6 +185,9 @@ describeIfDb('command loop (real database)', () => {
       // Gmail's label directory. Names in, ids out — the whole reason the label
       // path cannot pass the user's words straight through.
       listLabels: vi.fn(async () => providerLabels),
+      // Where mail can be put. Distinct from the label list even on Gmail,
+      // where the objects coincide: system folders are destinations.
+      listFolders: vi.fn(async () => providerFolders),
       createLabel: vi.fn(async (_a: unknown, name: string) => {
         const label = { id: `Label_${providerLabels.length + 1}`, name };
         providerLabels.push(label);
@@ -264,6 +272,13 @@ describeIfDb('command loop (real database)', () => {
       logger as never,
     );
 
+    const folders = new FolderService(
+      service as never,
+      accounts as never,
+      mailboxActions,
+      logger as never,
+    );
+
     const labels = new LabelService(
       service as never,
       accounts as never,
@@ -277,6 +292,7 @@ describeIfDb('command loop (real database)', () => {
       { recordUsage: vi.fn() } as never,
       assistant,
       labels,
+      folders,
       mailboxPicker,
       logger as never,
     );
@@ -318,6 +334,7 @@ describeIfDb('command loop (real database)', () => {
       mailboxQueries,
       assistant,
       labels,
+      folders,
       snoozeService,
       new UndoService(inbox, mailboxActions, labels, snoozeService, logger as never),
       mailboxPicker,
@@ -427,6 +444,7 @@ describeIfDb('command loop (real database)', () => {
     providerAttachments.length = 0;
     mediaMetadata = { mimeType: 'application/pdf', sizeBytes: 1024 };
     providerLabels.length = 0;
+    providerFolders.length = 0;
     await withTenant(userId, async (tx) => {
       await tx.conversationState.deleteMany({ where: { userId } });
       // Files held in one test must not ride out on the next test's email.
@@ -1927,6 +1945,69 @@ describeIfDb('command loop (real database)', () => {
 
       expect(mutations).toHaveLength(0);
       expect(await stagedFiles()).toHaveLength(1);
+    });
+  });
+
+  describe('moving a message somewhere', () => {
+    // The two mailboxes mean different things by "move": Outlook has folders and
+    // Gmail has none, so a move there is a label plus leaving the inbox. What
+    // the user sees is the same either way.
+
+    it('moves to the folder by its id, and takes it out of the inbox', async () => {
+      providerFolders.push({ id: 'f-projects', name: 'Projects', isSystem: false });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'move this to Projects' });
+
+      expect(mutations.at(-1)).toMatchObject({
+        operation: { kind: 'move', destinationId: 'f-projects' },
+      });
+
+      const stored = await withTenant(userId, (tx) =>
+        tx.emailMessage.findUnique({ where: { id: emails.sarah! } }),
+      );
+      expect(stored!.isArchived).toBe(true);
+    });
+
+    it('refuses a folder the mailbox does not have, and names the ones it does', async () => {
+      providerFolders.push({ id: 'f-projects', name: 'Projects', isSystem: false });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'move this to Projekts' });
+
+      expect(mutations).toHaveLength(0);
+      expect(lastText()).toContain('Projects');
+    });
+
+    it('lists the folders when asked', async () => {
+      providerFolders.push(
+        { id: 'f-b', name: 'Projects', isSystem: false },
+        { id: 'f-a', name: 'Archive', isSystem: true },
+      );
+
+      await deliver({ text: 'what folders do I have' });
+
+      expect(lastText()).toContain('Projects');
+      expect(lastText().indexOf('Archive')).toBeLessThan(lastText().indexOf('Projects'));
+    });
+
+    it('can be undone back to the inbox', async () => {
+      providerFolders.push({ id: 'f-projects', name: 'Projects', isSystem: false });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'move this to Projects' });
+      await deliver({ text: 'undo' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'unarchive' } });
+    });
+
+    it('forgets a snooze, because a move means the user has dealt with it', async () => {
+      providerFolders.push({ id: 'f-projects', name: 'Projects', isSystem: false });
+
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until tomorrow' });
+      await deliver({ context: { id: deliveries.sarah! }, text: 'move this to Projects' });
+
+      const live = await withTenant(userId, (tx) =>
+        tx.reminder.count({ where: { userId, cancelledAt: null } }),
+      );
+      expect(live).toBe(0);
     });
   });
 
