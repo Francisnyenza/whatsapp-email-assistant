@@ -118,6 +118,13 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
      * was built, tested and unreachable.
      */
     replyAll: z.boolean().optional(),
+    /**
+     * A subject the user chose, replacing the derived `Re: …` — what a mail
+     * client offers when a conversation drifts onto a new topic. It does not
+     * detach the reply from its thread; `In-Reply-To` and `References` do that
+     * work (ADR 0003).
+     */
+    subject: z.string().optional(),
   }),
   z.object({ intent: z.literal('reply_affirmative') }),
   z.object({ intent: z.literal('reply_negative') }),

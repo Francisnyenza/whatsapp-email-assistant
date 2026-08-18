@@ -149,6 +149,22 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
     build: () => ({ intent: 'reply', replyAll: true }),
   },
 
+  // A reply that renames the conversation. Matched before the plain form,
+  // which would otherwise read "about Q4 saying …" as the body.
+  {
+    re: /^(?:reply|respond|answer)\s+about\s+(.{1,200}?)\s+(?:with|saying|that)\s+(.+)$/is,
+    build: (m) => ({ intent: 'reply', subject: m[1]!.trim(), body: m[2]!.trim() }),
+  },
+  {
+    re: /^(?:reply|respond)\s+(?:to\s+)?(?:all|everyone|everybody)\s+about\s+(.{1,200}?)\s+(?:with|saying|that)\s+(.+)$/is,
+    build: (m) => ({
+      intent: 'reply',
+      replyAll: true,
+      subject: m[1]!.trim(),
+      body: m[2]!.trim(),
+    }),
+  },
+
   {
     re: /^(?:reply|respond|answer)\s+(?:with|saying|that)\s+(.+)$/is,
     build: (m) => ({ intent: 'reply', body: m[1]!.trim() }),

@@ -65,7 +65,7 @@ export interface PlanContext {
  */
 export type PlannedEffect =
   | { kind: 'mutate'; operation: MailOperation }
-  | { kind: 'reply'; body: string; replyAll?: boolean }
+  | { kind: 'reply'; body: string; replyAll?: boolean; subject?: string }
   /**
    * Ask the assistant something about this email.
    *
@@ -282,15 +282,18 @@ export class ResponsePlanner {
         if (intent.body) {
           return {
             payload: buildText(
-              intent.replyAll
-                ? `Replying to everyone on *${subject ?? 'this email'}*…`
-                : `Sending your reply to *${subject ?? 'this email'}*…`,
+              intent.subject
+                ? `Replying under *${intent.subject}*…`
+                : intent.replyAll
+                  ? `Replying to everyone on *${subject ?? 'this email'}*…`
+                  : `Sending your reply to *${subject ?? 'this email'}*…`,
             ),
             followUp: 'queue_send',
             effect: {
               kind: 'reply',
               body: intent.body,
               ...(intent.replyAll ? { replyAll: true } : {}),
+              ...(intent.subject ? { subject: intent.subject } : {}),
             },
             emailMessageId,
           };
@@ -622,6 +625,7 @@ const HELP_TEXT = [
   '• _reply with I will send it Friday_',
   '• _yes_ / _no_ for a quick answer',
   '• _reply all saying I agree_ — copies everyone on the thread',
+  '• _reply about Q4 planning saying …_ — renames the conversation',
   '',
   '*Managing*',
   '• _archive_ — file it away',

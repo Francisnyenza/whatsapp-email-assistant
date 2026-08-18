@@ -43,6 +43,16 @@ export class ReplyComposer {
     bodyText: string;
     /** Reply-all is opt-in: quietly copying five people is not recoverable. */
     replyAll?: boolean;
+    /**
+     * A subject the user chose, replacing the derived `Re: …`.
+     *
+     * What a mail client offers when a conversation drifts onto a new topic.
+     * It does not detach the reply from its thread: `In-Reply-To` and
+     * `References` are what thread a message, and every client groups by those
+     * rather than by the subject line (ADR 0003). Changing it is a label on the
+     * conversation, not a move out of it.
+     */
+    subject?: string;
   }): Promise<{ draftId: string }> {
     const body = input.bodyText.trim();
     if (!body) {
@@ -84,13 +94,17 @@ export class ReplyComposer {
       inReplyToMessageId: original.id,
       to,
       ...(cc.length ? { cc } : {}),
-      subject: headers.subject,
+      // The user's own words when they gave any, trimmed and bounded exactly as
+      // a compose's are — an over-long subject is a slip rather than an attack,
+      // and refusing the whole reply over one would be disproportionate.
+      subject: input.subject?.trim().slice(0, MAX_SUBJECT_CHARS) || headers.subject,
       // The plaintext is passed for the send path's convenience and the
       // ciphertext for storage; only the ciphertext is persisted.
       bodyText: body,
       bodyCipher: new Uint8Array(sealed.ciphertext),
       bodyDek: new Uint8Array(sealed.wrappedKey),
       bodyKeyVersion: sealed.keyVersion,
+
       ...(headers.inReplyTo ? { inReplyTo: headers.inReplyTo } : {}),
       references: headers.references,
       ...(original.thread?.providerThreadId
@@ -129,3 +143,9 @@ export class ReplyComposer {
 function named(address: string, name?: string | null): EmailAddress {
   return name ? { address, name } : { address };
 }
+
+/**
+ * Long enough for any real subject, short enough that a pasted paragraph does
+ * not become one. The same bound a compose uses, for the same reason.
+ */
+const MAX_SUBJECT_CHARS = 200;

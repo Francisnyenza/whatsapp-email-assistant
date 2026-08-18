@@ -2011,6 +2011,46 @@ describeIfDb('command loop (real database)', () => {
     });
   });
 
+  describe('renaming the conversation on a reply', () => {
+    it('uses the subject the user chose', async () => {
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'reply about Q4 planning saying here are the numbers',
+      });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.subject).toBe('Q4 planning');
+    });
+
+    it('keeps the reply in its own thread', async () => {
+      // `In-Reply-To` and `References` are what thread a message; every client
+      // groups by those rather than by the subject line. Changing the subject
+      // is a label on the conversation, not a move out of it.
+      await deliver({
+        context: { id: deliveries.sarah! },
+        text: 'reply about Q4 planning saying here are the numbers',
+      });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.inReplyToHeader).not.toBeNull();
+      expect(draft!.referencesHeader.length).toBeGreaterThan(0);
+      expect(draft!.inReplyToMessageId).toBe(emails.sarah!);
+    });
+
+    it('leaves an ordinary reply’s subject derived', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'reply saying on it' });
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.subject).toBe('Re: Q3 report');
+    });
+  });
+
   it('records how each message was interpreted', async () => {
     await deliver({ context: { id: deliveries.sarah! }, text: 'archive' });
 

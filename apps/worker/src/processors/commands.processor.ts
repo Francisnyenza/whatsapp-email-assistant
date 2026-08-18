@@ -983,6 +983,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
               emailMessageId,
               bodyText: effect.body,
               ...(effect.replyAll ? { replyAll: true } : {}),
+              ...(effect.subject ? { subject: effect.subject } : {}),
             });
             await this.dealtWith(userId, emailMessageId, 'reply');
             await this.undos.record(userId, { emailMessageId, verb: 'reply', irreversible: true });

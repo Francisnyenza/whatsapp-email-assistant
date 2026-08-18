@@ -741,3 +741,34 @@ describe('moving a message somewhere', () => {
     }
   });
 });
+
+describe('renaming the conversation on a reply', () => {
+  it('takes a subject before the body', () => {
+    expect(intentOf('reply about Q4 planning saying here are the numbers')).toEqual({
+      intent: 'reply',
+      subject: 'Q4 planning',
+      body: 'here are the numbers',
+    });
+  });
+
+  it('takes one on a reply-all', () => {
+    expect(intentOf('reply all about Q4 planning saying here are the numbers')).toEqual({
+      intent: 'reply',
+      replyAll: true,
+      subject: 'Q4 planning',
+      body: 'here are the numbers',
+    });
+  });
+
+  it('leaves a plain reply’s subject derived', () => {
+    // "Re: …" is right for the overwhelming majority; this is the exception.
+    expect(intentOf('reply saying on it')).not.toHaveProperty('subject');
+  });
+
+  it('does not eat a body that happens to mention "about"', () => {
+    expect(intentOf('reply saying I will think about it')).toEqual({
+      intent: 'reply',
+      body: 'I will think about it',
+    });
+  });
+});
