@@ -182,6 +182,29 @@ export class DraftRepository {
     });
   }
 
+  /**
+   * Takes a draft back before it is sent.
+   *
+   * The same conditional write that guards against sending twice, used from the
+   * other side: whichever happens first wins. If the send worker has already
+   * claimed it — flipping `queued` to `sending` — this matches nothing and
+   * returns false, and the caller says the mail has gone rather than claiming
+   * an undo it did not perform.
+   *
+   * The queued BullMQ job is deliberately left alone. It will fire, find
+   * nothing to claim, and stop; removing it would be a second thing that has to
+   * succeed for the cancel to hold.
+   */
+  async cancelIfQueued(userId: string, draftId: string): Promise<boolean> {
+    return this.prisma.forUser(userId, async (tx) => {
+      const cancelled = await tx.draft.updateMany({
+        where: { id: draftId, status: 'queued' },
+        data: { status: 'cancelled' },
+      });
+      return cancelled.count === 1;
+    });
+  }
+
   async markSent(userId: string, draftId: string, providerMessageId: string): Promise<void> {
     await this.prisma.forUser(userId, async (tx) => {
       await tx.draft.update({

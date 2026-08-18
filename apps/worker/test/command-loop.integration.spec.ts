@@ -336,7 +336,14 @@ describeIfDb('command loop (real database)', () => {
       labels,
       folders,
       snoozeService,
-      new UndoService(inbox, mailboxActions, labels, snoozeService, logger as never),
+      new UndoService(
+        inbox,
+        mailboxActions,
+        labels,
+        snoozeService,
+        new DraftRepository(service as never, staged),
+        logger as never,
+      ),
       mailboxPicker,
       new RecipientResolverService(contactRepo),
       new TranscriptionService(
@@ -1708,13 +1715,33 @@ describeIfDb('command loop (real database)', () => {
       expect(live).toBe(0);
     });
 
-    it('says it cannot unsend, rather than "nothing to undo"', async () => {
-      // The mail has gone. An empty-slot answer here reads as a bug and leaves
-      // the user unsure whether it went at all.
+    it('stops a reply that has not left yet', async () => {
+      // The send job sits in Redis for `SEND_DELAY_MS` before the worker may
+      // claim it, and inside that window the mail has gone nowhere.
       await deliver({ context: { id: deliveries.sarah! }, text: 'reply saying on it' });
       await deliver({ text: 'undo' });
 
-      expect(lastText()).toContain("can't unsend");
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.status).toBe('cancelled');
+      expect(lastText()).toContain("hasn't gone anywhere");
+    });
+
+    it('says the mail has gone once the worker has claimed it', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'reply saying on it' });
+
+      // The send worker gets there first.
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ orderBy: { createdAt: 'desc' } }),
+      );
+      await withTenant(userId, (tx) =>
+        tx.draft.update({ where: { id: draft!.id }, data: { status: 'sending' } }),
+      );
+
+      await deliver({ text: 'undo' });
+
+      expect(lastText()).toContain('already gone');
     });
 
     it('says plainly when there is nothing to take back', async () => {
@@ -2049,6 +2076,15 @@ describeIfDb('command loop (real database)', () => {
       );
       expect(draft!.subject).toBe('Re: Q3 report');
     });
+  });
+
+  it('holds every outgoing email for a moment before it may be sent', async () => {
+    // The whole of "undo send". Without the delay the worker can claim the
+    // draft before the user has read their own confirmation.
+    await deliver({ context: { id: deliveries.sarah! }, text: 'reply saying on it' });
+
+    expect(sends().at(-1)!.opts).toMatchObject({ delay: expect.any(Number) });
+    expect((sends().at(-1)!.opts as { delay: number }).delay).toBeGreaterThan(0);
   });
 
   it('records how each message was interpreted', async () => {

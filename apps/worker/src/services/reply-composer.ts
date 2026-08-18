@@ -1,6 +1,13 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger } from 'pino';
-import { AppError, QUEUE, JOB, type EmailAddress, type SendEmailJob } from '@wea/shared';
+import {
+  AppError,
+  QUEUE,
+  JOB,
+  SEND_DELAY_MS,
+  type EmailAddress,
+  type SendEmailJob,
+} from '@wea/shared';
 import { buildReplyHeaders, resolveReplyRecipients } from '@wea/mail';
 import { AccountService } from './account.service.js';
 import { DraftRepository } from '../repositories/draft.repository.js';
@@ -123,7 +130,12 @@ export class ReplyComposer {
       } satisfies SendEmailJob,
       // Keyed on the draft: a retried enqueue cannot become a second email, and
       // the send path's status guard catches whatever slips past that.
-      { jobId: `send:${draft.id}` },
+      {
+        jobId: `send:${draft.id}`,
+        delay: SEND_DELAY_MS,
+        // The window "undo send" lives in. The job sits in Redis until it
+        // passes; the draft's status guard is what decides whether it goes.
+      },
     );
 
     this.logger.info(

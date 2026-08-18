@@ -93,6 +93,8 @@ export {
   STAGED_ATTACHMENT_TTL_MS,
 } from './constants/attachments.js';
 
+export { SEND_DELAY_MS } from './constants/sending.js';
+
 // errors
 export { AppError, type ErrorCode, type AppErrorOptions } from './errors/app-error.js';
 

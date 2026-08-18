@@ -66,15 +66,30 @@ describe('undoing', () => {
     expect(labels.apply).toHaveBeenCalledWith('user-1', 'email-1', { remove: ['Receipts'] });
   });
 
-  it('says what cannot be taken back, rather than "nothing to undo"', async () => {
-    // The message has already reached the recipient. Reporting an empty slot
-    // here reads as a bug and leaves the user unsure the mail went.
+  it('stops a send that has not left yet', async () => {
+    // The whole of "undo send": inside the delay window the mail has gone
+    // nowhere, and cancelling the draft is all it takes.
+    const { service, drafts } = build({
+      record: { emailMessageId: 'email-1', verb: 'reply', draftId: 'draft-1' },
+    });
+
+    const said = await service.undo('user-1');
+
+    expect(drafts.cancelIfQueued).toHaveBeenCalledWith('user-1', 'draft-1');
+    expect(said).toContain("hasn't gone anywhere");
+  });
+
+  it('says the mail has gone once the worker has claimed it', async () => {
+    // Past the window there is nothing to cancel, and claiming an undo that did
+    // not happen is worse than saying so: the user needs to know it is with the
+    // recipient, and needs to know now.
     const { service, mailbox } = build({
-      record: { emailMessageId: 'email-1', verb: 'reply', irreversible: true },
+      record: { emailMessageId: 'email-1', verb: 'reply', draftId: 'draft-1' },
+      alreadyClaimed: true,
     });
 
     await expect(service.undo('user-1')).rejects.toMatchObject({
-      publicMessage: expect.stringContaining("can't unsend"),
+      publicMessage: expect.stringContaining('already gone'),
     });
     expect(mailbox.apply).not.toHaveBeenCalled();
   });
@@ -133,6 +148,7 @@ function build(input: {
   record: Record<string, unknown> | null;
   at?: string;
   recordFails?: boolean;
+  alreadyClaimed?: boolean;
 }) {
   const inbox = {
     setLastAction: vi.fn(async () => {
@@ -146,14 +162,16 @@ function build(input: {
   const mailbox = { apply: vi.fn(async () => undefined) };
   const labels = { apply: vi.fn(async () => ({ added: [], removed: ['Receipts'] })) };
   const snoozes = { cancelFor: vi.fn(async () => 1) };
+  const drafts = { cancelIfQueued: vi.fn(async () => input.alreadyClaimed !== true) };
 
   const service = new UndoService(
     inbox as never,
     mailbox as never,
     labels as never,
     snoozes as never,
+    drafts as never,
     { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() } as never,
   );
 
-  return { service, inbox, mailbox, labels, snoozes };
+  return { service, inbox, mailbox, labels, snoozes, drafts };
 }

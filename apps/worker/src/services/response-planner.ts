@@ -636,7 +636,7 @@ const HELP_TEXT = [
   '• _move this to Projects_ — takes it out of the inbox',
   '• _what folders do I have_',
   '• _snooze until tomorrow_ · _snooze for 2 hours_ — I bring it back then',
-  '• _undo_ — takes back the last thing, for ten minutes afterwards',
+  '• _undo_ — takes back the last thing, and stops an email that has not gone yet',
   '• _what labels do I have_',
   '',
   '*Finding and reading*',

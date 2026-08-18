@@ -8,7 +8,7 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 830 tests** (1 456 unit + 374 integration
+Everything below has tests that run and pass. **1 833 tests** (1 457 unit + 376 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
@@ -20,11 +20,11 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/mail`     | 235              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                     |
 | `@wea/ai`       | 218              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic      |
 | `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                                 |
-| `apps/worker`   | 438 + 313 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
+| `apps/worker`   | 439 + 315 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 456 unit tests
+pnpm -r test          # 1 457 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -233,7 +233,7 @@ entirely from WhatsApp" is the product claim and this is the honest scoreboard f
 | **Folders / labels**               | ✅         | Labels: `label this as Receipts`, `remove the Receipts label`, `what labels do I have`. Moves: `move this to Projects`, `what folders do I have`. The two providers mean different things by a move and the port absorbs it — Outlook's folders are exclusive, and Gmail has none, so a move there is a label plus leaving the inbox, exactly as Gmail's own "Move to" does. Adding an unknown _label_ creates it; moving to an unknown _folder_ refuses, because a move takes the message out of the inbox and a typo would put it somewhere the user cannot find. Trash and Junk are never offered as destinations: each has its own verb, which asks first. |
 | **Snooze**                         | ✅         | `snooze until tomorrow`, `snooze for 2 hours`, `remind me about this on Monday`. The `reminders` table has existed since the first migration, with an index whose comment reads "drives the due-reminder sweep" — and there was no sweep, no producer and no repository. The time resolves in the user's own timezone and is said back as a date and a clock time, because "until Monday" is not something a misreading is visible in. A snooze is forgotten when the user replies, archives or deletes the message first.                                                                                                                                     |
 | **Spam / not spam**                | ✅         | `this is spam`, `not spam`. Both adapters had implemented the move since Phase 7 — Gmail by label, Graph by folder — and nothing in a chat could ask for it. The rescue is matched before the filing, because "not spam" contains "spam" and the wrong order files a rescued message straight back into junk.                                                                                                                                                                                                                                                                                                                                                  |
-| **Undo**                           | ✅         | `undo` takes back the last archive, delete, star, read, spam filing, label or snooze, for ten minutes afterwards. One slot, not a stack — a deeper history invites walking backwards through changes the mailbox has since had synced over it from another device. The record is spent on read, because the inverse of the inverse is the original action. **A sent reply says so by name** rather than "nothing to undo", which reads as a bug and leaves the user unsure the mail went. _Undo send_ itself is not built: it would need a deliberate delay between queueing and sending.                                                                      |
+| **Undo**                           | ✅         | `undo` takes back the last archive, delete, star, read, spam filing, label, move or snooze, for ten minutes — and **an email that has not left yet**. Every outgoing message waits 15 seconds in the queue before the worker may claim it, which is the only honest way to offer an unsend: once a message reaches the provider it is with the recipient, and no API takes it back. Past the window it says the mail has gone rather than claiming an undo it did not perform. One slot, not a stack, and the record is spent on read — the inverse of the inverse is the original action.                                                                     |
 | **Multi-account send selection**   | ✅         | `email alice@acme.com from work saying …`, `which mailboxes do I have`. Matches a nickname, an address, or the domain — which is how people refer to a mailbox they never named. The confirmation now names the sending address in every case, because with two connected the user cannot otherwise tell which identity is about to speak for them. A hint matching nothing refuses and names the options; one matching two also refuses, since choosing would be a coin flip on the user's identity.                                                                                                                                                          |
 | **Contacts**                       | ✅         | `email sarah saying …`. The address book is built from mail that actually arrived — no contacts scope, and a record of correspondence rather than of acquaintance, which is what "email sarah" means. `contacts.aliases` had been _read_ by the thread resolver since it was written and nothing ever wrote a row, so that rank matched an empty table for every real user. Resolution refuses rather than guesses: one match resolves, two list both, none says so. An address the user typed is passed through untouched.                                                                                                                                    |
 
@@ -255,22 +255,18 @@ discover_ which tenant a delivery belongs to — but the other three are a gap r
 design, and are pinned by an equality assertion in `tenant-isolation.integration.spec.ts`
 so the list cannot quietly grow.
 
-1. **Undo send.** `undo` covers every mailbox action; a sent message is the one thing it
-   refuses, and honestly. Making it reversible means holding a queued draft for a stated
-   number of seconds before the send processor may claim it — a deliberate delay, which is
-   how every mail client that offers this does it.
-2. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
+1. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
    the secret; it deliberately does not create an EKS cluster, because every organisation
    with Kubernetes already has an opinion about how clusters are made and a module that
    insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
    subnet groups and security groups the module takes as inputs, and External Secrets wired
    from the Secrets Manager secret into the namespace.
-3. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
+2. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
    the backlog alerts. Still unexported and still only a log line: a mailbox stuck in
    `polling`, a user's token budget exhausted, the retention sweep failing quietly — and
    anything at all from the API, which has no `/metrics` yet, so its latency and error rate
    are invisible.
-4. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
 

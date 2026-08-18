@@ -548,8 +548,8 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     const accountId = typeof pending.accountId === 'string' ? pending.accountId : undefined;
 
     return this.attempt(
-      () =>
-        this.composer.compose({
+      async () => {
+        const composed = await this.composer.compose({
           userId,
           // Parsed here rather than stored parsed, so the addresses that reach
           // the mailbox have been through the same validator on the same path
@@ -560,7 +560,19 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           ...(accountId ? { accountId } : {}),
           subject: typeof pending.subject === 'string' ? pending.subject : '(no subject)',
           bodyText: typeof pending.body === 'string' ? pending.body : '',
-        }),
+        });
+
+        // A compose is as unsendable as a reply inside the delay window, and
+        // the tap is the moment it became real — so this is where the undo
+        // record belongs, not at the point the user typed the command.
+        await this.undos.record(userId, {
+          emailMessageId: COMPOSE_TARGET,
+          verb: 'compose',
+          draftId: composed.draftId,
+        });
+
+        return composed;
+      },
       () => buildText(`Sending to ${to}…`),
     );
   }
@@ -585,9 +597,13 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       case 'reply':
         return this.attempt(
           async () => {
-            await this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body });
+            const { draftId } = await this.replies.composeReply({
+              userId,
+              emailMessageId,
+              bodyText: effect.body,
+            });
             await this.dealtWith(userId, emailMessageId, 'reply');
-            await this.undos.record(userId, { emailMessageId, verb: 'reply', irreversible: true });
+            await this.undos.record(userId, { emailMessageId, verb: 'reply', draftId });
           },
           () => buildText(`Sending: “${effect.body}”`),
         );
@@ -978,7 +994,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       case 'reply':
         return this.attempt(
           async () => {
-            await this.replies.composeReply({
+            const { draftId } = await this.replies.composeReply({
               userId,
               emailMessageId,
               bodyText: effect.body,
@@ -986,7 +1002,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
               ...(effect.subject ? { subject: effect.subject } : {}),
             });
             await this.dealtWith(userId, emailMessageId, 'reply');
-            await this.undos.record(userId, { emailMessageId, verb: 'reply', irreversible: true });
+            await this.undos.record(userId, { emailMessageId, verb: 'reply', draftId });
           },
           () => intended,
         );

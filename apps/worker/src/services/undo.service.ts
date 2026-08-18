@@ -5,6 +5,7 @@ import { InboxRepository } from '../repositories/inbox.repository.js';
 import { MailboxActionService } from './mailbox-action.service.js';
 import { LabelService } from './label.service.js';
 import { SnoozeService } from './snooze.service.js';
+import { DraftRepository } from '../repositories/draft.repository.js';
 
 /**
  * Taking back the last thing you did.
@@ -43,14 +44,14 @@ export interface UndoableAction {
   /** True for a snooze, whose inverse is cancelling the reminder. */
   snooze?: boolean;
   /**
-   * Recorded for something that *cannot* be taken back — a sent reply, a
-   * forward, a compose.
+   * A draft on its way out, and the whole of "undo send".
    *
-   * Deliberately recorded rather than skipped. "Nothing to undo" a second after
-   * sending reads as a bug, and the user spends the next minute wondering
-   * whether the mail actually went; naming the reason is the whole difference.
+   * There is a window — `SEND_DELAY_MS` — between queueing and the worker
+   * claiming it, and inside that window the mail has not gone anywhere. Past
+   * it, it has, and no API takes it back; the answer then is to say so rather
+   * than to claim an undo that did not happen.
    */
-  irreversible?: boolean;
+  draftId?: string;
 }
 
 @Injectable()
@@ -60,6 +61,7 @@ export class UndoService {
     private readonly mailbox: MailboxActionService,
     private readonly labels: LabelService,
     private readonly snoozes: SnoozeService,
+    private readonly drafts: DraftRepository,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
@@ -111,13 +113,23 @@ export class UndoService {
 
     const action = record as unknown as UndoableAction;
 
-    if (action.irreversible) {
-      throw new AppError('CONFLICT', 'Action cannot be undone', {
-        retryable: false,
-        publicMessage:
-          "I can't unsend an email — that one has already gone. " +
-          'If it needs correcting, send a follow-up and I’ll thread it onto the same conversation.',
-      });
+    if (action.draftId) {
+      const held = await this.drafts.cancelIfQueued(userId, action.draftId);
+
+      if (!held) {
+        // The worker claimed it first. Saying so beats claiming an undo that
+        // did not happen — the user needs to know the mail is with the
+        // recipient, and needs to know now.
+        throw new AppError('CONFLICT', 'Already sent', {
+          retryable: false,
+          publicMessage:
+            "That one has already gone — I can't unsend it. " +
+            'Send a follow-up and I’ll thread it onto the same conversation.',
+        });
+      }
+
+      this.logger.info({ event: 'undo.send_cancelled', verb: action.verb }, 'Send cancelled');
+      return "Stopped it — that email hasn't gone anywhere.";
     }
 
     if (action.snooze) {

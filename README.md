@@ -21,8 +21,8 @@ gives it away.
 - **Full mailbox control** — compose, archive, delete, forward, mark read/unread/important,
   search, label, move between folders, snooze, report spam, CC, Bcc and reply-all. Anything
   irreversible — a delete, a forward, a brand-new email — asks first, with a button, and
-  `undo` takes back the last thing for ten minutes afterwards. (Unsending is **not built
-  yet** — see the parity table in [`docs/status.md`](docs/status.md).)
+  `undo` takes back the last thing for ten minutes afterwards. Every outgoing message
+  waits fifteen seconds before it is sent, so `undo` can stop it.
 - **AI throughout** — summarize, draft, rewrite, translate (10+ languages), classify, detect
   urgency and spam, extract deadlines, invoices, meeting times and action items.
 - **Attachments both ways** — ask for an email's files and they arrive in the chat; send a
@@ -74,7 +74,7 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 830 tests passing** (1 456 unit + 374 integration against real Postgres). See
+**1 833 tests passing** (1 457 unit + 376 integration against real Postgres). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 
