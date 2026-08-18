@@ -341,10 +341,10 @@ so the list cannot quietly grow.
    Google, which is where a contract changes without telling anyone. `pnpm doctor` narrows
    this — it exercises both seams for real — but it checks that they are reachable and
    configured, not that a message round-trips.
-4. **A first-run walkthrough.** `pnpm doctor` tells an operator what is wrong; it does not
-   tell them what to do first. The Meta and Google console steps are in
-   `docs/development.md` as a list of values to set, which is the wrong shape for someone
-   who has never opened either console.
+4. **A real end-to-end run.** `docs/getting-started.md` is the ordered walkthrough and
+   `pnpm doctor` verifies each seam, but nobody has yet taken a live Meta app and a live
+   Gmail account from clone to a reply landing in someone's inbox. Every claim in that
+   document is checked against the code; none of it is checked against Meta.
 
 An earlier revision of this paragraph said every feature in the product spec was built.
 The parity audit above is what that claim looks like when it is checked verb by verb, and

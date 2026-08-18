@@ -1,5 +1,9 @@
 # Development setup
 
+Setting it up against your own WhatsApp number for the first time?
+[`getting-started.md`](getting-started.md) is the ordered walkthrough, with the traps.
+This page is the reference.
+
 ## Prerequisites
 
 - Node 22 (`.nvmrc` pins it — `nvm use`)

@@ -34,15 +34,16 @@ gives it away.
 
 ## Documentation
 
-| Document                                       | Contents                                              |
-| ---------------------------------------------- | ----------------------------------------------------- |
-| [`docs/architecture.md`](docs/architecture.md) | System design, data flows, scale and security posture |
-| [`docs/adr/`](docs/adr/)                       | Architecture decision records                         |
-| [`docs/development.md`](docs/development.md)   | Local setup, credentials, conventions                 |
-| [`docs/status.md`](docs/status.md)             | What is built and verified, and what is not           |
-| [`docs/data-model.md`](docs/data-model.md)     | Schema design, tenant isolation, retention            |
-| `docs/security.md`                             | Threat model and controls (Phase 10)                  |
-| `docs/runbook.md`                              | Operations (Phase 11)                                 |
+| Document                                             | Contents                                              |
+| ---------------------------------------------------- | ----------------------------------------------------- |
+| [`docs/getting-started.md`](docs/getting-started.md) | Running it on your own WhatsApp number, step by step  |
+| [`docs/architecture.md`](docs/architecture.md)       | System design, data flows, scale and security posture |
+| [`docs/adr/`](docs/adr/)                             | Architecture decision records                         |
+| [`docs/development.md`](docs/development.md)         | Local setup, credentials, conventions                 |
+| [`docs/status.md`](docs/status.md)                   | What is built and verified, and what is not           |
+| [`docs/data-model.md`](docs/data-model.md)           | Schema design, tenant isolation, retention            |
+| `docs/security.md`                                   | Threat model and controls (Phase 10)                  |
+| `docs/runbook.md`                                    | Operations (Phase 11)                                 |
 
 ## Repository layout
 
