@@ -623,6 +623,7 @@ const HELP_TEXT = [
   '• _unread_ · _today_ · _urgent_ · _deadlines_',
   '• _summarise_ · _translate to swahili_',
   '• _read it aloud_ — comes back as a voice note',
+  '• Send me a voice note — I act on what you said, and tell you what I heard',
   '• _send me the attachment_ — the files, into this chat',
   '',
   '*Asking*',

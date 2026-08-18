@@ -28,8 +28,8 @@ gives it away.
 - **Attachments both ways** — ask for an email's files and they arrive in the chat; send a
   photo or a document and the next email you send carries it. The bytes are never stored:
   they pass through on their way to the recipient.
-- **Voice** — have any email read aloud, as a voice note. (Dictating one _to_ us is not
-  built: a voice note you send is ignored rather than transcribed.)
+- **Voice** — have any email read aloud, as a voice note; send one and it is transcribed and
+  acted on, with what we heard echoed back so a mishearing is visible.
 - **Dashboard** — a web app for setup, analytics, automations, billing and administration.
 
 ## Documentation
@@ -74,7 +74,7 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 784 tests passing** (1 422 unit + 362 integration against real Postgres). See
+**1 798 tests passing** (1 432 unit + 366 integration against real Postgres). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 

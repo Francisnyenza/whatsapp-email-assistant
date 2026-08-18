@@ -9,7 +9,7 @@ export {
   type UntrustedBlock,
 } from './envelope.js';
 
-export { canEmbed, canSpeak } from './provider.js';
+export { canEmbed, canSpeak, canTranscribe } from './provider.js';
 
 export type {
   AiProvider,
@@ -20,6 +20,9 @@ export type {
   EmbeddingRequest,
   EmbeddingResponse,
   SpeechRequest,
+  TranscriptionRequest,
+  TranscriptionResponse,
+  TranscriptionProvider,
   SpeechResponse,
 } from './provider.js';
 

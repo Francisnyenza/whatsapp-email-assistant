@@ -7,6 +7,8 @@ import type {
   EmbeddingResponse,
   SpeechRequest,
   SpeechResponse,
+  TranscriptionRequest,
+  TranscriptionResponse,
 } from '../provider.js';
 
 /**
@@ -31,6 +33,7 @@ export interface OpenAiOptions {
    * the two that cannot speak at all — to name a speech model.
    */
   speechModel?: string;
+  transcriptionModel?: string;
   speechVoice?: string;
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
@@ -176,6 +179,79 @@ export class OpenAiProvider implements AiProvider {
    * than as a file attachment the recipient has to decide to open. MP3 would
    * upload fine and arrive as something nobody plays.
    */
+  /**
+   * Speech to text, for a voice note the user sent us.
+   *
+   * The audio goes up as multipart because that is what the endpoint takes, and
+   * the filename matters: Whisper picks its decoder from the extension, and an
+   * Ogg-Opus voice note sent as `audio.mp3` is rejected with a message about
+   * the format that says nothing about the cause.
+   *
+   * `language` is a hint rather than a setting. Forcing the wrong one produces
+   * confident nonsense — a fluent English transcription of Swahili — which is
+   * worse than a slower detection, because nothing downstream can tell it from
+   * a correct one.
+   */
+  async transcribe(request: TranscriptionRequest): Promise<TranscriptionResponse> {
+    const startedAt = Date.now();
+
+    if (request.audio.length === 0) {
+      throw new AppError('AI_INVALID_OUTPUT', 'Nothing to transcribe', { retryable: false });
+    }
+
+    const form = new FormData();
+    form.append('model', this.transcriptionModel);
+    form.append(
+      'file',
+      new Blob([request.audio], { type: request.mimeType }),
+      filenameFor(request.mimeType),
+    );
+    form.append('response_format', 'json');
+    if (request.language) form.append('language', request.language);
+
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}/audio/transcriptions`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.options.apiKey}` },
+        body: form,
+        ...(request.signal ? { signal: request.signal } : {}),
+      });
+    } catch (err) {
+      throw new AppError('AI_UNAVAILABLE', 'Transcription request failed', { cause: err });
+    }
+
+    if (!response.ok) throw mapHttpError(response.status);
+
+    const body = (await response.json()) as { text?: string; language?: string };
+    const text = body.text?.trim() ?? '';
+
+    if (!text) {
+      // Silence, or speech the model could not make out. Both are a real
+      // outcome the caller has to say something about, not an error.
+      throw new AppError('AI_INVALID_OUTPUT', 'Transcription came back empty', {
+        retryable: false,
+        publicMessage: "I couldn't make out any words in that. Could you send it again?",
+      });
+    }
+
+    return {
+      text,
+      ...(body.language ? { language: body.language } : {}),
+      usage: {
+        // The endpoint bills by audio duration and reports no token counts, so
+        // reporting zeroes is the honest answer rather than an invented one.
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        model: this.transcriptionModel,
+        provider: this.name,
+        latencyMs: Date.now() - startedAt,
+        costMicros: 0,
+      },
+    };
+  }
+
   async speak(request: SpeechRequest): Promise<SpeechResponse> {
     const model = this.speechModel;
     const startedAt = Date.now();
@@ -235,6 +311,10 @@ export class OpenAiProvider implements AiProvider {
     return this.options.speechModel ?? DEFAULT_SPEECH_MODEL;
   }
 
+  private get transcriptionModel(): string {
+    return this.options.transcriptionModel ?? DEFAULT_TRANSCRIPTION_MODEL;
+  }
+
   /**
    * Our own timeout as well as the caller's: a request left hanging holds a
    * worker slot, and BullMQ's timeout would kill the job without recording what
@@ -254,6 +334,40 @@ export class OpenAiProvider implements AiProvider {
 const MAX_EMBEDDING_CHARS = 20_000;
 
 const DEFAULT_SPEECH_MODEL = 'gpt-4o-mini-tts';
+
+/**
+ * Whisper rather than the newer transcription models, deliberately: it accepts
+ * Ogg-Opus directly, which is exactly what a WhatsApp voice note is, and needs
+ * no transcoding step we would have to build and keep working.
+ */
+const DEFAULT_TRANSCRIPTION_MODEL = 'whisper-1';
+
+/**
+ * The filename Whisper picks its decoder from.
+ *
+ * It reads the extension, not the content type, so an Ogg-Opus voice note sent
+ * as `audio.mp3` is rejected with a message about the format that says nothing
+ * about the cause.
+ */
+function filenameFor(mimeType: string): string {
+  const subtype = mimeType.split('/')[1]?.split(';')[0]?.trim().toLowerCase() ?? '';
+
+  const known: Record<string, string> = {
+    ogg: 'ogg',
+    opus: 'ogg',
+    mpeg: 'mp3',
+    mp3: 'mp3',
+    mp4: 'm4a',
+    'x-m4a': 'm4a',
+    aac: 'm4a',
+    wav: 'wav',
+    'x-wav': 'wav',
+    webm: 'webm',
+    flac: 'flac',
+  };
+
+  return `voice-note.${known[subtype] ?? 'ogg'}`;
+}
 
 /**
  * The endpoint's own ceiling is 4096 characters and it rejects the whole

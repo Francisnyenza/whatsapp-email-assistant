@@ -43,6 +43,7 @@ import { SnoozeService } from '../services/snooze.service.js';
 import { UndoService, inverseOf } from '../services/undo.service.js';
 import { MailboxPickerService } from '../services/mailbox-picker.service.js';
 import { RecipientResolverService } from '../services/recipient-resolver.service.js';
+import { TranscriptionService } from '../services/transcription.service.js';
 import {
   AttachmentStagingService,
   type StagingOutcome,
@@ -96,6 +97,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly undos: UndoService,
     private readonly mailboxes: MailboxPickerService,
     private readonly recipients: RecipientResolverService,
+    private readonly transcription: TranscriptionService,
     private readonly staging: AttachmentStagingService,
     private readonly inbox: InboxRepository,
     private readonly attachments: AttachmentRepository,
@@ -113,7 +115,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
   }
 
   async handle(job: Job<HandleInboundJob>): Promise<void> {
-    const message = job.data.payload as InboundWhatsAppMessage;
+    let message = job.data.payload as InboundWhatsAppMessage;
     const phoneNumber = fromWhatsAppFormat(job.data.phoneNumber);
 
     const user = await this.inbox.findUserByPhone(phoneNumber);
@@ -170,6 +172,17 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     // message us, not the main path.
     await this.flushDeferred(user.id, message.timestamp);
 
+    // A voice note. Transcribed into the words the user said, which are then
+    // handled exactly as if typed — ADR 0004 separates the user's channel from
+    // email content, and this is the user's channel. What it is not is as
+    // reliable as typing, so the transcript is echoed in the same message that
+    // acts on it.
+    if (isVoiceNote(message)) {
+      const heard = await this.handleVoiceNote(user.id, phoneNumber, message);
+      if (heard === null) return;
+      message = { ...message, text: heard };
+    }
+
     // A file the user sent in. It is held rather than acted on — see
     // `AttachmentStagingService` for why holding is the only model that works
     // here — and the caption, when there is one, is still a command, so this
@@ -186,6 +199,62 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.handleText(user.id, phoneNumber, message);
+  }
+
+  /* ------------------------------ voice notes ----------------------------- */
+
+  /**
+   * Turns a voice note into the words the user said.
+   *
+   * @returns the transcript to handle as though typed, or null when this
+   *   message has been fully answered — a provider that cannot transcribe, a
+   *   recording with no words in it, a download that failed. Each is a
+   *   different disappointment and gets its own sentence; silence would be the
+   *   old behaviour, where a voice note simply became "I'm not sure what you
+   *   meant".
+   */
+  private async handleVoiceNote(
+    userId: string,
+    phoneNumber: string,
+    message: InboundWhatsAppMessage,
+  ): Promise<string | null> {
+    const mediaId = message.media?.id;
+    if (!mediaId) return null;
+
+    let transcript: string;
+    try {
+      transcript = await this.transcription.transcribe(userId, mediaId);
+    } catch (err) {
+      const error = AppError.from(err);
+
+      await this.inbox.recordResolution(userId, message.id, 'voice_note', 'voice', error.code);
+      await this.outbound.reply({
+        userId,
+        phoneNumber,
+        payload: buildText(userFacingFailure(error)),
+        kind: 'error',
+        lastInboundAt: message.timestamp,
+      });
+
+      this.logger.warn(
+        { event: 'command.transcription_failed', code: error.code, err: error },
+        'Could not transcribe a voice note',
+      );
+      return null;
+    }
+
+    // Echoed before it is acted on. A mis-transcription is the failure mode
+    // here, and it has to be visible in the same exchange — otherwise the user
+    // sees only the consequence and cannot tell what we thought they said.
+    await this.outbound.reply({
+      userId,
+      phoneNumber,
+      payload: buildText(`I heard: _${transcript}_`),
+      kind: 'command_response',
+      lastInboundAt: message.timestamp,
+    });
+
+    return transcript;
   }
 
   /* -------------------------------- files -------------------------------- */
@@ -1144,6 +1213,17 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
 }
 
 const GENERIC_FAILURE = "Something went wrong and I couldn't do that. Please try again.";
+
+/**
+ * Whether this is a voice note rather than a music file someone forwarded.
+ *
+ * Meta marks the difference with `voice: true`, and it matters: a voice note is
+ * the user speaking to us, and an audio file is something they want attached to
+ * an email.
+ */
+function isVoiceNote(message: InboundWhatsAppMessage): boolean {
+  return message.type === 'audio' && message.media?.voice === true;
+}
 
 /** Verbs that mean the user is finished with a message, so a snooze on it is stale. */
 const DEALT_WITH_VERBS = new Set(['archive', 'delete', 'spam', 'reply']);

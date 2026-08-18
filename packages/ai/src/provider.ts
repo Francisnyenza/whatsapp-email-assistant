@@ -55,6 +55,21 @@ export interface AiProvider {
    * round trip and a log line to discover it.
    */
   speak?(request: SpeechRequest): Promise<SpeechResponse>;
+
+  /**
+   * Speech to text.
+   *
+   * Optional for the same reason the two above are, and absent on the same two
+   * providers: Anthropic publishes no transcription API, and Gemini's is a
+   * multimodal completion rather than an endpoint that takes an audio file —
+   * different enough that pretending otherwise would put a shim in the port,
+   * where the honest place for it is a provider of its own.
+   *
+   * The audio arrives as bytes with its own content type, because what a phone
+   * records is not something the caller gets to choose. WhatsApp voice notes are
+   * Ogg-Opus.
+   */
+  transcribe?(request: TranscriptionRequest): Promise<TranscriptionResponse>;
 }
 
 /**
@@ -87,6 +102,18 @@ export function canSpeak(provider: AiProvider | null | undefined): provider is S
   return typeof provider?.speak === 'function';
 }
 
+/** A provider that actually transcribes. The same narrowing, in one named place. */
+export type TranscriptionProvider = AiProvider & {
+  transcribe: NonNullable<AiProvider['transcribe']>;
+};
+
+/** Whether this provider can transcribe. */
+export function canTranscribe(
+  provider: AiProvider | null | undefined,
+): provider is TranscriptionProvider {
+  return typeof provider?.transcribe === 'function';
+}
+
 export interface EmbeddingRequest {
   text: string;
   signal?: AbortSignal;
@@ -103,6 +130,26 @@ export interface SpeechRequest {
   /** Provider-specific voice id. Absent means the provider's default. */
   voice?: string;
   signal?: AbortSignal;
+}
+
+export interface TranscriptionRequest {
+  audio: Buffer;
+  /** What the bytes are, carried rather than assumed — a phone chooses this. */
+  mimeType: string;
+  /**
+   * A hint at the language, when we have one. Absent means let the model
+   * detect it: a user who speaks two languages is common, and forcing the
+   * wrong one produces confident nonsense rather than an error.
+   */
+  language?: string;
+  signal?: AbortSignal;
+}
+
+export interface TranscriptionResponse {
+  text: string;
+  /** What the model detected, when it says. */
+  language?: string;
+  usage: AiUsage;
 }
 
 export interface SpeechResponse {

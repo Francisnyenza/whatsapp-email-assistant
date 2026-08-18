@@ -20,6 +20,7 @@ import { ReminderRepository } from '../src/repositories/reminder.repository.js';
 import { UndoService } from '../src/services/undo.service.js';
 import { MailboxPickerService } from '../src/services/mailbox-picker.service.js';
 import { RecipientResolverService } from '../src/services/recipient-resolver.service.js';
+import { TranscriptionService } from '../src/services/transcription.service.js';
 import { ContactRepository } from '../src/repositories/contact.repository.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
 import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
@@ -74,6 +75,7 @@ describeIfDb('command loop (real database)', () => {
     name: string;
     complete: (r: unknown) => Promise<unknown>;
     speak?: (r: unknown) => Promise<unknown>;
+    transcribe?: (r: unknown) => Promise<unknown>;
   } | null = null;
 
   /** Every audio blob staged with Meta, in order. */
@@ -139,6 +141,8 @@ describeIfDb('command loop (real database)', () => {
       // the webhook carries none. A stub that invented a size would let a file
       // past the budget check that production would refuse.
       describeMedia: vi.fn(async () => mediaMetadata),
+      // The recording itself. Meta holds it; we fetch it to transcribe.
+      fetchMedia: vi.fn(async () => Buffer.from('OggS-voice-note')),
       acknowledgeRead: vi.fn(),
     };
 
@@ -318,6 +322,12 @@ describeIfDb('command loop (real database)', () => {
       new UndoService(inbox, mailboxActions, labels, snoozeService, logger as never),
       mailboxPicker,
       new RecipientResolverService(contactRepo),
+      new TranscriptionService(
+        ai as never,
+        outbound as never,
+        { recordUsage: vi.fn(async () => undefined) } as never,
+        logger as never,
+      ),
       new AttachmentStagingService(outbound as never, staged, logger as never),
       inbox,
       new AttachmentRepository(service as never),
@@ -1845,6 +1855,78 @@ describeIfDb('command loop (real database)', () => {
         tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
       );
       expect(draft!.toAddresses).toEqual(['sarah@elsewhere.example']);
+    });
+  });
+
+  describe('a voice note', () => {
+    // `JOB.TRANSCRIBE_AUDIO` has been in the shared constants since Phase 2 with
+    // no producer and no consumer, and a voice note fell through to the text
+    // handler with no text — becoming "I'm not sure what you meant".
+
+    // The provider is per-test here: one of these asserts what a deployment
+    // *without* one does, and a stub left standing from the previous test would
+    // make it pass for the wrong reason.
+    beforeEach(() => {
+      drafting = null;
+    });
+
+    const voiceNote = () => ({
+      type: 'audio',
+      text: undefined,
+      media: { id: 'media-voice-1', mimeType: 'audio/ogg', sha256: '', voice: true },
+    });
+
+    it('acts on the words the user said', async () => {
+      drafting = {
+        name: 'stub',
+        complete: async () => ({ text: '{}', usage: STUB_USAGE }),
+        transcribe: async () => ({ text: 'archive', usage: STUB_USAGE }),
+      };
+
+      await deliver({ context: { id: deliveries.sarah! }, ...voiceNote() } as never);
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'archive' } });
+    });
+
+    it('echoes what it heard, in the same exchange that acts on it', async () => {
+      // A mis-transcription is the failure mode. Without this the user sees
+      // only the consequence and cannot tell what we thought they said.
+      drafting = {
+        name: 'stub',
+        complete: async () => ({ text: '{}', usage: STUB_USAGE }),
+        transcribe: async () => ({ text: 'archive', usage: STUB_USAGE }),
+      };
+
+      await deliver({ context: { id: deliveries.sarah! }, ...voiceNote() } as never);
+
+      expect(sent.map((s) => s.payload.body ?? '').join(' ')).toContain('I heard');
+    });
+
+    it('says so when the deployment cannot transcribe, rather than going quiet', async () => {
+      // `drafting` is null: a deployment with no model provider at all.
+      await deliver({ context: { id: deliveries.sarah! }, ...voiceNote() } as never);
+
+      expect(mutations).toHaveLength(0);
+      expect(lastText().toLowerCase()).toContain('voice notes');
+    });
+
+    it('leaves an ordinary audio file to be attached instead', async () => {
+      // Meta marks the difference with `voice: true`. An audio file is
+      // something the user wants attached to an email, not speech to us.
+      drafting = {
+        name: 'stub',
+        complete: async () => ({ text: '{}', usage: STUB_USAGE }),
+        transcribe: async () => ({ text: 'archive', usage: STUB_USAGE }),
+      };
+
+      await deliver({
+        type: 'audio',
+        text: undefined,
+        media: { id: 'media-song', mimeType: 'audio/mpeg', sha256: '' },
+      } as never);
+
+      expect(mutations).toHaveLength(0);
+      expect(await stagedFiles()).toHaveLength(1);
     });
   });
 

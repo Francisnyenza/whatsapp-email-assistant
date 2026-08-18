@@ -15,6 +15,7 @@ import { SnoozeService } from './services/snooze.service.js';
 import { UndoService } from './services/undo.service.js';
 import { MailboxPickerService } from './services/mailbox-picker.service.js';
 import { RecipientResolverService } from './services/recipient-resolver.service.js';
+import { TranscriptionService } from './services/transcription.service.js';
 import { ComposeComposer } from './services/compose-composer.js';
 import { MediaProcessor } from './processors/media.processor.js';
 import { AttachmentRepository } from './repositories/attachment.repository.js';
@@ -57,6 +58,7 @@ import { AssistantService } from './services/assistant.service.js';
     UndoService,
     MailboxPickerService,
     RecipientResolverService,
+    TranscriptionService,
     ComposeComposer,
     MediaProcessor,
     AttachmentRepository,
