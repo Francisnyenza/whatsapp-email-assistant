@@ -200,10 +200,13 @@ jobs:
       # catches it.
       #
       # What neither tool checks is whether the metric *names* exist in the
-      # cluster's Prometheus. Nothing offline can, and the alerts here are
-      # deliberately written against kube-state-metrics for that reason: they
-      # need no instrumentation in this codebase, so the names are the standard
-      # ones rather than something this repository would have to keep in step.
+      # cluster's Prometheus. Nothing offline can, which is why most of the
+      # alerts are written against kube-state-metrics: standard names, no
+      # instrumentation in this codebase to keep in step. The exceptions are the
+      # queue and API groups, whose names this repository exports itself — and
+      # for those the exporters' unit tests assert each name as a literal
+      # string, so a rename that would silence an alert fails the test job
+      # instead.
       - name: Validate the alert expressions
         run: |
           curl -sSL "https://github.com/prometheus/prometheus/releases/download/v2.53.0/prometheus-2.53.0.linux-amd64.tar.gz" \

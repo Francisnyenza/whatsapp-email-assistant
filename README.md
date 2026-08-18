@@ -67,14 +67,14 @@ packages/
 infra/
   docker/     Local Postgres, Redis and MinIO
   k8s/        Deployments, Service, PDBs, HPA, migration Job,
-              KEDA autoscaler, Prometheus alerts
+              KEDA autoscaler, Prometheus scrape targets and alerts
   terraform/  RDS + pgvector, ElastiCache, KMS, S3, Secrets Manager
 ```
 
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 833 tests passing** (1 457 unit + 376 integration against real Postgres). See
+**1 863 tests passing** (1 491 unit + 372 integration against real Postgres). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 

@@ -6,12 +6,21 @@ import { OAuthModule } from './oauth/oauth.module.js';
 import { AccountsModule } from './accounts/accounts.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { HealthController } from './health/health.controller.js';
+import { MetricsController } from './health/metrics.controller.js';
+import { HttpMetrics } from './health/http-metrics.js';
+import { HttpMetricsMiddleware } from './health/http-metrics.middleware.js';
 import { PrismaService } from './common/prisma.service.js';
 
 @Module({
   imports: [ConfigModule, QueueModule, AuthModule, WebhooksModule, OAuthModule, AccountsModule],
-  controllers: [HealthController],
-  providers: [PrismaService],
+  controllers: [HealthController, MetricsController],
+  // `HttpMetricsMiddleware` is a provider here but is *not* wired with
+  // `configure(consumer)`. Nest registers module middleware during `init`,
+  // after every `app.use` in `bootstrap` has already been mounted — which would
+  // put the timer behind the body parser, and a request rejected for malformed
+  // JSON would never be measured. Those are exactly the 400s worth seeing on a
+  // public webhook. `main.ts` mounts it first instead.
+  providers: [PrismaService, HttpMetrics, HttpMetricsMiddleware],
   exports: [PrismaService],
 })
 export class AppModule {}

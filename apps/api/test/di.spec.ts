@@ -29,6 +29,8 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
       3,
     ],
     ['HealthController', 'health/health.controller.js', 'HealthController', 3],
+    ['MetricsController', 'health/metrics.controller.js', 'MetricsController', 1],
+    ['HttpMetricsMiddleware', 'health/http-metrics.middleware.js', 'HttpMetricsMiddleware', 1],
     ['QueueProducer', 'queue/queue.producer.js', 'QueueProducer', 1],
     ['TwoFactorService', 'auth/two-factor.service.js', 'TwoFactorService', 4],
     ['AuthController', 'auth/auth.controller.js', 'AuthController', 5],

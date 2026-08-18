@@ -45,3 +45,35 @@ spec:
       # A scrape that hangs holds a connection and delays the next one. Shorter
       # than the interval, always.
       scrapeTimeout: 10s
+---
+# How Prometheus finds the API's /metrics.
+#
+# Unlike the worker's, this scrapes the Service that already exists for
+# traffic — there is no second Service and no second port, because `/metrics`
+# is served from the same listener as `/health/live` and `/health/ready`.
+#
+# `clusterIP: None` is not wanted here either. A ServiceMonitor discovers the
+# Endpoints behind a Service, not its virtual address, so every replica is
+# scraped individually regardless of how the Service load-balances — which is
+# what the counters need: two replicas each serving half the traffic must be
+# summed, not sampled.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: wea-api
+  labels:
+    app.kubernetes.io/part-of: wea
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: wea-api
+  namespaceSelector:
+    matchNames: [wea]
+  endpoints:
+    - port: http
+      path: /metrics
+      # Matched to the worker's, so the two sides of a request — the API
+      # accepting a webhook and the worker draining the queue it filled — line
+      # up sample for sample on a dashboard.
+      interval: 15s
+      scrapeTimeout: 10s

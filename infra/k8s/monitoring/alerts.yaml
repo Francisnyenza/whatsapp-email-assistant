@@ -21,6 +21,12 @@ metadata:
 # health that Kubernetes cannot see — everything kube-state-metrics reports is
 # about pods, and a backlog is about work.
 #
+# The `wea.api` group reads the second: `wea_http_requests_total` and
+# `wea_http_request_duration_seconds`, served by the API's own `/metrics`. Until
+# those existed the only thing the alerts could see about the API was whether
+# any replica was running at all — so an API answering 500 to every Meta webhook
+# was, to this file, a healthy one.
+#
 # Still *not* here: a mailbox stuck in polling, a user's token budget exhausted,
 # the retention sweep failing quietly. Each is a condition the code knows and
 # logs with an `event` field, and none is exported yet. Writing alerts against
@@ -76,6 +82,89 @@ spec:
               Readiness checks Postgres and Redis. Ten minutes is well past a rollout, so
               this is a dependency the worker cannot reach — check the pod's
               health.database_unreachable / health.redis_unreachable log lines for which.
+
+    - name: wea.api
+      rules:
+        - alert: WeaApiErrorRate
+          # Fractions, not counts, so the threshold means the same thing at
+          # three in the morning as it does at peak. `sum` across replicas and
+          # routes: one route failing wholly is the same incident as every route
+          # failing a little, and both should page.
+          #
+          # `> 0` on the denominator is doing real work. Without it a window
+          # with no traffic divides by zero, and the resulting NaN neither fires
+          # nor resolves — the alert simply disappears, which reads on a
+          # dashboard as healthy.
+          expr: |
+            sum(rate(wea_http_requests_total{status=~"5.."}[5m]))
+              /
+            sum(rate(wea_http_requests_total[5m])) > 0.05
+            and
+            sum(rate(wea_http_requests_total[5m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'More than 5% of API requests are failing'
+            description: >-
+              Server errors, not client ones. The requests that matter most here are the
+              provider webhooks — Gmail and Graph retry a handful of times and then stop,
+              and a 5xx to Meta is mail that never reaches the queue.
+
+        - alert: WeaWebhookFailing
+          # Narrower and stricter than the rate above, because the webhook
+          # routes are the ones with a deadline: a provider gives up after a few
+          # attempts and the delivery is simply gone. One in fifty is enough.
+          expr: |
+            sum by (route) (rate(wea_http_requests_total{route=~"/webhooks/.*",status=~"5.."}[5m]))
+              /
+            sum by (route) (rate(wea_http_requests_total{route=~"/webhooks/.*"}[5m])) > 0.02
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'A provider webhook is returning errors'
+            description: >-
+              Gmail push and Graph subscriptions retry, but not indefinitely, and Meta reads
+              a 5xx as a failed delivery. Sustained errors here are inbound mail and inbound
+              WhatsApp messages that are lost rather than delayed.
+
+        - alert: WeaApiLatency
+          # The 95th percentile rather than the mean: a mean stays comfortable
+          # while a quarter of requests time out. Health probes are excluded —
+          # they are the majority of requests by count and they are always fast,
+          # so leaving them in would dilute the percentile until it could not
+          # move.
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum by (le) (rate(wea_http_request_duration_seconds_bucket{route!~"/health/.*"}[5m]))
+            ) > 2
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'API p95 latency is above two seconds'
+            description: >-
+              Ten minutes of slow responses. The usual cause is a provider or the database
+              rather than the API itself; check whether OAuth callbacks are waiting on
+              Google, since those hold a request open for their whole duration.
+
+        - alert: WeaApiMetricsMissing
+          # The same alert the worker has, for the same reason: every rule in
+          # this group goes quiet if the scrape stops, and silence from a
+          # monitoring system is indistinguishable from good news.
+          expr: |
+            absent(wea_api_up)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'No API replica is reporting metrics'
+            description: >-
+              The API alerts above cannot fire while this is true. Either no API pod is
+              running, or the scrape is failing — check the ServiceMonitor and the pod's
+              /metrics endpoint.
 
     - name: wea.queues
       rules:

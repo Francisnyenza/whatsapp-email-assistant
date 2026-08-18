@@ -8,7 +8,7 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 833 tests** (1 457 unit + 376 integration
+Everything below has tests that run and pass. **1 863 tests** (1 491 unit + 372 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
@@ -19,12 +19,12 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/whatsapp` | 219              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
 | `@wea/mail`     | 235              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                     |
 | `@wea/ai`       | 218              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic      |
-| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                                 |
-| `apps/worker`   | 439 + 315 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
+| `apps/api`      | 193 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health, metrics                                        |
+| `apps/worker`   | 439 + 311 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 457 unit tests
+pnpm -r test          # 1 491 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -116,14 +116,45 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   exact reading that would suppress a backlog alert during the outage causing the backlog.
   A non-finite sample is dropped rather than emitted, since one unparseable line fails the
   whole endpoint in Prometheus and takes every healthy series with it.
+- The API exports `wea_http_requests_total` and `wea_http_request_duration_seconds` on
+  `/metrics`, which is what makes an error rate and a p95 expressible at all — before it,
+  the only thing the alerts could see about the API was whether any replica was running,
+  so an API returning 500 to every Meta webhook read as healthy. Three decisions in it are
+  load-bearing and each is pinned by a test:
+  - **Route templates, never paths.** `/accounts/:id` is one series however many accounts
+    exist. Recording the URL would mint a series per account, forever, and a metrics
+    endpoint is a normal way to take down the Prometheus that scrapes it. Every path that
+    matched no route shares one `unmatched` label, so a scanner sweeping ten thousand URLs
+    creates one series rather than ten thousand; the method token, which is arbitrary text
+    off the request line, is folded the same way. Past a hard cap of 500 series the labels
+    are folded rather than the sample dropped — dropping would understate traffic during
+    exactly the incident that blew cardinality up.
+  - **A middleware, not a Nest interceptor.** An interceptor runs inside a matched handler
+    and never sees a 404, which would make the cheapest way to probe an API the one thing
+    the error-rate metric could not show. It is mounted first in `bootstrap`, ahead of the
+    body parser, so a request rejected for malformed JSON is measured too.
+  - **An abandoned request is a 499, not a 200.** Timing ends on the response's `close`
+    rather than its `finish`, so a request the client gave up on is recorded at all; and
+    since nothing overwrote `res.statusCode`, reporting it verbatim would file the requests
+    users abandoned as the successful ones — which are precisely the ones a latency alert
+    exists to find.
+
+  Served from the main port alongside `/health/live` and `/health/ready`: the same trust
+  boundary those two already sit behind, and one less listener to secure. That does mean
+  **an Ingress must not route `/metrics`** — route names and traffic volumes are cheap
+  reconnaissance. The scrape itself is excluded from its own counters, because at fifteen
+  seconds per replica it would be most of the traffic on a quiet API and the request-rate
+  panel would be the monitoring system watching itself.
+
 - The alert rules are validated twice, because the two tools answer different questions.
   kubeconform checks the `PrometheusRule` is shaped correctly; the PromQL inside it is just
   a string to a schema, and a malformed expression is accepted by the cluster and then
   silently never evaluates — so `promtool check rules` parses every expression as well.
   Both were confirmed to be load-bearing by breaking a rule on purpose and watching each
-  exit non-zero. Neither can check that the metric _names_ exist, which is why the alerts
-  are written against kube-state-metrics: standard names, no instrumentation in this
-  repository to keep in step.
+  exit non-zero. Neither can check that the metric _names_ exist. Most rules are therefore
+  written against kube-state-metrics, whose names are standard and need no instrumentation
+  here to keep in step; the `wea.queues` and `wea.api` groups are the exception, and each
+  metric name they use is asserted as a literal string by the exporter's own tests.
 - The worker scales on queue depth rather than CPU, via a KEDA `ScaledObject` validated in
   CI against the published CRD schema. Triggers cover only the three queues a person is
   waiting on — `commands`, `notify`, `send`. `ingest`, `ai` and `sync` are deliberately
@@ -261,11 +292,14 @@ so the list cannot quietly grow.
    insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
    subnet groups and security groups the module takes as inputs, and External Secrets wired
    from the Secrets Manager secret into the namespace.
-2. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
-   the backlog alerts. Still unexported and still only a log line: a mailbox stuck in
-   `polling`, a user's token budget exhausted, the retention sweep failing quietly — and
-   anything at all from the API, which has no `/metrics` yet, so its latency and error rate
-   are invisible.
+2. **More metrics than queue depth and request rate.** The worker exports
+   `wea_queue_depth` and the API now exports its request counters and latency histogram,
+   which between them cover the backlog, error-rate and p95 alerts. Still unexported and
+   still only a log line: a mailbox stuck in `polling`, a user's token budget exhausted,
+   the retention sweep failing quietly. Each is a condition the code already knows and
+   writes an `event` field for, so what is missing is the export rather than the detection.
+   The worker's own work is also unmeasured — job duration and failure rate per queue would
+   say _why_ a backlog is growing, where depth only says that it is.
 3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.

@@ -1,12 +1,14 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import type { Logger } from 'pino';
 import { AppModule } from './app.module.js';
 import { ConfigService } from './config/config.service.js';
 import { AllExceptionsFilter } from './common/all-exceptions.filter.js';
 import { jsonWithRawBody } from './common/raw-body.js';
+import { HttpMetricsMiddleware } from './health/http-metrics.middleware.js';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -20,6 +22,13 @@ async function bootstrap(): Promise<void> {
 
   const config = app.get(ConfigService);
   const logger = app.get<Logger>('LOGGER');
+
+  // First, and deliberately ahead of everything else. It measures on the way
+  // out rather than on the way in, so anything mounted after it is inside what
+  // it times — including the body parser, whose rejections are otherwise the
+  // one class of 4xx no metric can see.
+  const metrics = app.get(HttpMetricsMiddleware);
+  app.use((req: Request, res: Response, next: NextFunction) => metrics.use(req, res, next));
 
   app.use(jsonWithRawBody());
 
