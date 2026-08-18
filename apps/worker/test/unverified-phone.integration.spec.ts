@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { MessageRepository } from '../src/repositories/message.repository.js';
+import { ContactRepository } from '../src/repositories/contact.repository.js';
 
 /**
  * A number nobody proved is a number nobody sends to.
@@ -38,7 +39,7 @@ describeIfDb('delivering to an unverified number (real database)', () => {
     const service = Object.assign(prisma, {
       forUser: <T>(id: string, fn: (tx: never) => Promise<T>) => scopedTx(prisma, id, fn as never),
     });
-    messages = new MessageRepository(service as never);
+    messages = new MessageRepository(service as never, new ContactRepository(service as never));
 
     await prisma.user.create({
       data: {

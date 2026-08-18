@@ -8,7 +8,7 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 764 tests** (1 410 unit + 354 integration
+Everything below has tests that run and pass. **1 784 tests** (1 422 unit + 362 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
@@ -16,15 +16,15 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/shared`   | 45               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                              |
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
 | `@wea/db`       | 9 (integration)  | Prisma schema, thirteen migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
-| `@wea/whatsapp` | 204              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
+| `@wea/whatsapp` | 210              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
 | `@wea/mail`     | 230              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                     |
 | `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic      |
 | `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                                 |
-| `apps/worker`   | 422 + 293 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
+| `apps/worker`   | 428 + 301 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 410 unit tests
+pnpm -r test          # 1 422 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -235,7 +235,7 @@ entirely from WhatsApp" is the product claim and this is the honest scoreboard f
 | **Spam / not spam**                | ✅         | `this is spam`, `not spam`. Both adapters had implemented the move since Phase 7 — Gmail by label, Graph by folder — and nothing in a chat could ask for it. The rescue is matched before the filing, because "not spam" contains "spam" and the wrong order files a rescued message straight back into junk.                                                                                                                                                                                                                                                                                         |
 | **Undo**                           | ✅         | `undo` takes back the last archive, delete, star, read, spam filing, label or snooze, for ten minutes afterwards. One slot, not a stack — a deeper history invites walking backwards through changes the mailbox has since had synced over it from another device. The record is spent on read, because the inverse of the inverse is the original action. **A sent reply says so by name** rather than "nothing to undo", which reads as a bug and leaves the user unsure the mail went. _Undo send_ itself is not built: it would need a deliberate delay between queueing and sending.             |
 | **Multi-account send selection**   | ✅         | `email alice@acme.com from work saying …`, `which mailboxes do I have`. Matches a nickname, an address, or the domain — which is how people refer to a mailbox they never named. The confirmation now names the sending address in every case, because with two connected the user cannot otherwise tell which identity is about to speak for them. A hint matching nothing refuses and names the options; one matching two also refuses, since choosing would be a coin flip on the user's identity.                                                                                                 |
-| **Contacts**                       | ❌         | No address book, so compose has only literal addresses to work with.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| **Contacts**                       | ✅         | `email sarah saying …`. The address book is built from mail that actually arrived — no contacts scope, and a record of correspondence rather than of acquaintance, which is what "email sarah" means. `contacts.aliases` had been _read_ by the thread resolver since it was written and nothing ever wrote a row, so that rank matched an empty table for every real user. Resolution refuses rather than guesses: one match resolves, two list both, none says so. An address the user typed is passed through untouched.                                                                           |
 
 ---
 

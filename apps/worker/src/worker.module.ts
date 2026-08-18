@@ -14,6 +14,7 @@ import { LabelService } from './services/label.service.js';
 import { SnoozeService } from './services/snooze.service.js';
 import { UndoService } from './services/undo.service.js';
 import { MailboxPickerService } from './services/mailbox-picker.service.js';
+import { RecipientResolverService } from './services/recipient-resolver.service.js';
 import { ComposeComposer } from './services/compose-composer.js';
 import { MediaProcessor } from './processors/media.processor.js';
 import { AttachmentRepository } from './repositories/attachment.repository.js';
@@ -24,6 +25,7 @@ import { SendProcessor } from './processors/send.processor.js';
 import { IngestProcessor } from './processors/ingest.processor.js';
 import { NotifyProcessor } from './processors/notify.processor.js';
 import { MessageRepository } from './repositories/message.repository.js';
+import { ContactRepository } from './repositories/contact.repository.js';
 import { QueueProducer } from './queue/queue.producer.js';
 import { SyncScheduler } from './queue/sync.scheduler.js';
 import { CommandsProcessor } from './processors/commands.processor.js';
@@ -54,6 +56,7 @@ import { AssistantService } from './services/assistant.service.js';
     SnoozeService,
     UndoService,
     MailboxPickerService,
+    RecipientResolverService,
     ComposeComposer,
     MediaProcessor,
     AttachmentRepository,
@@ -61,6 +64,7 @@ import { AssistantService } from './services/assistant.service.js';
     StagedAttachmentRepository,
     ReminderRepository,
     MessageRepository,
+    ContactRepository,
     WatchRepository,
     RetentionRepository,
     AnalysisRepository,

@@ -42,6 +42,7 @@ import { LabelService } from '../services/label.service.js';
 import { SnoozeService } from '../services/snooze.service.js';
 import { UndoService, inverseOf } from '../services/undo.service.js';
 import { MailboxPickerService } from '../services/mailbox-picker.service.js';
+import { RecipientResolverService } from '../services/recipient-resolver.service.js';
 import {
   AttachmentStagingService,
   type StagingOutcome,
@@ -94,6 +95,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly snoozes: SnoozeService,
     private readonly undos: UndoService,
     private readonly mailboxes: MailboxPickerService,
+    private readonly recipients: RecipientResolverService,
     private readonly staging: AttachmentStagingService,
     private readonly inbox: InboxRepository,
     private readonly attachments: AttachmentRepository,
@@ -632,7 +634,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     message: InboundWhatsAppMessage,
   ): Promise<void> {
     // Step 1 — intent, from the user's channel only.
-    const parsed = parseCommand(message.text ?? '');
+    let parsed = parseCommand(message.text ?? '');
     const namedTarget = namedTargetOf(parsed.intent);
 
     // A read over the whole mailbox — "search invoices", "what's unread" —
@@ -678,6 +680,17 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       try {
         const chosen = await this.mailboxes.pick(userId, parsed.intent.from);
         sendFrom = { accountId: chosen.id, address: chosen.emailAddress };
+
+        // "email sarah saying …" — a name becomes an address here, before the
+        // confirmation, so what the user approves is the address itself rather
+        // than the name they typed. An address is passed through untouched.
+        parsed = {
+          ...parsed,
+          intent: {
+            ...parsed.intent,
+            to: await this.recipients.resolve(userId, parsed.intent.to),
+          },
+        };
       } catch (err) {
         // A hint that matches nothing, or two things. The refusal names the
         // options, so it is a typo the user fixes in one message.

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { NormalizedMessage } from '@wea/shared';
 import { PrismaService } from '../common/prisma.service.js';
+import { ContactRepository } from './contact.repository.js';
 
 /**
  * Persisting inbound mail.
@@ -35,7 +36,10 @@ export interface SealedBody {
 
 @Injectable()
 export class MessageRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly contacts: ContactRepository,
+  ) {}
 
   /**
    * Stores a message, or returns the existing one.
@@ -157,6 +161,21 @@ export class MessageRepository {
           })),
           skipDuplicates: true,
         });
+      }
+
+      // The address book, built from mail that actually arrived. Inside this
+      // transaction on purpose: a contact recorded for a message that failed to
+      // store would name someone whose mail the user cannot find.
+      if (created.count > 0) {
+        await this.contacts.recordInbound(
+          tx as never,
+          userId,
+          {
+            address: message.from.address,
+            ...(message.from.name ? { name: message.from.name } : {}),
+          },
+          message.receivedAt,
+        );
       }
 
       return {

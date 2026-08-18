@@ -668,3 +668,39 @@ describe('choosing which mailbox an email comes from', () => {
     }
   });
 });
+
+describe('composing to a name rather than an address', () => {
+  it('takes a bare name as the recipient', () => {
+    expect(intentOf('email sarah saying running ten minutes late')).toEqual({
+      intent: 'compose',
+      to: 'sarah',
+      body: 'running ten minutes late',
+    });
+  });
+
+  it('takes a name with a subject', () => {
+    expect(intentOf('email sarah about Q3 saying the numbers are attached')).toEqual({
+      intent: 'compose',
+      to: 'sarah',
+      subject: 'Q3',
+      body: 'the numbers are attached',
+    });
+  });
+
+  it('takes a full name', () => {
+    expect(intentOf('email sarah chen saying hi')).toMatchObject({ to: 'sarah chen' });
+  });
+
+  it('leaves an address alone, so nothing tries to "correct" it', () => {
+    expect(intentOf('email alice@acme.com saying hi')).toMatchObject({ to: 'alice@acme.com' });
+  });
+
+  it('does not swallow the attachment request', () => {
+    // "send me the attachment" starts with a verb compose also claims.
+    expect(intentOf('send me the attachments')).toEqual({ intent: 'get_attachment' });
+  });
+
+  it('does not swallow a reply', () => {
+    expect(intentOf('reply saying on it')).toMatchObject({ intent: 'reply' });
+  });
+});

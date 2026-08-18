@@ -632,6 +632,7 @@ const HELP_TEXT = [
   '*Sending something new*',
   '• _email alice@acme.com about Q3 saying the numbers are attached_',
   '• _email alice@acme.com saying running ten minutes late_',
+  '• _email sarah saying …_ — a name works once I have seen their mail',
   '• _email alice@acme.com cc bob@acme.com saying …_',
   '• _email alice@acme.com bcc bob@acme.com saying …_ — I show you the Bcc, nobody else sees it',
   '• _email alice@acme.com from work saying …_ — pick which mailbox it comes from',

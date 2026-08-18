@@ -19,6 +19,8 @@ import { SnoozeService } from '../src/services/snooze.service.js';
 import { ReminderRepository } from '../src/repositories/reminder.repository.js';
 import { UndoService } from '../src/services/undo.service.js';
 import { MailboxPickerService } from '../src/services/mailbox-picker.service.js';
+import { RecipientResolverService } from '../src/services/recipient-resolver.service.js';
+import { ContactRepository } from '../src/repositories/contact.repository.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
 import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
 import { MessageRepository } from '../src/repositories/message.repository.js';
@@ -235,6 +237,8 @@ describeIfDb('command loop (real database)', () => {
       isOverBudget: async () => false,
     };
 
+    const contactRepo = new ContactRepository(service as never);
+
     const assistant = new AssistantService(
       ai as never,
       accounts as never,
@@ -242,7 +246,7 @@ describeIfDb('command loop (real database)', () => {
       // would assert that the service calls a method, not that the method finds
       // the analysis.
       new AnalysisRepository(service as never),
-      new MessageRepository(service as never),
+      new MessageRepository(service as never, contactRepo),
       logger as never,
     );
 
@@ -313,6 +317,7 @@ describeIfDb('command loop (real database)', () => {
       snoozeService,
       new UndoService(inbox, mailboxActions, labels, snoozeService, logger as never),
       mailboxPicker,
+      new RecipientResolverService(contactRepo),
       new AttachmentStagingService(outbound as never, staged, logger as never),
       inbox,
       new AttachmentRepository(service as never),
@@ -1774,6 +1779,72 @@ describeIfDb('command loop (real database)', () => {
 
       expect(lastText()).toContain('me@personal.example');
       expect(lastText()).toContain('Personal');
+    });
+  });
+
+  describe('emailing someone by name', () => {
+    // `contacts.aliases` has been *read* by the thread resolver since it was
+    // written, and nothing ever wrote a row — so that lookup ran against an
+    // empty table for every real user. Ingest fills it now, and compose uses it.
+
+    const addContact = (emailAddress: string, displayName: string | null) =>
+      withTenant(userId, (tx) =>
+        tx.contact.create({ data: { userId, emailAddress, displayName } }),
+      );
+
+    beforeEach(async () => {
+      await withTenant(userId, (tx) => tx.contact.deleteMany({ where: { userId } }));
+    });
+
+    it('resolves a name to the one address it can only have meant', async () => {
+      await addContact('sarah.chen@acme.com', 'Sarah Chen');
+
+      await deliver({ text: 'email sarah saying running ten minutes late' });
+      await composeTap();
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.toAddresses).toEqual(['sarah.chen@acme.com']);
+    });
+
+    it('shows the resolved address on the confirmation, before the tap', async () => {
+      // The whole safety story: the user approves the address, not the name.
+      await addContact('sarah.chen@acme.com', 'Sarah Chen');
+
+      await deliver({ text: 'email sarah saying hi' });
+
+      expect(lastText()).toContain('sarah.chen@acme.com');
+    });
+
+    it('refuses when two people answer to the name, and sends nothing', async () => {
+      await addContact('sarah.chen@acme.com', 'Sarah Chen');
+      await addContact('sarah.patel@partner.com', 'Sarah Patel');
+
+      await deliver({ text: 'email sarah saying hi' });
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText()).toContain('sarah.patel@partner.com');
+    });
+
+    it('refuses a name it has never seen, rather than a near miss', async () => {
+      await deliver({ text: 'email sarah saying hi' });
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText()).toContain("don't have an address");
+    });
+
+    it('leaves an address the user typed exactly as they typed it', async () => {
+      // Even when a contact with a similar name exists, nothing "corrects" it.
+      await addContact('sarah.chen@acme.com', 'Sarah Chen');
+
+      await deliver({ text: 'email sarah@elsewhere.example saying hi' });
+      await composeTap();
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.toAddresses).toEqual(['sarah@elsewhere.example']);
     });
   });
 

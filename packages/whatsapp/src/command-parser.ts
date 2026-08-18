@@ -230,6 +230,27 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
       subject: m[2]!.trim(),
     }),
   },
+  // The same forms with a *name* instead of an address. Matched after every
+  // address form, so anything containing an @ never reaches here, and the name
+  // is resolved against the user's own contacts downstream — which refuses
+  // rather than guessing, because a wrong match sends private mail to a
+  // stranger.
+  {
+    // "email sarah about Q3 saying the numbers are attached"
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to)\s+(?:to\s+)?([a-z][\w.' -]{1,39}?)\s+about\s+(.{1,200}?)\s+(?:saying|that\s+says|:)\s+(.+)$/is,
+    build: (m) => ({
+      intent: 'compose',
+      to: m[1]!.trim(),
+      subject: m[2]!.trim(),
+      body: m[3]!.trim(),
+    }),
+  },
+  {
+    // "email sarah saying running ten minutes late"
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to)\s+(?:to\s+)?([a-z][\w.' -]{1,39}?)\s+(?:saying|that\s+says|:)\s+(.+)$/is,
+    build: (m) => ({ intent: 'compose', to: m[1]!.trim(), body: m[2]!.trim() }),
+  },
+
   {
     // "email alice@x.com" — recipient only.
     re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+)$/i,

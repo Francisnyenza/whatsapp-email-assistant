@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { randomUUID } from 'node:crypto';
 import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { MessageRepository } from '../src/repositories/message.repository.js';
+import { ContactRepository } from '../src/repositories/contact.repository.js';
 import { IngestProcessor } from '../src/processors/ingest.processor.js';
 import { NotifyProcessor } from '../src/processors/notify.processor.js';
 import { MAX_STORED_BODY_BYTES } from '../src/processors/ingest.processor.js';
@@ -82,7 +83,7 @@ describeIfDb('ingest pipeline (real database)', () => {
       forUser: <T>(id: string, fn: (tx: never) => Promise<T>) => scopedTx(prisma, id, fn as never),
     });
 
-    messages = new MessageRepository(service as never);
+    messages = new MessageRepository(service as never, new ContactRepository(service as never));
     enqueued = [];
     sent = [];
     providerMessages = new Map();
@@ -257,6 +258,12 @@ describeIfDb('ingest pipeline (real database)', () => {
   }
 
   describe('persistence', () => {
+    beforeEach(async () => {
+      // Contacts accumulate across ingests by design, so the counts below only
+      // mean anything from a clean address book.
+      await withTenant((tx) => tx.contact.deleteMany({ where: { userId } }));
+    });
+
     it('stores a new message with its thread', async () => {
       const incoming = stageIncoming();
       await runIngest();
@@ -277,6 +284,53 @@ describeIfDb('ingest pipeline (real database)', () => {
       expect((stored as any).subject).toBe('Q3 sales report');
       expect((stored as any).fromAddress).toBe('sarah.chen@acme.com');
       expect((stored as any).thread.providerThreadId).toBe(incoming.providerThreadId);
+    });
+
+    it('records the sender in the address book', async () => {
+      // `contacts.aliases` has been read by the thread resolver since it was
+      // written, and nothing ever wrote a row — so "reply to sarah" matched
+      // against an empty table for every real user.
+      stageIncoming();
+      await runIngest();
+
+      const contact = await withTenant((tx) =>
+        tx.contact.findFirst({ where: { emailAddress: 'sarah.chen@acme.com' } }),
+      );
+
+      expect(contact).not.toBeNull();
+      expect((contact as any).displayName).toBe('Sarah Chen');
+      expect((contact as any).messagesReceived).toBe(1);
+    });
+
+    it('counts a second message from the same sender rather than duplicating them', async () => {
+      stageIncoming();
+      await runIngest();
+      stageIncoming({ providerMessageId: `gm-second-${randomUUID().slice(0, 8)}` });
+      await runIngest();
+
+      const contacts = await withTenant((tx) =>
+        tx.contact.findMany({ where: { emailAddress: 'sarah.chen@acme.com' } }),
+      );
+
+      expect(contacts).toHaveLength(1);
+      expect((contacts[0] as any).messagesReceived).toBe(2);
+    });
+
+    it('does not let a later message rename someone', async () => {
+      // Senders vary how they set their display name between messages. The name
+      // the user knows them by must not be replaced by a single initial.
+      stageIncoming();
+      await runIngest();
+      stageIncoming({
+        providerMessageId: `gm-third-${randomUUID().slice(0, 8)}`,
+        from: { address: 'sarah.chen@acme.com', name: 'S.' },
+      });
+      await runIngest();
+
+      const contact = await withTenant((tx) =>
+        tx.contact.findFirst({ where: { emailAddress: 'sarah.chen@acme.com' } }),
+      );
+      expect((contact as any).displayName).toBe('Sarah Chen');
     });
 
     it('does not store the same message twice, however often it is redelivered', async () => {
