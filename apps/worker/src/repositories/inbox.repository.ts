@@ -268,6 +268,51 @@ export class InboxRepository {
     });
   }
 
+  /**
+   * Remembers the last thing the user did that can be taken back.
+   *
+   * A separate slot from `pendingAction`, which holds a *question* awaiting an
+   * answer. This holds an answer already given, so that "undo" reverses
+   * something specific rather than guessing — and so a pending send confirmation
+   * and a completed archive are not competing for one column, where the loser
+   * would be silently unavailable.
+   */
+  async setLastAction(userId: string, action: Record<string, unknown>): Promise<void> {
+    await this.prisma.forUser(userId, async (tx) => {
+      await tx.conversationState.updateMany({
+        where: { userId },
+        data: { lastAction: action as Prisma.InputJsonValue, lastActionAt: new Date() },
+      });
+    });
+  }
+
+  /**
+   * Reads and clears the last action.
+   *
+   * Clearing on read, exactly as a confirmation is spent: undoing twice would
+   * apply the inverse of the inverse, which is the original action — so "undo,
+   * undo" would archive the message it had just brought back.
+   */
+  async takeLastAction(userId: string): Promise<Record<string, unknown> | null> {
+    return this.prisma.forUser(userId, async (tx) => {
+      const state = await tx.conversationState.findUnique({
+        where: { userId },
+        select: { lastAction: true },
+      });
+
+      if (!state?.lastAction) return null;
+
+      await tx.conversationState.updateMany({
+        where: { userId },
+        // `Prisma.DbNull` writes SQL NULL; a bare `null` on a Json column writes
+        // the JSON value `null`, which would still read as something to undo.
+        data: { lastAction: Prisma.DbNull, lastActionAt: null },
+      });
+
+      return state.lastAction as Record<string, unknown>;
+    });
+  }
+
   /** Clears the active thread — on `cancel`, or when the user changes topic. */
   async clearActiveThread(userId: string): Promise<void> {
     await this.prisma.forUser(userId, async (tx) => {

@@ -51,7 +51,7 @@ export class MailboxActionService {
       throw new AppError('NOT_FOUND', 'That email is no longer available', { retryable: false });
     }
 
-    if (message.deletedAt && operation.kind !== 'delete') {
+    if (message.deletedAt && operation.kind !== 'delete' && operation.kind !== 'restore') {
       // Acting on something already in the trash would appear to work and then
       // not be there. Better to say so.
       throw new AppError('CONFLICT', 'That email has already been deleted', { retryable: false });
@@ -107,6 +107,8 @@ function localEffectOf(operation: MailOperation): Record<string, unknown> | null
       return { isArchived: false };
     case 'delete':
       return { deletedAt: new Date() };
+    case 'restore':
+      return { deletedAt: null, isArchived: false };
     case 'markRead':
       return { isUnread: !operation.read };
     case 'star':

@@ -14,6 +14,7 @@ import {
   type CommandIntent,
   type WhatsAppOutboundPayload,
   type DeliverAttachmentJob,
+  type MailOperation,
 } from '@wea/shared';
 import { parseRecipientList } from '@wea/mail';
 import {
@@ -39,6 +40,7 @@ import { MailboxQueryService } from '../services/mailbox-query.service.js';
 import { AssistantService } from '../services/assistant.service.js';
 import { LabelService } from '../services/label.service.js';
 import { SnoozeService } from '../services/snooze.service.js';
+import { UndoService, inverseOf } from '../services/undo.service.js';
 import {
   AttachmentStagingService,
   type StagingOutcome,
@@ -89,6 +91,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly assistant: AssistantService,
     private readonly labels: LabelService,
     private readonly snoozes: SnoozeService,
+    private readonly undos: UndoService,
     private readonly staging: AttachmentStagingService,
     private readonly inbox: InboxRepository,
     private readonly attachments: AttachmentRepository,
@@ -497,6 +500,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           async () => {
             await this.mailbox.apply(userId, emailMessageId, effect.operation);
             await this.dealtWith(userId, emailMessageId, effect.operation.kind);
+            await this.remember(userId, emailMessageId, effect.operation.kind, effect.operation);
           },
           () => buildText(effect.confirmation),
         );
@@ -506,6 +510,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           async () => {
             await this.replies.composeReply({ userId, emailMessageId, bodyText: effect.body });
             await this.dealtWith(userId, emailMessageId, 'reply');
+            await this.undos.record(userId, { emailMessageId, verb: 'reply', irreversible: true });
           },
           () => buildText(`Sending: “${effect.body}”`),
         );
@@ -515,6 +520,12 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
 
       case 'confirm_send':
         return this.carryOutSend(userId, emailMessageId);
+
+      case 'undo':
+        return this.attempt(
+          () => this.undos.undo(userId),
+          (message) => buildText(message),
+        );
 
       case 'await_reply_text':
         return { payload: buildText('What would you like to say? Just type it here.') };
@@ -796,6 +807,15 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       return { payload: buildText(GENERIC_FAILURE), failed: 'compose reached carryOutPlan' };
     }
 
+    // Before the target check, because the email an undo acts on is the one the
+    // *last* action named — read from the record rather than resolved now.
+    if (effect.kind === 'undo') {
+      return this.attempt(
+        () => this.undos.undo(userId),
+        (message) => buildText(message),
+      );
+    }
+
     // Handled before the target check, because what it acts on is
     // the set of files waiting for the next email, which belongs to the
     // conversation rather than to any message in it.
@@ -826,6 +846,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           async () => {
             await this.mailbox.apply(userId, emailMessageId, effect.operation);
             await this.dealtWith(userId, emailMessageId, effect.operation.kind);
+            await this.remember(userId, emailMessageId, effect.operation.kind, effect.operation);
           },
           () => intended,
         );
@@ -840,6 +861,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
               ...(effect.replyAll ? { replyAll: true } : {}),
             });
             await this.dealtWith(userId, emailMessageId, 'reply');
+            await this.undos.record(userId, { emailMessageId, verb: 'reply', irreversible: true });
           },
           () => intended,
         );
@@ -881,10 +903,26 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       case 'label':
         return this.attempt(
           () =>
-            this.labels.apply(userId, emailMessageId, {
-              ...(effect.add ? { add: [effect.add] } : {}),
-              ...(effect.remove ? { remove: [effect.remove] } : {}),
-            }),
+            this.labels
+              .apply(userId, emailMessageId, {
+                ...(effect.add ? { add: [effect.add] } : {}),
+                ...(effect.remove ? { remove: [effect.remove] } : {}),
+              })
+              .then(async (result) => {
+                // Undone by name rather than by id: the ids came from a
+                // directory lookup, and reversing them means resolving against
+                // the same one. The names come back as the mailbox spells them,
+                // which is what makes the reversal land on the same label.
+                await this.undos.record(userId, {
+                  emailMessageId,
+                  verb: 'label',
+                  labels: {
+                    ...(result.added.length ? { remove: result.added } : {}),
+                    ...(result.removed.length ? { add: result.removed } : {}),
+                  },
+                });
+                return result;
+              }),
           ({ added, removed }) =>
             buildText(
               [
@@ -901,7 +939,11 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
       // only version a mistake is visible in.
       case 'snooze':
         return this.attempt(
-          () => this.snoozes.snooze(userId, emailMessageId, effect.until),
+          async () => {
+            const result = await this.snoozes.snooze(userId, emailMessageId, effect.until);
+            await this.undos.record(userId, { emailMessageId, verb: 'snooze', snooze: true });
+            return result;
+          },
           ({ description }) =>
             buildText(`Put down until *${description}*. I'll bring it back then.`),
         );
@@ -990,12 +1032,35 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
   private async dealtWith(userId: string, emailMessageId: string, verb: string): Promise<void> {
     if (!DEALT_WITH_VERBS.has(verb)) return;
 
-    await this.snoozes.cancelFor(userId, emailMessageId).catch((err) => {
+    await this.snoozes.cancelFor(userId, emailMessageId).catch((err: unknown) => {
       this.logger.warn(
         { event: 'command.snooze_cancel_failed', emailMessageId, err },
         'Could not cancel the snooze on a message the user dealt with',
       );
     });
+  }
+
+  /**
+   * Records what was just done, so the next "undo" has something to reverse.
+   *
+   * After the action, never before: an undo offered for something that did not
+   * happen would reverse a state the mailbox is not in.
+   *
+   * An operation with no inverse — a sent reply, a permanent delete — records
+   * nothing, and that is what lets the service say "I can't unsend an email"
+   * instead of the far worse "nothing to undo", which reads as a bug and leaves
+   * the user wondering whether the mail actually went.
+   */
+  private async remember(
+    userId: string,
+    emailMessageId: string,
+    verb: string,
+    operation: MailOperation,
+  ): Promise<void> {
+    const inverse = inverseOf(operation);
+    if (!inverse) return;
+
+    await this.undos.record(userId, { emailMessageId, verb, operation: inverse });
   }
 
   private async attempt<T>(

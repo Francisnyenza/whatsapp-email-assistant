@@ -27,6 +27,13 @@ export type TapEffect =
   | { kind: 'confirm_send' }
   /** Wait for the user to type their reply. */
   | { kind: 'await_reply_text' }
+  /**
+   * Take back the last action.
+   *
+   * Carries no target, deliberately: what an undo reverses is whatever was last
+   * done, not whatever email the button happened to be attached to.
+   */
+  | { kind: 'undo' }
   /** Nothing happens; say the given line. */
   | { kind: 'acknowledge'; message: string }
   /** A verb whose feature is not built. */
@@ -120,10 +127,14 @@ export function interpretTap(payload: ActionPayload): TapEffect {
     case 'read_aloud':
       return { kind: 'acknowledge', message: 'Type _read it aloud_ and I’ll record it.' };
 
-    // --- not built yet --------------------------------------------------------
     case 'undo':
-      return { kind: 'unavailable', capability: 'undo things' };
+      // The button and the typed word do the same thing, and both read the same
+      // record. The target id on the payload is deliberately ignored: what an
+      // undo reverses is whatever the last action was, not whatever email the
+      // button happened to be attached to.
+      return { kind: 'undo' };
 
+    // --- not built yet --------------------------------------------------------
     case 'more':
       return { kind: 'unavailable', capability: 'show more' };
 

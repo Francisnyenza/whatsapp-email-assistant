@@ -93,11 +93,17 @@ describe('everything else', () => {
 
   it('names the missing capability rather than going quiet', () => {
     // A button that does nothing at all reads as broken.
-    for (const action of ['forward', 'undo', 'more'] as const) {
+    for (const action of ['forward', 'more'] as const) {
       const effect = interpretTap(tap(action));
       expect(effect.kind).toBe('unavailable');
       expect(effect).toMatchObject({ capability: expect.stringMatching(/\w/) });
     }
+  });
+
+  it('carries no target on an undo, because the last action already names one', () => {
+    // The button's target id is ignored on purpose: an undo reverses whatever
+    // was last done, not whatever email the button happened to be attached to.
+    expect(interpretTap(tap('undo'))).toEqual({ kind: 'undo' });
   });
 
   it('does not call a built capability unfinished just because it has no button', () => {

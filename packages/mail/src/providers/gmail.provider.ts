@@ -322,6 +322,12 @@ export class GmailProvider implements MailProvider {
           });
           return;
 
+        case 'restore':
+          // Gmail's own verb, and the only one that puts a trashed message back
+          // where it was rather than in the inbox.
+          await gmail.users.messages.untrash({ userId: 'me', id: providerMessageId });
+          return;
+
         case 'unarchive':
           // Symmetrical with archive: Gmail has no verb for either, and the
           // INBOX label is what the words mean.

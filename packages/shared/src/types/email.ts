@@ -129,6 +129,14 @@ export type MailOperation =
    */
   | { kind: 'unarchive' }
   | { kind: 'delete'; permanent: boolean }
+  /**
+   * Back out of the trash.
+   *
+   * The inverse of a non-permanent delete, and the reason undo can offer one at
+   * all. A permanent delete has no inverse, which is exactly why nothing
+   * reachable from a chat performs one.
+   */
+  | { kind: 'restore' }
   | { kind: 'markRead'; read: boolean }
   | { kind: 'star'; starred: boolean }
   | { kind: 'label'; add?: string[]; remove?: string[] }

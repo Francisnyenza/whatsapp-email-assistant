@@ -8,23 +8,23 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 723 tests** (1 382 unit + 341 integration
+Everything below has tests that run and pass. **1 745 tests** (1 396 unit + 349 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
-| Package         | Tests            | What it does                                                                                                                                       |
-| --------------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 45               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                            |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                       |
-| `@wea/db`       | 9 (integration)  | Prisma schema, twelve migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
-| `@wea/whatsapp` | 196              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                            |
-| `@wea/mail`     | 230              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                   |
-| `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic    |
-| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                               |
-| `apps/worker`   | 402 + 280 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics   |
-| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                 |
+| Package         | Tests            | What it does                                                                                                                                         |
+| --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@wea/shared`   | 45               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                              |
+| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
+| `@wea/db`       | 9 (integration)  | Prisma schema, thirteen migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
+| `@wea/whatsapp` | 198              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
+| `@wea/mail`     | 230              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                     |
+| `@wea/ai`       | 208              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic      |
+| `apps/api`      | 159 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health                                                 |
+| `apps/worker`   | 414 + 288 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
+| `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 382 unit tests
+pnpm -r test          # 1 396 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -233,7 +233,7 @@ entirely from WhatsApp" is the product claim and this is the honest scoreboard f
 | **Folders / labels**               | 🔨         | Labels work: `label this as Receipts`, `remove the Receipts label`, `what labels do I have`. A name is resolved against the mailbox's own list before anything is applied, because Gmail's `addLabelIds` takes ids and ignores names while Outlook's categories _are_ names — passing the user's words straight through would no-op against Gmail while reporting success. Adding an unknown name creates it; removing one refuses and says which labels exist. **Moving between folders is still not built** — for Outlook that is a different API from categories, and Gmail has no folders at all. |
 | **Snooze**                         | ✅         | `snooze until tomorrow`, `snooze for 2 hours`, `remind me about this on Monday`. The `reminders` table has existed since the first migration, with an index whose comment reads "drives the due-reminder sweep" — and there was no sweep, no producer and no repository. The time resolves in the user's own timezone and is said back as a date and a clock time, because "until Monday" is not something a misreading is visible in. A snooze is forgotten when the user replies, archives or deletes the message first.                                                                            |
 | **Spam / not spam**                | ✅         | `this is spam`, `not spam`. Both adapters had implemented the move since Phase 7 — Gmail by label, Graph by folder — and nothing in a chat could ask for it. The rescue is matched before the filing, because "not spam" contains "spam" and the wrong order files a rescued message straight back into junk.                                                                                                                                                                                                                                                                                         |
-| **Undo**                           | ❌         | Parsed as an intent, answers "not built".                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| **Undo**                           | ✅         | `undo` takes back the last archive, delete, star, read, spam filing, label or snooze, for ten minutes afterwards. One slot, not a stack — a deeper history invites walking backwards through changes the mailbox has since had synced over it from another device. The record is spent on read, because the inverse of the inverse is the original action. **A sent reply says so by name** rather than "nothing to undo", which reads as a bug and leaves the user unsure the mail went. _Undo send_ itself is not built: it would need a deliberate delay between queueing and sending.             |
 | **Multi-account send selection**   | ❌         | Several mailboxes connect and the primary is used; a user cannot choose which to send from.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | **Contacts**                       | ❌         | No address book, so compose has only literal addresses to work with.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
@@ -255,21 +255,25 @@ discover_ which tenant a delivery belongs to — but the other three are a gap r
 design, and are pinned by an equality assertion in `tenant-isolation.integration.spec.ts`
 so the list cannot quietly grow.
 
-1. **Folders.** Labels and snooze are done. Moving between folders is a different
+1. **Undo send.** `undo` covers every mailbox action; a sent message is the one thing it
+   refuses, and honestly. Making it reversible means holding a queued draft for a stated
+   number of seconds before the send processor may claim it — a deliberate delay, which is
+   how every mail client that offers this does it.
+2. **Folders.** Labels and snooze are done. Moving between folders is a different
    operation from labelling — Graph moves a message, Gmail has no folders at all — so it
    needs a decision about what the verb means on a mailbox that does not have them.
-2. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
+3. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
    the secret; it deliberately does not create an EKS cluster, because every organisation
    with Kubernetes already has an opinion about how clusters are made and a module that
    insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
    subnet groups and security groups the module takes as inputs, and External Secrets wired
    from the Secrets Manager secret into the namespace.
-3. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
+4. **More metrics than queue depth.** The worker exports `wea_queue_depth`, which covers
    the backlog alerts. Still unexported and still only a log line: a mailbox stuck in
    `polling`, a user's token budget exhausted, the retention sweep failing quietly — and
    anything at all from the API, which has no `/metrics` yet, so its latency and error rate
    are invisible.
-4. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+5. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone.
 

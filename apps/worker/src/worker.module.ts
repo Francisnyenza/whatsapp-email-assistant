@@ -12,6 +12,7 @@ import { ForwardComposer } from './services/forward-composer.js';
 import { AttachmentStagingService } from './services/attachment-staging.service.js';
 import { LabelService } from './services/label.service.js';
 import { SnoozeService } from './services/snooze.service.js';
+import { UndoService } from './services/undo.service.js';
 import { ComposeComposer } from './services/compose-composer.js';
 import { MediaProcessor } from './processors/media.processor.js';
 import { AttachmentRepository } from './repositories/attachment.repository.js';
@@ -50,6 +51,7 @@ import { AssistantService } from './services/assistant.service.js';
     AttachmentStagingService,
     LabelService,
     SnoozeService,
+    UndoService,
     ComposeComposer,
     MediaProcessor,
     AttachmentRepository,

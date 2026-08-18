@@ -17,6 +17,7 @@ import { AttachmentStagingService } from '../src/services/attachment-staging.ser
 import { LabelService } from '../src/services/label.service.js';
 import { SnoozeService } from '../src/services/snooze.service.js';
 import { ReminderRepository } from '../src/repositories/reminder.repository.js';
+import { UndoService } from '../src/services/undo.service.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
 import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
 import { MessageRepository } from '../src/repositories/message.repository.js';
@@ -266,6 +267,13 @@ describeIfDb('command loop (real database)', () => {
     );
 
     const staged = new StagedAttachmentRepository(service as never);
+    const snoozeService = new SnoozeService(
+      service as never,
+      mailboxActions,
+      new ReminderRepository(service as never),
+      queue as never,
+      logger as never,
+    );
 
     processor = new CommandsProcessor(
       { env: { REDIS_URL: 'redis://unused' } } as never,
@@ -295,13 +303,8 @@ describeIfDb('command loop (real database)', () => {
       mailboxQueries,
       assistant,
       labels,
-      new SnoozeService(
-        service as never,
-        mailboxActions,
-        new ReminderRepository(service as never),
-        queue as never,
-        logger as never,
-      ),
+      snoozeService,
+      new UndoService(inbox, mailboxActions, labels, snoozeService, logger as never),
       new AttachmentStagingService(outbound as never, staged, logger as never),
       inbox,
       new AttachmentRepository(service as never),
@@ -457,6 +460,18 @@ describeIfDb('command loop (real database)', () => {
    * catch a mistyped address. The button carries a fixed sentinel; the
    * addresses and the words come from the pending slot, written server-side.
    */
+  /** The tap that actually deletes, since a delete asks first. */
+  const deleteTap = (targetId: string) =>
+    deliver({
+      type: 'interactive',
+      text: undefined,
+      interactive: {
+        type: 'button_reply',
+        id: encodeActionPayload({ action: 'confirm_delete', targetId }),
+        title: '🗑 Delete',
+      },
+    });
+
   const composeTap = (action: 'confirm_send' | 'cancel' | 'reply' = 'confirm_send') =>
     deliver({
       type: 'interactive',
@@ -1590,6 +1605,92 @@ describeIfDb('command loop (real database)', () => {
 
       const live = (await reminders()).filter((r) => !r.cancelledAt);
       expect(live).toHaveLength(1);
+    });
+  });
+
+  describe('taking back the last thing', () => {
+    // `undo` has been a parsed intent since the command parser was written and a
+    // button action since the payload codec was, and both answered "not built" —
+    // because nothing anywhere remembered what had just happened.
+
+    const stored = () =>
+      withTenant(userId, (tx) => tx.emailMessage.findUnique({ where: { id: emails.sarah! } }));
+
+    it('puts an archived message back', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'archive' });
+      await deliver({ text: 'undo' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'unarchive' } });
+      expect((await stored())!.isArchived).toBe(false);
+    });
+
+    it('takes a message back out of the trash', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'delete' });
+      await deleteTap(emails.sarah!);
+      await deliver({ text: 'undo' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'restore' } });
+      expect((await stored())!.deletedAt).toBeNull();
+    });
+
+    it('reverses a star, a read and a spam filing', async () => {
+      for (const [command, inverse] of [
+        ['important', { kind: 'star', starred: false }],
+        ['mark read', { kind: 'markRead', read: false }],
+        ['this is spam', { kind: 'spam', isSpam: false }],
+      ] as const) {
+        mutations.length = 0;
+        await deliver({ context: { id: deliveries.sarah! }, text: command });
+        await deliver({ text: 'undo' });
+
+        expect(mutations.at(-1)).toMatchObject({ operation: inverse });
+      }
+    });
+
+    it('takes a label back off, by name', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'label this as Receipts' });
+      await deliver({ text: 'undo' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'label' } });
+      expect(mutations.at(-1)!.operation).toHaveProperty('remove');
+    });
+
+    it('brings a snoozed message back and forgets the reminder', async () => {
+      await deliver({ context: { id: deliveries.sarah! }, text: 'snooze until tomorrow' });
+      await deliver({ text: 'undo' });
+
+      expect(mutations.at(-1)).toMatchObject({ operation: { kind: 'unarchive' } });
+
+      const live = await withTenant(userId, (tx) =>
+        tx.reminder.count({ where: { userId, cancelledAt: null } }),
+      );
+      expect(live).toBe(0);
+    });
+
+    it('says it cannot unsend, rather than "nothing to undo"', async () => {
+      // The mail has gone. An empty-slot answer here reads as a bug and leaves
+      // the user unsure whether it went at all.
+      await deliver({ context: { id: deliveries.sarah! }, text: 'reply saying on it' });
+      await deliver({ text: 'undo' });
+
+      expect(lastText()).toContain("can't unsend");
+    });
+
+    it('says plainly when there is nothing to take back', async () => {
+      await deliver({ text: 'undo' });
+
+      expect(lastText()).toContain('nothing to undo');
+    });
+
+    it('does not redo when undone twice', async () => {
+      // The inverse of the inverse is the original action.
+      await deliver({ context: { id: deliveries.sarah! }, text: 'archive' });
+      await deliver({ text: 'undo' });
+      mutations.length = 0;
+      await deliver({ text: 'undo' });
+
+      expect(mutations).toHaveLength(0);
+      expect((await stored())!.isArchived).toBe(false);
     });
   });
 

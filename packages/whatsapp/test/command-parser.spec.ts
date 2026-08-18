@@ -611,3 +611,18 @@ describe('putting a message down until later', () => {
     expect(intentOf('archive')).toMatchObject({ intent: 'archive' });
   });
 });
+
+describe('taking back the last thing', () => {
+  it('understands the ways people say it', () => {
+    for (const text of ['undo', 'oops', 'revert']) {
+      expect(intentOf(text)).toEqual({ intent: 'undo' });
+    }
+  });
+
+  it('stays a single-word command', () => {
+    // "undo the archive" is a sentence about undoing, and the record already
+    // names what was done — reading a target out of it would let the words
+    // disagree with the record.
+    expect(intentOf('undo the archive')).not.toMatchObject({ intent: 'undo' });
+  });
+});

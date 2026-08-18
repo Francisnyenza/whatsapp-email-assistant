@@ -87,6 +87,12 @@ export type PlannedEffect =
    */
   | { kind: 'snooze'; until: string }
   /**
+   * Take back the last thing. Names no email — what it acts on is whatever was
+   * recorded when that action succeeded, which is the only thing that makes an
+   * undo specific rather than a guess.
+   */
+  | { kind: 'undo' }
+  /**
    * Forget the files the user sent *into* the chat. Like a compose, it names no
    * email — what it acts on is the set of files waiting for the next one.
    */
@@ -168,6 +174,18 @@ export class ResponsePlanner {
 
       case 'compose':
         return planCompose(intent);
+
+      // Untargeted because the email is whatever the last action named, which
+      // this class has no way to know — the processor reads it from the record.
+      // The answer is what was actually put back, so the payload here is a
+      // placeholder: "Undone." before checking would be the "Archived." failure
+      // in its purest form.
+      case 'undo':
+        return {
+          payload: buildText('Taking that back…'),
+          followUp: 'queue_query',
+          effect: { kind: 'undo' },
+        };
 
       // Untargeted for the same reason a compose is: the files the user is
       // holding belong to the conversation, not to any one email. The count
@@ -390,12 +408,6 @@ export class ResponsePlanner {
           followUp: 'none',
         };
 
-      case 'undo':
-        return {
-          payload: buildText("There's nothing to undo right now."),
-          followUp: 'none',
-        };
-
       // --- prose with a thread in context is reply text ----------------------
       case 'unknown':
         if (context.looksLikeReplyBody) {
@@ -565,6 +577,7 @@ const HELP_TEXT = [
   '• _this is spam_ · _not spam_',
   '• _label this as Receipts_ · _remove the Receipts label_',
   '• _snooze until tomorrow_ · _snooze for 2 hours_ — I bring it back then',
+  '• _undo_ — takes back the last thing, for ten minutes afterwards',
   '• _what labels do I have_',
   '',
   '*Finding and reading*',

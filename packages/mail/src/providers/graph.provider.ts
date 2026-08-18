@@ -617,6 +617,13 @@ export class GraphProvider implements MailProvider {
         // this works without looking the folder id up first.
         return this.move(account, id, 'archive', 'mutate.archive');
 
+      case 'restore':
+        // Graph has no untrash. A message in Deleted Items comes back by being
+        // moved, and the inbox is the only destination we can name without
+        // knowing where it was — which is what Outlook's own "Move to Inbox"
+        // does from that folder too.
+        return this.move(account, id, 'inbox', 'mutate.restore');
+
       case 'unarchive':
         // Symmetrical with archive, and by the same well-known folder name.
         return this.move(account, id, 'inbox', 'mutate.unarchive');

@@ -759,6 +759,14 @@ model ConversationState {
   activeThreadId       String? @map("active_thread_id") @db.Uuid
   activeDraftId        String? @map("active_draft_id") @db.Uuid
 
+  /// The last thing the user did that can be taken back, and when.
+  ///
+  /// Separate from `pendingAction`, which is a question awaiting an answer.
+  /// This is an answer already given — the record exists so "undo" has
+  /// something specific to reverse rather than a guess.
+  lastAction   Json?     @map("last_action")
+  lastActionAt DateTime? @map("last_action_at")
+
   /// e.g. awaiting_reply_body, awaiting_send_confirmation, awaiting_disambiguation
   pendingAction  String? @map("pending_action")
   /// Options presented in a numbered list, so "2" resolves without another query.

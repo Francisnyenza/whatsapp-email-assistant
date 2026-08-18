@@ -78,6 +78,8 @@ const EXACT_COMMANDS: Record<string, CommandIntent> = {
   cancel: { intent: 'cancel' },
   stop: { intent: 'cancel' },
   undo: { intent: 'undo' },
+  oops: { intent: 'undo' },
+  revert: { intent: 'undo' },
   help: { intent: 'help' },
   menu: { intent: 'help' },
   archive: { intent: 'archive' },
