@@ -13,6 +13,7 @@ import {
 import { AnalysisRepository } from '../repositories/analysis.repository.js';
 import { AssistantService } from './assistant.service.js';
 import { LabelService } from './label.service.js';
+import { MailboxPickerService } from './mailbox-picker.service.js';
 
 /**
  * Reads over the mailbox: "find the invoice from Tom", "what's unread".
@@ -36,6 +37,7 @@ export class MailboxQueryService {
     private readonly analyses: AnalysisRepository,
     private readonly assistant: AssistantService,
     private readonly labels: LabelService,
+    private readonly mailboxes: MailboxPickerService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
@@ -52,7 +54,8 @@ export class MailboxQueryService {
       // A read over the mailbox's filing names rather than over its messages,
       // but a read all the same: it concerns no particular email, so it is
       // answered here rather than through the resolution ladder.
-      intent.intent === 'list_labels'
+      intent.intent === 'list_labels' ||
+      intent.intent === 'list_mailboxes'
     );
   }
 
@@ -67,6 +70,21 @@ export class MailboxQueryService {
 
     if (intent.intent === 'list_deadlines') {
       return this.renderDeadlines(await this.search.deadlines(userId));
+    }
+
+    if (intent.intent === 'list_mailboxes') {
+      const boxes = await this.mailboxes.list(userId);
+      return buildText(
+        boxes.length === 0
+          ? "You haven't connected a mailbox yet."
+          : `You can send from:\n${boxes
+              .map(
+                (box) =>
+                  `• ${box.displayName ? `${box.displayName} — ` : ''}${box.emailAddress}` +
+                  (box.isPrimary ? ' _(default)_' : ''),
+              )
+              .join('\n')}\n\nSay _email alice@acme.com from work saying …_ to pick one.`,
+      );
     }
 
     if (intent.intent === 'list_labels') {

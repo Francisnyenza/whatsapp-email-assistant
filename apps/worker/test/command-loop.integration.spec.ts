@@ -18,6 +18,7 @@ import { LabelService } from '../src/services/label.service.js';
 import { SnoozeService } from '../src/services/snooze.service.js';
 import { ReminderRepository } from '../src/repositories/reminder.repository.js';
 import { UndoService } from '../src/services/undo.service.js';
+import { MailboxPickerService } from '../src/services/mailbox-picker.service.js';
 import { SearchRepository } from '../src/repositories/search.repository.js';
 import { AnalysisRepository } from '../src/repositories/analysis.repository.js';
 import { MessageRepository } from '../src/repositories/message.repository.js';
@@ -181,8 +182,11 @@ describeIfDb('command loop (real database)', () => {
     };
 
     const accounts = {
-      load: async () => ({
-        id: accountId,
+      // Honours the id it is given: a stub that always returned the primary
+      // would make "send from my personal mailbox" pass while the draft
+      // recorded the wrong one.
+      load: async (_userId: string, id: string = accountId) => ({
+        id,
         userId,
         provider: 'gmail',
         emailAddress: `${userId.slice(0, 8)}@example.com`,
@@ -242,6 +246,8 @@ describeIfDb('command loop (real database)', () => {
       logger as never,
     );
 
+    const mailboxPicker = new MailboxPickerService(service as never);
+
     // One instance, shared: the processor acts through it and the label service
     // applies through it, exactly as the module wires them.
     const mailboxActions = new MailboxActionService(
@@ -263,6 +269,7 @@ describeIfDb('command loop (real database)', () => {
       { recordUsage: vi.fn() } as never,
       assistant,
       labels,
+      mailboxPicker,
       logger as never,
     );
 
@@ -305,6 +312,7 @@ describeIfDb('command loop (real database)', () => {
       labels,
       snoozeService,
       new UndoService(inbox, mailboxActions, labels, snoozeService, logger as never),
+      mailboxPicker,
       new AttachmentStagingService(outbound as never, staged, logger as never),
       inbox,
       new AttachmentRepository(service as never),
@@ -1691,6 +1699,81 @@ describeIfDb('command loop (real database)', () => {
 
       expect(mutations).toHaveLength(0);
       expect((await stored())!.isArchived).toBe(false);
+    });
+  });
+
+  describe('choosing which mailbox an email comes from', () => {
+    // Irrelevant with one mailbox connected and decisive with two: the address
+    // in the `From:` header is the identity the recipient sees and replies to.
+
+    const secondAccountId = randomUUID();
+
+    beforeEach(async () => {
+      await withTenant(userId, async (tx) => {
+        await tx.emailAccount.deleteMany({ where: { id: secondAccountId } });
+        await tx.emailAccount.create({
+          data: {
+            id: secondAccountId,
+            userId,
+            provider: 'gmail',
+            emailAddress: 'me@personal.example',
+            displayName: 'Personal',
+            status: 'active',
+            providerAccountId: `acct-personal-${userId.slice(0, 8)}`,
+            accessTokenCipher: Buffer.from('x'),
+            accessTokenDek: Buffer.from('x'),
+            tokenKeyVersion: 1,
+          },
+        });
+      });
+    });
+
+    afterEach(async () => {
+      await withTenant(userId, (tx) =>
+        tx.emailAccount.deleteMany({ where: { id: secondAccountId } }),
+      );
+    });
+
+    it('sends from the mailbox the user named', async () => {
+      await deliver({ text: 'email bob@partner.com from personal saying hi' });
+      await composeTap();
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.accountId).toBe(secondAccountId);
+    });
+
+    it('names the sending address on the confirmation, before the tap', async () => {
+      // With two connected, the user cannot otherwise tell which identity is
+      // about to speak for them.
+      await deliver({ text: 'email bob@partner.com from personal saying hi' });
+
+      expect(lastText()).toContain('me@personal.example');
+    });
+
+    it('falls back to the primary when no mailbox is named', async () => {
+      await deliver({ text: 'email bob@partner.com saying hi' });
+      await composeTap();
+
+      const draft = await withTenant(userId, (tx) =>
+        tx.draft.findFirst({ where: { kind: 'new' }, orderBy: { createdAt: 'desc' } }),
+      );
+      expect(draft!.accountId).toBe(accountId);
+    });
+
+    it('refuses a mailbox it does not have, and sends nothing', async () => {
+      await deliver({ text: 'email bob@partner.com from school saying hi' });
+
+      expect(sends()).toHaveLength(0);
+      expect(lastText()).toContain('me@personal.example');
+    });
+
+    it('lists the mailboxes when asked', async () => {
+      await deliver({ text: 'which mailboxes do I have' });
+
+      expect(lastText()).toContain('me@personal.example');
+      expect(lastText()).toContain('Personal');
     });
   });
 

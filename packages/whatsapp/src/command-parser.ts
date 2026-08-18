@@ -189,6 +189,20 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
   // shape of a request and deciding where mail may go are different jobs, and
   // doing the second twice means one of the two is laxer.
   {
+    // "email alice@x.com from work saying …" — which mailbox it goes out from.
+    // Matched before the plain forms, which would otherwise read "from work
+    // saying …" as the subject.
+    re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+?)\s+from\s+(?:my\s+)?([\w.@' -]{1,60}?)\s+(?:about\s+(.{1,200}?)\s+)?(?:saying|that\s+says|:)\s+(.+)$/is,
+    build: (m) => ({
+      intent: 'compose',
+      to: m[1]!.trim().replace(/[,;]$/, ''),
+      from: m[2]!.trim(),
+      ...(m[3] ? { subject: m[3].trim() } : {}),
+      body: m[4]!.trim(),
+    }),
+  },
+
+  {
     // "email alice@x.com about Q3 saying the numbers are attached"
     re: /^(?:new\s+)?(?:e-?mail|mail|message|write\s+to|send\s+(?:an?\s+)?(?:e-?mail\s+)?to)\s+(?:to\s+)?(\S+@\S+?)\s+about\s+(.{1,200}?)\s+(?:saying|that\s+says|with|:)\s+(.+)$/is,
     build: (m) => ({
@@ -306,6 +320,14 @@ const PATTERNS: Array<{ re: RegExp; build: (m: RegExpMatchArray) => CommandInten
   {
     re: /^(?:what|which)\s+(?:labels?|tags?|categories)\s*(?:do\s+i\s+have|are\s+there|exist)?\??$/i,
     build: () => ({ intent: 'list_labels' }),
+  },
+  {
+    re: /^(?:what|which)\s+(?:mailboxes|accounts|addresses|inboxes)\s*(?:do\s+i\s+have|are\s+(?:there|connected))?\??$/i,
+    build: () => ({ intent: 'list_mailboxes' }),
+  },
+  {
+    re: /^(?:my\s+|show\s+(?:me\s+)?(?:my\s+)?|list\s+(?:my\s+)?)(?:mailboxes|accounts|addresses|inboxes)$/i,
+    build: () => ({ intent: 'list_mailboxes' }),
   },
   {
     re: /^(?:my\s+|show\s+(?:me\s+)?(?:my\s+)?|list\s+(?:my\s+)?)(?:labels?|tags?|categories)$/i,

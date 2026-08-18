@@ -626,3 +626,45 @@ describe('taking back the last thing', () => {
     expect(intentOf('undo the archive')).not.toMatchObject({ intent: 'undo' });
   });
 });
+
+describe('choosing which mailbox an email comes from', () => {
+  it('takes a "from" between the recipient and the body', () => {
+    expect(intentOf('email alice@acme.com from work saying here it is')).toEqual({
+      intent: 'compose',
+      to: 'alice@acme.com',
+      from: 'work',
+      body: 'here it is',
+    });
+  });
+
+  it('takes one alongside a subject', () => {
+    expect(intentOf('email alice@acme.com from work about Q3 saying here it is')).toMatchObject({
+      from: 'work',
+      subject: 'Q3',
+      body: 'here it is',
+    });
+  });
+
+  it('takes an address rather than a nickname', () => {
+    expect(intentOf('email alice@acme.com from me@gmail.com saying hi')).toMatchObject({
+      from: 'me@gmail.com',
+    });
+  });
+
+  it('leaves a compose with no "from" alone', () => {
+    expect(intentOf('email alice@acme.com saying hi')).not.toHaveProperty('from');
+  });
+
+  it('does not read a body that merely starts with "from"', () => {
+    // "saying" is what ends the mailbox name, so the body is never eaten.
+    expect(intentOf('email alice@acme.com saying from me this is fine')).toMatchObject({
+      body: 'from me this is fine',
+    });
+  });
+
+  it('answers "which mailboxes do I have"', () => {
+    for (const text of ['which mailboxes do I have', 'my accounts', 'list mailboxes']) {
+      expect(intentOf(text)).toEqual({ intent: 'list_mailboxes' });
+    }
+  });
+});

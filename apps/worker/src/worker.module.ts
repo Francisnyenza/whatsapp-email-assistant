@@ -13,6 +13,7 @@ import { AttachmentStagingService } from './services/attachment-staging.service.
 import { LabelService } from './services/label.service.js';
 import { SnoozeService } from './services/snooze.service.js';
 import { UndoService } from './services/undo.service.js';
+import { MailboxPickerService } from './services/mailbox-picker.service.js';
 import { ComposeComposer } from './services/compose-composer.js';
 import { MediaProcessor } from './processors/media.processor.js';
 import { AttachmentRepository } from './repositories/attachment.repository.js';
@@ -52,6 +53,7 @@ import { AssistantService } from './services/assistant.service.js';
     LabelService,
     SnoozeService,
     UndoService,
+    MailboxPickerService,
     ComposeComposer,
     MediaProcessor,
     AttachmentRepository,

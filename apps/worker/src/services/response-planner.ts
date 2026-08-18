@@ -44,6 +44,16 @@ export interface PlanContext {
   looksLikeReplyBody: boolean;
   /** The raw message, used when it is being treated as a reply body. */
   rawText: string;
+  /**
+   * The mailbox a compose will go out from, already resolved.
+   *
+   * Resolved by the caller rather than looked up here, because this class does
+   * no IO — but it has to be *shown*, and shown before the tap: the address in
+   * the `From:` header is the identity the recipient sees and replies to, and
+   * with two mailboxes connected the user cannot otherwise tell which one is
+   * about to speak for them.
+   */
+  sendFrom?: { accountId: string; address: string };
 }
 
 /**
@@ -102,7 +112,19 @@ export type PlannedEffect =
    * compose has no parent, so nothing in the resolution ladder applies and the
    * recipient comes from what the user typed rather than from a stored message.
    */
-  | { kind: 'compose'; to: string; cc?: string; bcc?: string; subject: string; body: string }
+  | {
+      kind: 'compose';
+      to: string;
+      cc?: string;
+      bcc?: string;
+      /**
+       * The mailbox to send from, already resolved to an id by the caller.
+       * Absent means the primary.
+       */
+      accountId?: string;
+      subject: string;
+      body: string;
+    }
   /**
    * Compose a reply and *ask*. The only effect here that produces words which
    * could leave the building — so unlike the two above, its result is not sent
@@ -138,7 +160,7 @@ export class ResponsePlanner {
 
     // Commands that need no target at all are answered first, so a user with an
     // empty mailbox can still ask for help or cancel something.
-    const untargeted = this.planUntargeted(intent);
+    const untargeted = this.planUntargeted(intent, context.sendFrom);
     if (untargeted) return untargeted;
 
     // Everything below concerns a specific email. If we could not identify one,
@@ -161,7 +183,10 @@ export class ResponsePlanner {
   }
 
   /** Commands that stand alone, independent of any email. */
-  private planUntargeted(intent: CommandIntent): PlannedResponse | null {
+  private planUntargeted(
+    intent: CommandIntent,
+    sendFrom?: { accountId: string; address: string },
+  ): PlannedResponse | null {
     switch (intent.intent) {
       case 'help':
         return { payload: buildText(HELP_TEXT), followUp: 'none' };
@@ -173,7 +198,7 @@ export class ResponsePlanner {
         };
 
       case 'compose':
-        return planCompose(intent);
+        return planCompose(intent, sendFrom);
 
       // Untargeted because the email is whatever the last action named, which
       // this class has no way to know — the processor reads it from the record.
@@ -476,13 +501,17 @@ function toOption(candidate: ResolutionCandidate) {
  * something that then does not happen is the worst of both: they believe it
  * went, and it did not.
  */
-function planCompose(intent: {
-  to: string;
-  cc?: string;
-  bcc?: string;
-  subject?: string;
-  body?: string;
-}): PlannedResponse {
+function planCompose(
+  intent: {
+    to: string;
+    cc?: string;
+    bcc?: string;
+    from?: string;
+    subject?: string;
+    body?: string;
+  },
+  sendFrom?: { accountId: string; address: string },
+): PlannedResponse {
   let recipients: EmailAddress[];
   let copies: EmailAddress[] = [];
   let blind: EmailAddress[] = [];
@@ -533,7 +562,15 @@ function planCompose(intent: {
       // "the point of a Bcc is that it is hidden" would hide it from the one
       // person it is not hidden from, who is the only one who can catch a
       // mistake in it.
-      [to, ...(cc ? [`*Cc:* ${cc}`] : []), ...(bcc ? [`*Bcc:* ${bcc}`] : [])].join('\n'),
+      [
+        to,
+        ...(cc ? [`*Cc:* ${cc}`] : []),
+        ...(bcc ? [`*Bcc:* ${bcc}`] : []),
+        // The identity the recipient will see and reply to. Irrelevant with one
+        // mailbox connected and decisive with two, and the user cannot tell
+        // which is about to speak for them unless it is here.
+        ...(sendFrom ? [`*From:* ${sendFrom.address}`] : []),
+      ].join('\n'),
       `*Subject:* ${subject}\n\n${body}`,
     ),
     followUp: 'await_confirmation',
@@ -542,6 +579,7 @@ function planCompose(intent: {
       to,
       ...(cc ? { cc } : {}),
       ...(bcc ? { bcc } : {}),
+      ...(sendFrom ? { accountId: sendFrom.accountId } : {}),
       subject,
       body,
     },
@@ -596,6 +634,8 @@ const HELP_TEXT = [
   '• _email alice@acme.com saying running ten minutes late_',
   '• _email alice@acme.com cc bob@acme.com saying …_',
   '• _email alice@acme.com bcc bob@acme.com saying …_ — I show you the Bcc, nobody else sees it',
+  '• _email alice@acme.com from work saying …_ — pick which mailbox it comes from',
+  '• _which mailboxes do I have_',
   '',
   '*Attaching a file*',
   '• Send me a photo or a document — I hold it for your next email',

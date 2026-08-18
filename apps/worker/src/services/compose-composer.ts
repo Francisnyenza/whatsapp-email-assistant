@@ -52,6 +52,11 @@ export class ComposeComposer {
      * other recipients see, and nothing here is allowed to fold them into `cc`.
      */
     bcc?: EmailAddress[];
+    /**
+     * Which mailbox to send from. Absent means the primary — the deterministic
+     * answer rather than "whichever came back first".
+     */
+    accountId?: string;
     subject: string;
     bodyText: string;
   }): Promise<{ draftId: string; recipients: number }> {
@@ -76,9 +81,12 @@ export class ComposeComposer {
     // disproportionate. The body is bounded by the chat itself.
     const subject = input.subject.trim().slice(0, MAX_SUBJECT_CHARS) || '(no subject)';
 
-    // No parent message, so no account to inherit. The primary is the
-    // deterministic answer; see `loadPrimary` for why determinism matters here.
-    const account = await this.accounts.loadPrimary(input.userId);
+    // No parent message, so no account to inherit — either the user named one
+    // and it was resolved before the confirmation they approved, or the primary,
+    // which is the deterministic answer rather than "whichever came back first".
+    const account = input.accountId
+      ? await this.accounts.load(input.userId, input.accountId)
+      : await this.accounts.loadPrimary(input.userId);
 
     const sealed = await this.accounts.encryptBody(input.userId, body);
 

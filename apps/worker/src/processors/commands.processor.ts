@@ -41,6 +41,7 @@ import { AssistantService } from '../services/assistant.service.js';
 import { LabelService } from '../services/label.service.js';
 import { SnoozeService } from '../services/snooze.service.js';
 import { UndoService, inverseOf } from '../services/undo.service.js';
+import { MailboxPickerService } from '../services/mailbox-picker.service.js';
 import {
   AttachmentStagingService,
   type StagingOutcome,
@@ -92,6 +93,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     private readonly labels: LabelService,
     private readonly snoozes: SnoozeService,
     private readonly undos: UndoService,
+    private readonly mailboxes: MailboxPickerService,
     private readonly staging: AttachmentStagingService,
     private readonly inbox: InboxRepository,
     private readonly attachments: AttachmentRepository,
@@ -470,6 +472,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
     const to = pending.to;
     const cc = typeof pending.cc === 'string' ? pending.cc : undefined;
     const bcc = typeof pending.bcc === 'string' ? pending.bcc : undefined;
+    const accountId = typeof pending.accountId === 'string' ? pending.accountId : undefined;
 
     return this.attempt(
       () =>
@@ -481,6 +484,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
           to: parseRecipientList(to),
           ...(cc ? { cc: parseRecipientList(cc) } : {}),
           ...(bcc ? { bcc: parseRecipientList(bcc) } : {}),
+          ...(accountId ? { accountId } : {}),
           subject: typeof pending.subject === 'string' ? pending.subject : '(no subject)',
           bodyText: typeof pending.body === 'string' ? pending.body : '',
         }),
@@ -665,10 +669,42 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
         ? await this.inbox.findSubject(userId, resolution.emailMessageId)
         : null;
 
+    // A compose needs its sending mailbox resolved *before* the plan, because
+    // the confirmation has to name the address the recipient will see. With one
+    // mailbox connected this is the primary and nothing turns on it; with two,
+    // it decides which identity speaks for the user.
+    let sendFrom: { accountId: string; address: string } | undefined;
+    if (parsed.intent.intent === 'compose') {
+      try {
+        const chosen = await this.mailboxes.pick(userId, parsed.intent.from);
+        sendFrom = { accountId: chosen.id, address: chosen.emailAddress };
+      } catch (err) {
+        // A hint that matches nothing, or two things. The refusal names the
+        // options, so it is a typo the user fixes in one message.
+        const error = AppError.from(err);
+        await this.inbox.recordResolution(
+          userId,
+          message.id,
+          parsed.intent.intent,
+          parsed.source,
+          error.code,
+        );
+        await this.outbound.reply({
+          userId,
+          phoneNumber,
+          payload: buildText(userFacingFailure(error)),
+          kind: 'error',
+          lastInboundAt: message.timestamp,
+        });
+        return;
+      }
+    }
+
     const planned = this.planner.plan({
       intent: parsed.intent,
       resolution,
       ...(subject ? { subject } : {}),
+      ...(sendFrom ? { sendFrom } : {}),
       looksLikeReplyBody: parsed.looksLikeReplyBody,
       rawText: message.text ?? '',
     });
@@ -704,6 +740,10 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
         to: planned.effect.to,
         ...(planned.effect.cc ? { cc: planned.effect.cc } : {}),
         ...(planned.effect.bcc ? { bcc: planned.effect.bcc } : {}),
+        // Server-side, like everything else in this slot: the button carries
+        // only the sentinel, so a crafted tap cannot change which mailbox the
+        // email goes out from.
+        ...(planned.effect.accountId ? { accountId: planned.effect.accountId } : {}),
         subject: planned.effect.subject,
         body: planned.effect.body,
       });

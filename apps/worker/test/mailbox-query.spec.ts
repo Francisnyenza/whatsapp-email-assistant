@@ -40,6 +40,8 @@ describe('mailbox queries', () => {
   let service: MailboxQueryService;
   /** The mailbox's own filing names, for the "what labels do I have" read. */
   let labelNames: string[] = [];
+  /** The addresses the user can send from, for the "which mailboxes" read. */
+  let connectedMailboxes: Array<{ emailAddress: string; displayName: string | null }> = [];
   let search: ReturnType<typeof vi.fn>;
   let list: ReturnType<typeof vi.fn>;
   let deadlines: ReturnType<typeof vi.fn>;
@@ -77,6 +79,7 @@ describe('mailbox queries', () => {
       { recordUsage } as never,
       { answerQuestionFrom } as never,
       { list: async () => labelNames } as never,
+      { list: async () => connectedMailboxes } as never,
       logger,
     );
   });

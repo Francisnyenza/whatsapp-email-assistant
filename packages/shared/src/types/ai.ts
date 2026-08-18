@@ -143,9 +143,18 @@ export const commandIntentSchema = z.discriminatedUnion('intent', [
      * sender has to.
      */
     bcc: z.string().optional(),
+    /**
+     * Which mailbox to send from, as the user named it — a nickname, an
+     * address, or part of either. Resolved against their connected mailboxes
+     * downstream; the address in the `From:` header is the identity the
+     * recipient sees and replies to.
+     */
+    from: z.string().optional(),
     subject: z.string().optional(),
     body: z.string().optional(),
   }),
+  /** "which mailboxes do I have" — the addresses the user can send from. */
+  z.object({ intent: z.literal('list_mailboxes') }),
   /** "send me the attachment" — the files on an email, into the chat. */
   z.object({ intent: z.literal('get_attachment') }),
   /**
