@@ -19,9 +19,10 @@ gives it away.
   sent through your own mailbox, so they land in your Sent folder and in the recipient's
   existing conversation.
 - **Full mailbox control** — compose, archive, delete, forward, mark read/unread/important,
-  search, CC, Bcc and reply-all. Anything irreversible — a delete, a forward, a brand-new
-  email — asks first, with a button. (Labels, folders and snooze are **not built yet** — see
-  the parity table in [`docs/status.md`](docs/status.md).)
+  search, label, snooze, report spam, CC, Bcc and reply-all. Anything irreversible — a
+  delete, a forward, a brand-new email — asks first, with a button, and `undo` takes back
+  the last thing for ten minutes afterwards. (Moving between folders and unsending are
+  **not built yet** — see the parity table in [`docs/status.md`](docs/status.md).)
 - **AI throughout** — summarize, draft, rewrite, translate (10+ languages), classify, detect
   urgency and spam, extract deadlines, invoices, meeting times and action items.
 - **Attachments both ways** — ask for an email's files and they arrive in the chat; send a
