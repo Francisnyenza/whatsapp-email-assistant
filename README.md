@@ -74,7 +74,7 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 863 tests passing** (1 491 unit + 372 integration against real Postgres). See
+**1 912 tests passing** (1 540 unit + 372 integration against real Postgres). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 
@@ -91,6 +91,20 @@ including what these ticks do not cover.
 | 9     | Frontend dashboard           | 🔨 setup and settings; no mail views  |
 | 10    | Testing                      | 🔨 unit, integration and CI; no E2E   |
 | 11    | Deployment & ops             | 🔨 images, k8s, alerts, data-layer TF |
+
+## Before the first message
+
+```bash
+pnpm doctor
+```
+
+The boot check refuses to start on a variable that is missing or malformed. `pnpm doctor`
+catches the other half — a variable that is well-formed and **wrong**: a WhatsApp token
+that expired overnight, a Business Account nobody subscribed the app to, a Google redirect
+URI off by a trailing slash. None of those raise anything anywhere; the system starts,
+reports itself healthy, and never delivers a message. The check calls the real services,
+performs Meta's webhook handshake against your own endpoint, and prints the thing to
+change. It is read-only and safe against production.
 
 ## Requirements
 

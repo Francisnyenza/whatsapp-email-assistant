@@ -38,14 +38,12 @@ export const PURGE_ROWS_PER_USER = 1_000;
 export const PURGE_INTERVAL_MS = 24 * 3_600_000;
 
 /**
- * How often mailboxes with no push subscription are polled.
+ * Re-exported so the sweep keeps importing its schedule from one place.
  *
- * The gap between the product's promise and its fallback. Push delivers in
- * seconds; two minutes is the most a user should wait for mail on an account
- * whose watch could not be established, and it is still cheap — `history.list`
- * from a stored cursor is two quota units and usually returns nothing.
+ * The value itself lives in `@wea/shared` because the preflight check quotes it
+ * to an operator running without push, and two copies would drift.
  */
-export const POLL_INTERVAL_MS = 2 * 60_000;
+export { POLL_INTERVAL_MS } from '@wea/shared';
 
 /**
  * Polled per sweep. A cap rather than a limit on how many accounts may use the

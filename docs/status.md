@@ -8,12 +8,12 @@ Last updated: 2026-08-15.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 863 tests** (1 491 unit + 372 integration
+Everything below has tests that run and pass. **1 912 tests** (1 540 unit + 372 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
 | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 45               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization                                              |
+| `@wea/shared`   | 94               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization, preflight checks                            |
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
 | `@wea/db`       | 9 (integration)  | Prisma schema, thirteen migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
 | `@wea/whatsapp` | 219              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
@@ -24,7 +24,7 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 491 unit tests
+pnpm -r test          # 1 540 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -146,6 +146,42 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   seconds per replica it would be most of the traffic on a quiet API and the request-rate
   panel would be the monitoring system watching itself.
 
+- `pnpm doctor` checks every external seam and says what to change. The environment
+  schema already refuses to boot on a variable that is missing or malformed; what it
+  cannot see is one that is well-formed and wrong, and every such failure in this product
+  is silent — the system starts, passes both health checks, and never delivers a message.
+  The checks that earn their place are the ones nothing else can answer:
+  - **Meta's webhook handshake, performed against our own endpoint.** The only thing that
+    proves the tunnel resolves, the request reaches this codebase, and the verify token the
+    _running process_ holds matches the one in the file just edited. A 403 to our own token
+    means a stale process; a 200 that does not echo the challenge means the tunnel is
+    pointed at the dashboard on :3000 rather than the API on :3001.
+  - **`subscribed_apps` on the WhatsApp Business Account.** Registering a callback URL
+    makes verification pass and delivers nothing — the app must also be subscribed. Every
+    screen reads as configured and no message ever arrives.
+  - **The Google redirect URI, compared against the one the API actually serves.**
+    `redirect_uri_mismatch` is the first error every Google integration hits, and Google's
+    message names the URI it received without naming the one it expected. This derives the
+    correct value and prints it ready to paste.
+  - **The AI key, tried rather than inspected.** A present, well-shaped key can still
+    belong to an account with no credit; the provider then answers 429 to every request,
+    the worker retries each as transient, and the user gets an inbox with no summaries and
+    no explanation.
+
+  The interpreters are pure over a reduced probe shape and live in `@wea/shared`, so the
+  remediation text — which is the actual product here — is asserted by 49 tests without a
+  network. A 403 carrying no Meta error envelope is reported as a proxy answering in
+  Graph's place rather than as a permission error, which was found by hitting exactly that
+  against an egress allowlist. Read-only throughout, and non-zero only on a real failure so
+  it can gate a deploy: polling instead of push and AI switched off are supported
+  configurations, not faults.
+
+- **Outbound mail is live in every environment, and this file used to imply otherwise.**
+  `docs/development.md` claimed development sends were captured by Mailpit; nothing in the
+  send path did that — Gmail and Graph are called with the user's own OAuth token whatever
+  `NODE_ENV` says, and there is no SMTP hop to intercept. The Mailpit service has been
+  removed from `docker-compose.yml` rather than left as a sandbox that was not one, and
+  `pnpm doctor` states the position on every run.
 - The alert rules are validated twice, because the two tools answer different questions.
   kubeconform checks the `PrometheusRule` is shaped correctly; the PromQL inside it is just
   a string to a schema, and a malformed expression is accepted by the cluster and then
@@ -302,7 +338,13 @@ so the list cannot quietly grow.
    say _why_ a backlog is growing, where depth only says that it is.
 3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
-   Google, which is where a contract changes without telling anyone.
+   Google, which is where a contract changes without telling anyone. `pnpm doctor` narrows
+   this — it exercises both seams for real — but it checks that they are reachable and
+   configured, not that a message round-trips.
+4. **A first-run walkthrough.** `pnpm doctor` tells an operator what is wrong; it does not
+   tell them what to do first. The Meta and Google console steps are in
+   `docs/development.md` as a list of values to set, which is the wrong shape for someone
+   who has never opened either console.
 
 An earlier revision of this paragraph said every feature in the product spec was built.
 The parity audit above is what that claim looks like when it is checked verb by verb, and

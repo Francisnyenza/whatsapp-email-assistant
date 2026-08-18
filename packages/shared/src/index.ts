@@ -95,6 +95,8 @@ export {
 
 export { SEND_DELAY_MS } from './constants/sending.js';
 
+export { POLL_INTERVAL_MS } from './constants/sync.js';
+
 // errors
 export { AppError, type ErrorCode, type AppErrorOptions } from './errors/app-error.js';
 
@@ -112,3 +114,30 @@ export {
 } from './utils/action-payload.js';
 
 export { normalizePhone, isE164, toWhatsAppFormat, fromWhatsAppFormat } from './utils/phone.js';
+
+// preflight — see packages/shared/src/preflight/types.ts for why this exists
+export {
+  metaErrorCode,
+  metaErrorMessage,
+  type CheckLevel,
+  type CheckResult,
+  type Probe,
+} from './preflight/types.js';
+
+export {
+  googleRedirectUriFor,
+  microsoftRedirectUriFor,
+  whatsappWebhookUrlFor,
+  interpretPhoneNumber,
+  interpretSubscribedApps,
+  interpretWebhookHandshake,
+  interpretGoogleOAuth,
+  interpretGmailDelivery,
+  interpretAiConfig,
+  interpretAiKey,
+  interpretDatabase,
+  interpretRedis,
+  outboundIsLive,
+} from './preflight/interpret.js';
+
+export { renderReport, worstLevel, exitCodeFor, type ReportSection } from './preflight/report.js';

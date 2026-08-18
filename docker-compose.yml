@@ -71,14 +71,12 @@ services:
       echo 'bucket ready'
       "
 
-  # Captures outbound mail in development so no real email is ever sent from a
-  # dev machine. Web UI on :8025.
-  mailpit:
-    image: axllent/mailpit:latest
-    restart: unless-stopped
-    ports:
-      - '1025:1025'
-      - '8025:8025'
+  # There was a Mailpit here, described as catching all outbound development
+  # mail. Nothing pointed at it: outbound goes through the Gmail and Graph APIs
+  # with the user's own OAuth token, in every environment, and there is no SMTP
+  # in the send path to intercept. Keeping it meant a dev machine that looked
+  # sandboxed and was not, which is the worst version of this to be wrong about.
+  # `pnpm doctor` now says so out loud on every run.
 
   # OpenTelemetry traces + Jaeger UI on :16686.
   jaeger:

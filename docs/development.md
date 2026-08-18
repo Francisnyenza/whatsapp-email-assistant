@@ -20,9 +20,10 @@ printf 'BLIND_INDEX_KEY=%s\n'       "$(openssl rand -base64 32)" >> .env
 printf 'JWT_ACCESS_SECRET=%s\n'     "$(openssl rand -base64 64)" >> .env
 printf 'JWT_REFRESH_SECRET=%s\n'    "$(openssl rand -base64 64)" >> .env
 
-pnpm infra:up        # postgres + redis + minio + mailpit
+pnpm infra:up        # postgres + redis + minio
 pnpm db:migrate      # from Phase 3
 pnpm db:test-role    # lets the integration suite connect as the restricted role
+pnpm doctor          # checks every external seam and says what to fix
 pnpm dev             # all apps in watch mode
 ```
 
@@ -46,11 +47,39 @@ offending one at once. That is deliberate — see `packages/shared/src/config/en
 | Postgres | localhost:5432         | user `wea`, db `wea`                           |
 | Redis    | localhost:6379         | db 0 cache, db 1 queues                        |
 | MinIO    | http://localhost:9001  | `minioadmin` / `minioadmin`                    |
-| Mailpit  | http://localhost:8025  | Catches all outbound dev mail                  |
 | Jaeger   | http://localhost:16686 | `docker compose --profile observability up -d` |
 
-**No real email leaves a development machine.** Outbound send is pointed at Mailpit
-unless `NODE_ENV=production`.
+**Real email leaves a development machine.** This document used to claim the
+opposite — that outbound was pointed at Mailpit unless `NODE_ENV=production` — and it
+was never true. Sending goes through the Gmail or Graph API with the connected
+mailbox's own OAuth token; there is no SMTP hop to intercept and no environment in
+which it behaves differently. A reply you type into WhatsApp while testing reaches the
+real recipient, from your real address. `undo` takes it back for fifteen seconds
+(`SEND_DELAY_MS`) and no longer. Test against an address you own.
+
+## Checking the setup
+
+```bash
+pnpm doctor
+```
+
+The boot-time schema refuses to start on a variable that is missing or malformed.
+That is the easy half. The hard half is a variable that is well-formed and wrong — a
+WhatsApp token that expired overnight, a WhatsApp Business Account nobody subscribed
+the app to, a Google redirect URI off by a trailing slash. None of those raise
+anything anywhere: the system starts, passes its health checks, and never delivers a
+message.
+
+`pnpm doctor` calls the real services and prints what to change. It is read-only —
+no message sent, no row written, no OAuth flow started — so it is safe to run against
+production, and it exits non-zero only on a genuine failure so it can gate a deploy.
+Warnings (polling instead of push, AI switched off) are supported ways to run and do
+not fail it.
+
+The check worth knowing about is the webhook handshake: it calls your own
+`/webhooks/whatsapp` exactly as Meta does, which is the only thing that proves the
+tunnel resolves, the request reaches this codebase, and the verify token the running
+process holds matches the one in the file you just edited.
 
 ## Third-party credentials
 
