@@ -79,6 +79,10 @@ function service(): AccountService {
     { forUser: vi.fn() } as never,
     {
       env: {
+        // Real `Env` always carries this — the schema defaults it to 'local'.
+        // A fake that omits it now fails, because `createKmsProvider` reads it
+        // rather than assuming, which is the whole point of the factory.
+        KMS_PROVIDER: 'local',
         ENCRYPTION_MASTER_KEY: Buffer.alloc(32).toString('base64'),
         GOOGLE_CLIENT_ID: 'g',
         GOOGLE_CLIENT_SECRET: 'g',

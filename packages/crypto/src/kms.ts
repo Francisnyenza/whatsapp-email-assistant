@@ -36,9 +36,16 @@ const TAG_BYTES = 16;
  * Development and test provider. The KEK is a static 32-byte key from the
  * environment.
  *
- * The boot-time environment check refuses `KMS_PROVIDER=local` in production, so
- * this cannot be reached there — but the interface is identical, which is the
- * point: no code path differs between environments.
+ * The boot-time environment check refuses `KMS_PROVIDER=local` in production,
+ * and this used to claim that therefore it "cannot be reached there". That was
+ * only true of the *name*: every call site constructed this class directly
+ * regardless of `KMS_PROVIDER`, so production either failed to boot or ran on a
+ * static key while reporting otherwise. Selection now goes through
+ * `createKmsProvider`, and a managed provider is a refusal rather than a
+ * fallback — see `kms-factory.ts`.
+ *
+ * The interface is identical to what a managed provider will implement, which
+ * remains the point: no code path differs between environments.
  */
 export class LocalKmsProvider implements KmsProvider {
   readonly name = 'local';

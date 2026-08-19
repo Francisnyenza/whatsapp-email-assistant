@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { AppError } from '@wea/shared';
-import { EnvelopeEncryption, LocalKmsProvider, CachingKmsProvider } from '@wea/crypto';
+import { EnvelopeEncryption, createKmsProvider } from '@wea/crypto';
 import { GmailProvider, GraphProvider, type MailProvider } from '@wea/mail';
 import type { Logger } from 'pino';
 import { PrismaService } from '../common/prisma.service.js';
@@ -29,9 +29,10 @@ export class AccountsService {
     private readonly config: ConfigService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {
-    this.crypto = new EnvelopeEncryption(
-      new CachingKmsProvider(LocalKmsProvider.fromBase64(config.env.ENCRYPTION_MASTER_KEY ?? '')),
-    );
+    // `createKmsProvider` is the only place the provider is chosen. Building
+    // `LocalKmsProvider` here directly is what made `KMS_PROVIDER` a setting
+    // nothing read.
+    this.crypto = new EnvelopeEncryption(createKmsProvider(config.env));
   }
 
   /**

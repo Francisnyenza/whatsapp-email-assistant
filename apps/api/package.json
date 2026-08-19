@@ -1,6 +1,9 @@
 {
   "name": "@wea/api",
   "version": "0.1.0",
+  "files": [
+    "dist"
+  ],
   "private": true,
   "type": "module",
   "scripts": {

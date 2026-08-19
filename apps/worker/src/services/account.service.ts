@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { AppError } from '@wea/shared';
-import { EnvelopeEncryption, LocalKmsProvider, CachingKmsProvider } from '@wea/crypto';
+import { EnvelopeEncryption, createKmsProvider } from '@wea/crypto';
 import { GmailProvider, GraphProvider, type MailProvider, type ProviderAccount } from '@wea/mail';
 import type { Logger } from 'pino';
 import { PrismaService } from '../common/prisma.service.js';
@@ -23,12 +23,11 @@ export class AccountService {
     private readonly config: ConfigService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {
-    // Development uses a static key; production is refused at boot unless a KMS
-    // is configured (ADR 0002, enforced in env.schema.ts).
-    const kms = new CachingKmsProvider(
-      LocalKmsProvider.fromBase64(config.env.ENCRYPTION_MASTER_KEY ?? ''),
-    );
-    this.crypto = new EnvelopeEncryption(kms);
+    // `createKmsProvider` is the only place the provider is chosen. This used
+    // to build `LocalKmsProvider` directly whatever `KMS_PROVIDER` said, which
+    // is how a production deployment could run on a static key from its own
+    // environment (ADR 0002).
+    this.crypto = new EnvelopeEncryption(createKmsProvider(config.env));
   }
 
   /**

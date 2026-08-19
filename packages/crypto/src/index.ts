@@ -1,6 +1,11 @@
 /** Public surface of @wea/crypto. */
 
 export { LocalKmsProvider, CachingKmsProvider, type KmsProvider, type DataKey } from './kms.js';
+export {
+  createKmsProvider,
+  UNIMPLEMENTED_KMS_PROVIDERS,
+  type KmsSelection,
+} from './kms-factory.js';
 
 export { EnvelopeEncryption, type EncryptedPayload, type EncryptionContext } from './envelope.js';
 

@@ -64,7 +64,12 @@ describeIfDb('two-factor authentication (real database)', () => {
     sessions = new SessionService(service as never, logger as never);
     twoFactor = new TwoFactorService(
       service as never,
-      { env: { ENCRYPTION_MASTER_KEY: randomBytes(32).toString('base64') } } as never,
+      {
+        env: {
+          KMS_PROVIDER: 'local',
+          ENCRYPTION_MASTER_KEY: randomBytes(32).toString('base64'),
+        },
+      } as never,
       sessions,
       logger as never,
     );

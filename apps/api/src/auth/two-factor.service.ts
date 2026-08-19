@@ -9,7 +9,7 @@ import {
   matchRecoveryCode,
   verifyPassword,
 } from '@wea/crypto';
-import { EnvelopeEncryption, LocalKmsProvider, CachingKmsProvider } from '@wea/crypto';
+import { EnvelopeEncryption, createKmsProvider } from '@wea/crypto';
 import { PrismaService } from '../common/prisma.service.js';
 import { ConfigService } from '../config/config.service.js';
 import { SessionService } from './session.service.js';
@@ -59,9 +59,10 @@ export class TwoFactorService {
     private readonly sessions: SessionService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {
-    this.crypto = new EnvelopeEncryption(
-      new CachingKmsProvider(LocalKmsProvider.fromBase64(config.env.ENCRYPTION_MASTER_KEY ?? '')),
-    );
+    // `createKmsProvider` is the only place the provider is chosen. Building
+    // `LocalKmsProvider` here directly is what made `KMS_PROVIDER` a setting
+    // nothing read.
+    this.crypto = new EnvelopeEncryption(createKmsProvider(config.env));
   }
 
   /**

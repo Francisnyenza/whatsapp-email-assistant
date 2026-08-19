@@ -352,8 +352,14 @@ jobs:
 
           port=$([ "${{ matrix.app }}" = api ] && echo 3001 || echo 3002)
 
+          # `staging`, not `production`, and the reason is a real gap rather
+          # than convenience: the schema forbids KMS_PROVIDER=local in
+          # production, and no managed provider is implemented — so there is no
+          # production configuration that boots. See docs/status.md. Everything
+          # else about the image is identical.
           docker run -d --name smoke --network host \
-            -e NODE_ENV=production \
+            -e NODE_ENV=staging \
+            -e KMS_PROVIDER=local \
             -e API_PORT=3001 \
             -e WORKER_PORT=3002 \
             -e API_BASE_URL=http://localhost:3001 \

@@ -55,7 +55,7 @@ describeIfDb('connected mailboxes (real database)', () => {
 
     service = new AccountsService(
       client as never,
-      { env: { ENCRYPTION_MASTER_KEY: masterKey } } as never,
+      { env: { KMS_PROVIDER: 'local', ENCRYPTION_MASTER_KEY: masterKey } } as never,
       { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as never,
     );
 

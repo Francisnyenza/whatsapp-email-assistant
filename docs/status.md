@@ -40,6 +40,45 @@ single package — it never started anything, and passed on every run while the
 image it was checking could not boot. It now runs the real entrypoint against a
 real Postgres and Redis and waits for the process to answer `/health/live`.
 
+Chasing the same thread into the container found two more.
+
+**The images could not run either.** `apps/api` and `apps/worker` declared no
+`files` field, so `pnpm deploy --prod` fell back to npm-pack semantics, which
+honour `.gitignore` — and `.gitignore` has `dist/`. The deployed tree contained
+`src`, `test` and `vitest.config.ts` but **not the build**, so the entrypoint died
+on `Cannot find module '/app/dist/main.js'`. Every `packages/*` already declared
+`"files": ["dist"]`; the two apps never did. Both now do, and the deployed tree is
+`dist`, `node_modules`, `package.json` — which is what the Dockerfile's own comment
+about shipping no compiler and no test files always claimed it was.
+
+**`KMS_PROVIDER` was read by nothing.** This is the one with a security
+consequence rather than a crash. ADR 0002 says the key-encryption key lives in a
+managed KMS and that the local key merely "stands in for KMS behind the same
+interface". The interface exists. Nothing behind it does — there is no AWS, Azure
+or GCP provider — and all four call sites (three in the API, one in the worker)
+constructed `LocalKmsProvider` directly whatever the setting said. Two outcomes,
+and the quiet one is worse:
+
+- With `KMS_PROVIDER=aws` and no master key — the only shape the schema permits in
+  production — every one of those constructors threw at boot. Production was
+  unreachable by construction.
+- With `KMS_PROVIDER=aws` **and** a master key, which is what copying
+  `.env.example` gives you, it started and used the static key from its own
+  process environment while the operator believed the KEK was in a managed
+  service.
+
+Selection now goes through a single `createKmsProvider`, and a provider that is
+not implemented is a **refusal**, not a fallback — a fallback here is the same bug
+with a friendlier face, and the test that pins it is the one asserting a throw in
+the case where falling back would have worked. `LocalKmsProvider`'s own comment
+claimed the schema made it unreachable in production; that was true of the name
+and not of the code, and it has been corrected.
+
+**This means there is still no production configuration that boots.** That is not
+a regression — it was always so — but it is now loud instead of silent, and it is
+the top item under _Next, in order_. The CI image smoke test runs `staging` for
+this reason, and says so.
+
 **How this got past 1 900 tests.** Unit tests build services with `new Service(deps)`
 and never ask the container to do it. `di.spec.ts` counts constructor parameters
 through reflection, which is a different question from whether they resolve. Nothing
@@ -55,13 +94,13 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 931 tests** (1 556 unit + 375 integration
+Everything below has tests that run and pass. **1 940 tests** (1 565 unit + 375 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
 | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@wea/shared`   | 105              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization, preflight checks                            |
-| `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
+| `@wea/crypto`   | 113              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
 | `@wea/db`       | 9 (integration)  | Prisma schema, thirteen migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
 | `@wea/whatsapp` | 219              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
 | `@wea/mail`     | 235              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                     |
@@ -71,7 +110,7 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 556 unit tests
+pnpm -r test          # 1 565 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -369,13 +408,21 @@ discover_ which tenant a delivery belongs to — but the other three are a gap r
 design, and are pinned by an equality assertion in `tenant-isolation.integration.spec.ts`
 so the list cannot quietly grow.
 
-1. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
+1. **A managed KMS provider.** `createKmsProvider` accepts `aws`, `azure` and
+   `gcp` and implements none of them, so the only provider that works is the local
+   static key the environment schema forbids in production. Until an adapter
+   exists there is no configuration in which the process starts _and_ keeps the
+   key-encryption key outside its own environment, which is the central claim of
+   ADR 0002. The Terraform module already provisions the AWS key, so `aws` is the
+   one to write; the interface is four methods and the adapter is testable against
+   a stubbed client exactly as the Gmail and Graph adapters are.
+2. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
    the secret; it deliberately does not create an EKS cluster, because every organisation
    with Kubernetes already has an opinion about how clusters are made and a module that
    insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
    subnet groups and security groups the module takes as inputs, and External Secrets wired
    from the Secrets Manager secret into the namespace.
-2. **More metrics than queue depth and request rate.** The worker exports
+3. **More metrics than queue depth and request rate.** The worker exports
    `wea_queue_depth` and the API now exports its request counters and latency histogram,
    which between them cover the backlog, error-rate and p95 alerts. Still unexported and
    still only a log line: a mailbox stuck in `polling`, a user's token budget exhausted,
@@ -383,12 +430,12 @@ so the list cannot quietly grow.
    writes an `event` field for, so what is missing is the export rather than the detection.
    The worker's own work is also unmeasured — job duration and failure rate per queue would
    say _why_ a backlog is growing, where depth only says that it is.
-3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
+4. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone. `pnpm preflight` narrows
    this — it exercises both seams for real — but it checks that they are reachable and
    configured, not that a message round-trips.
-4. **A real end-to-end run.** `docs/getting-started.md` is the ordered walkthrough and
+5. **A real end-to-end run.** `docs/getting-started.md` is the ordered walkthrough and
    `pnpm preflight` verifies each seam, but nobody has yet taken a live Meta app and a live
    Gmail account from clone to a reply landing in someone's inbox. Every claim in that
    document is checked against the code; none of it is checked against Meta.
