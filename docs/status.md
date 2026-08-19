@@ -132,12 +132,12 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 940 tests** (1 565 unit + 375 integration
+Everything below has tests that run and pass. **1 943 tests** (1 568 unit + 375 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
 | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 105              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization, preflight checks                            |
+| `@wea/shared`   | 108              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization, preflight checks                            |
 | `@wea/crypto`   | 113              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
 | `@wea/db`       | 9 (integration)  | Prisma schema, thirteen migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
 | `@wea/whatsapp` | 219              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
@@ -148,7 +148,7 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 565 unit tests
+pnpm -r test          # 1 568 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -306,6 +306,21 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   `NODE_ENV` says, and there is no SMTP hop to intercept. The Mailpit service has been
   removed from `docker-compose.yml` rather than left as a sandbox that was not one, and
   `pnpm preflight` states the position on every run.
+- The **first-run flow was exercised against running processes**, which nothing had
+  done before. The dashboard was built for production (`next build`, not `next dev`)
+  and served: 200, a Content-Security-Policy carrying a fresh nonce that matches the
+  script tags it emits — the failure mode `docs/development.md` warns is invisible in
+  development — and a `connect-src` naming the API from `NEXT_PUBLIC_API_BASE_URL`.
+  Against a real API on a real database: sign-up returned 201 with a token pair,
+  sign-in round-tripped, `/v1/auth/me` resolved the session, and
+  `/v1/auth/phone/start` issued a verification code.
+
+  That last call is also where a gap showed up. It returns `sendTo: null` unless
+  `WHATSAPP_BUSINESS_NUMBER` is set, and the screen then reads “send this code to
+  **our WhatsApp number**” — naming nothing. Phone verification is the one step that
+  cannot be completed from the dashboard alone, so an unnamed destination is a dead
+  end at the worst moment. `pnpm preflight` now warns about it.
+
 - The alert rules are validated twice, because the two tools answer different questions.
   kubeconform checks the `PrometheusRule` is shaped correctly; the PromQL inside it is just
   a string to a schema, and a malformed expression is accepted by the cluster and then

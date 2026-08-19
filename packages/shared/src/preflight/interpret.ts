@@ -236,6 +236,35 @@ export function interpretLocalApi(probe: Probe, port: number): CheckResult {
 }
 
 /**
+ * Whether the dashboard can tell someone where to send their verification code.
+ *
+ * Phone verification runs inbound: the screen shows a code and asks the user to
+ * message it to the business number. `WHATSAPP_BUSINESS_NUMBER` is the number it
+ * prints. Unset, the screen falls back to the words "our WhatsApp number" — not
+ * an error, and not an answer either. It is the one step of setup that cannot be
+ * finished from the dashboard alone, so a screen that cannot name the
+ * destination is a dead end at exactly the wrong moment.
+ *
+ * Separate from `WHATSAPP_PHONE_NUMBER_ID`, which is Meta's opaque handle and is
+ * not dialable. Both come off the same tab, which is part of why this gets
+ * skipped.
+ */
+export function interpretBusinessNumber(configured?: string | undefined): CheckResult {
+  const name = 'Number shown to users';
+
+  if (configured && configured.trim().length > 0) {
+    return { name, level: 'ok', detail: configured };
+  }
+
+  return {
+    name,
+    level: 'warn',
+    detail: 'WHATSAPP_BUSINESS_NUMBER is not set',
+    fix: 'The “verify your phone” screen will say “send this code to our WhatsApp number” without naming it. Set it to the number in E.164 that people actually message — the dialable one, not WHATSAPP_PHONE_NUMBER_ID.',
+  };
+}
+
+/**
  * The verify handshake, performed against our own API exactly as Meta performs it.
  *
  * This is the one check that tests the whole inbound path end to end — the

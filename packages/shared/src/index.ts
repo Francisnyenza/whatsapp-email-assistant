@@ -130,6 +130,7 @@ export {
   whatsappWebhookUrlFor,
   interpretPhoneNumber,
   interpretSubscribedApps,
+  interpretBusinessNumber,
   interpretWebhookHandshake,
   interpretLocalApi,
   interpretDashboardWiring,

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   interpretPhoneNumber,
   interpretSubscribedApps,
+  interpretBusinessNumber,
   interpretWebhookHandshake,
   interpretLocalApi,
   interpretDashboardWiring,
@@ -161,6 +162,32 @@ describe('the webhook subscription', () => {
 
   it('warns when Graph is unreachable', () => {
     expect(interpretSubscribedApps({ kind: 'unreachable', error: 'timeout' }).level).toBe('warn');
+  });
+});
+
+describe('the number shown on the verify screen', () => {
+  it('reports it when set', () => {
+    const result = interpretBusinessNumber('+15550100');
+
+    expect(result.level).toBe('ok');
+    expect(result.detail).toBe('+15550100');
+  });
+
+  it('warns when unset, because the screen then names no number at all', () => {
+    // Phone verification runs inbound — the user has to message the code to the
+    // business number. Unset, the dashboard says "send this code to our
+    // WhatsApp number", which is the one step of setup that cannot be completed
+    // from the dashboard and now cannot be completed from the instructions
+    // either.
+    const result = interpretBusinessNumber(undefined);
+
+    expect(result.level).toBe('warn');
+    expect(result.fix).toMatch(/verify your phone/);
+    expect(result.fix).toMatch(/WHATSAPP_PHONE_NUMBER_ID/);
+  });
+
+  it('treats blank as unset', () => {
+    expect(interpretBusinessNumber('   ').level).toBe('warn');
   });
 });
 

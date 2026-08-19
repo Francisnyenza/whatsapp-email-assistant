@@ -7,6 +7,7 @@ import {
   exitCodeFor,
   interpretPhoneNumber,
   interpretSubscribedApps,
+  interpretBusinessNumber,
   interpretWebhookHandshake,
   interpretLocalApi,
   interpretDashboardWiring,
@@ -212,6 +213,7 @@ async function main(): Promise<void> {
 
   const whatsapp: CheckResult[] = [
     interpretPhoneNumber(phoneNumber),
+    interpretBusinessNumber(env.WHATSAPP_BUSINESS_NUMBER),
     interpretWebhookHandshake(handshake, challenge, { localApiUp }),
   ];
 
