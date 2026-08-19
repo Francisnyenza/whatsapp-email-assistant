@@ -13,7 +13,8 @@
   },
   "files": [
     "dist",
-    "prisma"
+    "prisma",
+    "generated"
   ],
   "scripts": {
     "generate": "prisma generate",

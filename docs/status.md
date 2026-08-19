@@ -51,6 +51,17 @@ on `Cannot find module '/app/dist/main.js'`. Every `packages/*` already declared
 `dist`, `node_modules`, `package.json` — which is what the Dockerfile's own comment
 about shipping no compiler and no test files always claimed it was.
 
+**The Prisma engine was not in the image either.** Once the build was present,
+the container got further and died on "Query engine not found", listing
+`/app/node_modules/.pnpm/@wea+db@…/node_modules/@wea/db/generated/client` among the
+places it had searched. The Dockerfile carried the client over with an explicit
+`cp` into `/deploy/node_modules/@wea/db/generated` — a path that is a _symlink_
+into the `.pnpm` store, so the copy did not land where Prisma looks. `@wea/db` now
+declares `generated` in its `files` and `pnpm deploy` places it with the package;
+the `cp` is gone, and the layout is no longer the Dockerfile's business. Verified
+by deploying and booting the tree with no manual copy at all: database connected,
+`/health/ready` 200.
+
 **`KMS_PROVIDER` was read by nothing.** This is the one with a security
 consequence rather than a crash. ADR 0002 says the key-encryption key lives in a
 managed KMS and that the local key merely "stands in for KMS behind the same

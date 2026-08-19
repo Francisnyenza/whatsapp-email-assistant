@@ -59,10 +59,14 @@ RUN pnpm build
 ARG APP
 RUN pnpm --filter "@wea/${APP}" deploy --prod --legacy /deploy
 
-# `pnpm deploy` prunes dev dependencies, and Prisma's generated client lives in
-# a package directory rather than in node_modules — so it has to be carried over
-# explicitly or the app starts and fails on its first query.
-RUN cp -r /repo/packages/db/generated /deploy/node_modules/@wea/db/generated
+# Prisma's generated client used to be carried over here with an explicit
+# `cp -r /repo/packages/db/generated /deploy/node_modules/@wea/db/generated`.
+# That path is a symlink into `.pnpm/@wea+db@…/node_modules/@wea/db`, and the
+# copy did not land where Prisma looks — the image started and died on
+# "Query engine not found", listing that exact directory among the places it had
+# searched. `@wea/db` now declares `generated` in its `files`, so `pnpm deploy`
+# places it wherever it places the package, and the layout is not this
+# Dockerfile's business.
 
 # ---------------------------------------------------------------------------
 # runtime
