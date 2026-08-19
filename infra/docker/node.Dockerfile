@@ -107,6 +107,18 @@ RUN groupadd --system --gid 1001 wea \
 
 COPY --from=build --chown=wea:wea /deploy /app
 
+# The same assertion as in the build stage, on the other side of the COPY.
+#
+# The build stage's check passed while the running container still could not
+# find the engine, which narrows it to this copy — so the question gets asked
+# again here, where /app is what the process will actually see. Two asserts for
+# one file is not paranoia when the alternative is a five-minute CI round trip
+# to learn which side of a COPY lost it.
+RUN set -eux; \
+    readlink -f /app/node_modules/@wea/db; \
+    ls -la "$(readlink -f /app/node_modules/@wea/db)"/generated/client/ | head -30; \
+    ls "$(readlink -f /app/node_modules/@wea/db)"/generated/client/*.so.node
+
 USER wea
 
 EXPOSE 3001
