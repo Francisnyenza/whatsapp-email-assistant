@@ -203,6 +203,39 @@ export function interpretSubscribedApps(probe: Probe): CheckResult {
 }
 
 /**
+ * Is the API running on this machine at all.
+ *
+ * Only asked when the public URL is somewhere else, because it exists to split
+ * one symptom in two. "Nothing answered at that URL" has two completely
+ * different causes — the process is not running, or the tunnel is not reaching
+ * it — and they send you to different places. Answering both at once turns the
+ * pair of results into a diagnosis.
+ */
+export function interpretLocalApi(probe: Probe, port: number): CheckResult {
+  const name = 'API process';
+
+  if (probe.kind === 'unreachable') {
+    return {
+      name,
+      level: 'fail',
+      detail: `Nothing listening on localhost:${port}`,
+      fix: 'Start it with `pnpm dev`, which runs the API, the worker and the dashboard together.',
+    };
+  }
+
+  // Any answer proves a listener. A 503 means the API is up and a dependency is
+  // not, which the Postgres and Redis checks above have already named.
+  return {
+    name,
+    level: 'ok',
+    detail:
+      probe.status === 200
+        ? `listening on ${port}`
+        : `listening on ${port} (not ready: ${probe.status})`,
+  };
+}
+
+/**
  * The verify handshake, performed against our own API exactly as Meta performs it.
  *
  * This is the one check that tests the whole inbound path end to end — the
@@ -211,8 +244,16 @@ export function interpretSubscribedApps(probe: Probe): CheckResult {
  * read. A stale process still holding last week's token is invisible every
  * other way, and it is the reason the handshake is performed rather than the
  * token compared as a string.
+ *
+ * `localApiUp` is what makes an unreachable URL actionable. Knowing the process
+ * is answering on localhost while the public URL is not turns "something is
+ * wrong" into "your tunnel is down", which is a different afternoon.
  */
-export function interpretWebhookHandshake(probe: Probe, challenge: string): CheckResult {
+export function interpretWebhookHandshake(
+  probe: Probe,
+  challenge: string,
+  options: { localApiUp?: boolean | undefined } = {},
+): CheckResult {
   const name = 'Webhook endpoint';
 
   if (probe.kind === 'unreachable') {
@@ -220,7 +261,12 @@ export function interpretWebhookHandshake(probe: Probe, challenge: string): Chec
       name,
       level: 'fail',
       detail: `Nothing answered at that URL — ${probe.error}`,
-      fix: 'API_BASE_URL must be reachable from the public internet, because Meta calls it. If it is a tunnel, is the tunnel still running? Its URL changes every restart unless it is a named tunnel.',
+      fix:
+        options.localApiUp === true
+          ? 'The API is answering on localhost, so this is the tunnel rather than the app. Is it still running? A quick tunnel’s hostname changes every restart, and Meta has the old one.'
+          : options.localApiUp === false
+            ? 'The API is not running either — start it with `pnpm dev` before looking at the tunnel.'
+            : 'API_BASE_URL must be reachable from the public internet, because Meta calls it. If it is a tunnel, is the tunnel still running? Its URL changes every restart unless it is a named tunnel.',
     };
   }
 
@@ -413,6 +459,62 @@ export function interpretAiKey(probe: Probe, provider: string): CheckResult {
     level: 'warn',
     detail: `${provider} answered ${probe.status}.`,
     fix: 'Could not confirm the key. Summaries may or may not work.',
+  };
+}
+
+/**
+ * Whether the dashboard can reach the API from a browser.
+ *
+ * `NEXT_PUBLIC_API_BASE_URL` does two jobs: it is the base every request goes
+ * to, and `middleware.ts` derives the CSP `connect-src` from it. Point it
+ * somewhere the API is not and the failure is uniquely unhelpful — a policy
+ * violation in the console and **nothing at all in the network tab**, because
+ * the request never leaves the page.
+ *
+ * Two answers are correct, which is why this cannot be a string equality: the
+ * public URL, or `localhost:API_PORT` when the browser is on the same machine
+ * as the API. Anything else is a dashboard that silently cannot sign in.
+ *
+ * Next inlines `NEXT_PUBLIC_*` at build time, so fixing it needs a rebuild
+ * rather than a restart — worth saying, because a restart looks like it should
+ * be enough and is not.
+ */
+export function interpretDashboardWiring(input: {
+  configured?: string | undefined;
+  apiBaseUrl: string;
+  apiPort: number;
+}): CheckResult {
+  const name = 'Dashboard → API';
+  const trim = (u: string) => u.replace(/\/+$/, '');
+  const local = `http://localhost:${input.apiPort}`;
+
+  if (!input.configured) {
+    return {
+      name,
+      level: 'warn',
+      detail: `NEXT_PUBLIC_API_BASE_URL is unset — the dashboard will use ${local}`,
+      fix: `Right only if you open the dashboard on the same machine as the API. Set it to ${trim(input.apiBaseUrl)} if you will not.`,
+    };
+  }
+
+  const configured = trim(input.configured);
+  if (configured === trim(input.apiBaseUrl)) {
+    return { name, level: 'ok', detail: configured };
+  }
+
+  if (configured === local || configured === `http://127.0.0.1:${input.apiPort}`) {
+    return {
+      name,
+      level: 'ok',
+      detail: `${configured} — same machine as the API`,
+    };
+  }
+
+  return {
+    name,
+    level: 'fail',
+    detail: `NEXT_PUBLIC_API_BASE_URL is ${configured}, which is neither ${trim(input.apiBaseUrl)} nor ${local}.`,
+    fix: 'The dashboard will fail every request with a Content-Security-Policy violation and nothing in the network tab, because connect-src is derived from this value. Next inlines it at build time, so change it and rebuild — a restart is not enough.',
   };
 }
 

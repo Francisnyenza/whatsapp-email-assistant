@@ -6,25 +6,66 @@ Last updated: 2026-08-15.
 
 ---
 
+## The application could not start
+
+Worth putting before anything else, because it undercuts how the rest of this
+document should be read.
+
+Until now, **neither service could boot**. `ConfigService` — the class every other
+class depends on — declared
+`constructor(source: NodeJS.ProcessEnv = process.env)`. `emitDecoratorMetadata`
+records that parameter's type as `Object`; a default value is not part of the
+metadata, and dependency injection always supplies its own argument. So Nest looked
+for a provider of type `Object`, found none, and refused to construct it. Everything
+downstream failed with `Cannot read properties of undefined (reading 'env')`.
+
+It survived because of a second bug that hid it. Nest handles a start-up failure
+inside its own exception zone and calls `process.exit(1)` from there — before
+`bootstrap().catch` runs — and both `main.ts` files passed `logger: false`, which
+suppressed the only place the reason was printed. The observable behaviour was a
+process that exited 1 having written **nothing at all**, to stdout, stderr or a file.
+
+Four more sat behind it, each only reachable once the one in front was fixed:
+
+|                 | Was                                                                                                                                                                                                       | Now                                                                                                                                              |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pino-pretty`   | Referenced by the logger, a dependency of nothing. In `NODE_ENV=development` — the default — both services died at boot.                                                                                  | Declared, and the transport is skipped rather than fatal when it cannot be resolved. Colour is not worth a process that will not start.          |
+| `pnpm dev`      | `tsx`, which transpiles with esbuild — and esbuild does not implement `emitDecoratorMetadata`. Every injected parameter was `undefined`, so the command the docs tell you to run could never have worked. | `node --watch --import @swc-node/register/esm-register`, which emits the metadata.                                                               |
+| `/health/ready` | Hung indefinitely when Redis was unreachable, and answered **200 with `status: "degraded"`** when it did answer — so Kubernetes kept routing traffic to a pod that had just declared itself broken.       | Both checks bounded at 3s and run concurrently; 503 when degraded. The worker's health listener had always done this, and said why in a comment. |
+| `pnpm doctor`   | The name of pnpm's own built-in command, which shadowed the script: it ran pnpm's checker, printed nothing useful, and exited 0.                                                                          | Renamed to `pnpm preflight`.                                                                                                                     |
+
+**How this got past 1 900 tests.** Unit tests build services with `new Service(deps)`
+and never ask the container to do it. `di.spec.ts` counts constructor parameters
+through reflection, which is a different question from whether they resolve. Nothing
+anywhere started an application. So `apps/api/test/boot.spec.ts` and
+`apps/worker/test/boot.integration.spec.ts` now do exactly that, and each was
+confirmed to fail when the fix is reverted. CI gained a Redis service so the worker's
+can run there — `createApplicationContext` runs lifecycle hooks, so its consumers
+really do attach.
+
+The API and the worker have both since been started, serving `/health/live`,
+`/health/ready` and `/metrics`, with the worker registering its schedulers and running
+its sweeps against a real database.
+
 ## Verified working
 
-Everything below has tests that run and pass. **1 912 tests** (1 540 unit + 372 integration
+Everything below has tests that run and pass. **1 931 tests** (1 556 unit + 375 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
 | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@wea/shared`   | 94               | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization, preflight checks                            |
+| `@wea/shared`   | 105              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization, preflight checks                            |
 | `@wea/crypto`   | 104              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
 | `@wea/db`       | 9 (integration)  | Prisma schema, thirteen migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
 | `@wea/whatsapp` | 219              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
 | `@wea/mail`     | 235              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                     |
 | `@wea/ai`       | 218              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic      |
-| `apps/api`      | 193 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health, metrics                                        |
-| `apps/worker`   | 439 + 311 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
+| `apps/api`      | 198 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health, metrics                                        |
+| `apps/worker`   | 439 + 314 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 540 unit tests
+pnpm -r test          # 1 556 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -146,7 +187,7 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   seconds per replica it would be most of the traffic on a quiet API and the request-rate
   panel would be the monitoring system watching itself.
 
-- `pnpm doctor` checks every external seam and says what to change. The environment
+- `pnpm preflight` checks every external seam and says what to change. The environment
   schema already refuses to boot on a variable that is missing or malformed; what it
   cannot see is one that is well-formed and wrong, and every such failure in this product
   is silent — the system starts, passes both health checks, and never delivers a message.
@@ -181,7 +222,7 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   send path did that — Gmail and Graph are called with the user's own OAuth token whatever
   `NODE_ENV` says, and there is no SMTP hop to intercept. The Mailpit service has been
   removed from `docker-compose.yml` rather than left as a sandbox that was not one, and
-  `pnpm doctor` states the position on every run.
+  `pnpm preflight` states the position on every run.
 - The alert rules are validated twice, because the two tools answer different questions.
   kubeconform checks the `PrometheusRule` is shaped correctly; the PromQL inside it is just
   a string to a schema, and a malformed expression is accepted by the cluster and then
@@ -338,11 +379,11 @@ so the list cannot quietly grow.
    say _why_ a backlog is growing, where depth only says that it is.
 3. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
-   Google, which is where a contract changes without telling anyone. `pnpm doctor` narrows
+   Google, which is where a contract changes without telling anyone. `pnpm preflight` narrows
    this — it exercises both seams for real — but it checks that they are reachable and
    configured, not that a message round-trips.
 4. **A real end-to-end run.** `docs/getting-started.md` is the ordered walkthrough and
-   `pnpm doctor` verifies each seam, but nobody has yet taken a live Meta app and a live
+   `pnpm preflight` verifies each seam, but nobody has yet taken a live Meta app and a live
    Gmail account from clone to a reply landing in someone's inbox. Every claim in that
    document is checked against the code; none of it is checked against Meta.
 

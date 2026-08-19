@@ -18,7 +18,14 @@ import { startHealthServer } from './health/health.server.js';
  * second Nest app, for the reasons in `health/health.server.ts`.
  */
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.createApplicationContext(WorkerModule, { logger: false });
+  // `abortOnError: false` for the same reason as the API: otherwise Nest exits
+  // the process itself on a start-up failure, before the handler at the bottom
+  // of this file runs, and with `logger: false` suppressing the reason — a
+  // worker that dies at boot having printed nothing.
+  const app = await NestFactory.createApplicationContext(WorkerModule, {
+    logger: false,
+    abortOnError: false,
+  });
 
   const config = app.get(ConfigService);
   const logger = app.get<Logger>('LOGGER');

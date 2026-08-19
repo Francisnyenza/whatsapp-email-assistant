@@ -3,6 +3,8 @@ import {
   interpretPhoneNumber,
   interpretSubscribedApps,
   interpretWebhookHandshake,
+  interpretLocalApi,
+  interpretDashboardWiring,
   interpretGoogleOAuth,
   interpretGmailDelivery,
   interpretAiConfig,
@@ -190,6 +192,124 @@ describe('the webhook handshake', () => {
 
     expect(result.level).toBe('fail');
     expect(result.fix).toMatch(/tunnel/);
+  });
+});
+
+describe('is the API even running', () => {
+  it('passes on any answer, because a listener is the whole question', () => {
+    // A 503 means the API is up and a dependency is not, which the Postgres and
+    // Redis rows have already named. Reading it as "API down" would send
+    // someone to restart a process that is working.
+    expect(interpretLocalApi(response(200, {}), 3001).level).toBe('ok');
+    expect(interpretLocalApi(response(503, {}), 3001).level).toBe('ok');
+  });
+
+  it('names the port and the command when nothing is listening', () => {
+    const result = interpretLocalApi({ kind: 'unreachable', error: 'ECONNREFUSED' }, 3001);
+
+    expect(result.level).toBe('fail');
+    expect(result.detail).toContain('3001');
+    expect(result.fix).toContain('pnpm dev');
+  });
+});
+
+describe('splitting a dead tunnel from a dead process', () => {
+  const dead = { kind: 'unreachable', error: 'ECONNREFUSED' } as const;
+
+  it('blames the tunnel when the process is answering locally', () => {
+    // The pair of results is the diagnosis. One says nothing answered
+    // publicly, the other says the process is fine — together that is
+    // "your tunnel is down" rather than "something is wrong".
+    const result = interpretWebhookHandshake(dead, 'x', { localApiUp: true });
+
+    expect(result.fix).toMatch(/tunnel rather than the app/);
+  });
+
+  it('sends you to start the API when that is not running either', () => {
+    const result = interpretWebhookHandshake(dead, 'x', { localApiUp: false });
+
+    expect(result.fix).toMatch(/not running either/);
+    expect(result.fix).toContain('pnpm dev');
+  });
+
+  it('falls back to the general advice when the split was not checked', () => {
+    // API_BASE_URL already points at localhost, so there is no second place to
+    // look and no split to make.
+    expect(interpretWebhookHandshake(dead, 'x').fix).toMatch(/reachable from the public internet/);
+  });
+});
+
+describe('the dashboard reaching the API', () => {
+  const apiPort = 3001;
+
+  it('passes when it names the public URL', () => {
+    const result = interpretDashboardWiring({
+      configured: 'https://api.example.com',
+      apiBaseUrl: 'https://api.example.com',
+      apiPort,
+    });
+
+    expect(result.level).toBe('ok');
+  });
+
+  it('passes on localhost, because the browser is usually on this machine', () => {
+    // Two answers are correct here, which is why it cannot be string equality.
+    for (const host of ['http://localhost:3001', 'http://127.0.0.1:3001']) {
+      const result = interpretDashboardWiring({
+        configured: host,
+        apiBaseUrl: 'https://api.example.com',
+        apiPort,
+      });
+      expect(result.level).toBe('ok');
+    }
+  });
+
+  it('fails when it points somewhere the API is not', () => {
+    // The worst failure to debug in the product: a CSP violation in the console
+    // and nothing whatsoever in the network tab, because connect-src is derived
+    // from this value and the request never leaves the page.
+    const result = interpretDashboardWiring({
+      configured: 'https://stale-tunnel.example.com',
+      apiBaseUrl: 'https://api.example.com',
+      apiPort,
+    });
+
+    expect(result.level).toBe('fail');
+    expect(result.fix).toMatch(/Content-Security-Policy/);
+    expect(result.fix).toMatch(/rebuild/);
+  });
+
+  it('catches localhost on the wrong port', () => {
+    // Changing API_PORT without changing this is a dashboard that cannot sign
+    // in, and nothing else reports it.
+    const result = interpretDashboardWiring({
+      configured: 'http://localhost:3001',
+      apiBaseUrl: 'https://api.example.com',
+      apiPort: 4000,
+    });
+
+    expect(result.level).toBe('fail');
+  });
+
+  it('ignores a trailing slash rather than failing on one', () => {
+    const result = interpretDashboardWiring({
+      configured: 'https://api.example.com/',
+      apiBaseUrl: 'https://api.example.com',
+      apiPort,
+    });
+
+    expect(result.level).toBe('ok');
+  });
+
+  it('warns when unset, saying what the default assumes', () => {
+    const result = interpretDashboardWiring({
+      apiBaseUrl: 'https://api.example.com',
+      apiPort,
+    });
+
+    expect(result.level).toBe('warn');
+    expect(result.detail).toContain('http://localhost:3001');
+    expect(result.fix).toContain('https://api.example.com');
   });
 });
 

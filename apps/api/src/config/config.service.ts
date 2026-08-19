@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { loadEnv, type Env } from '@wea/shared';
 
 /**
@@ -12,7 +12,22 @@ import { loadEnv, type Env } from '@wea/shared';
 export class ConfigService {
   readonly env: Env;
 
-  constructor(source: NodeJS.ProcessEnv = process.env) {
+  /**
+   * `@Optional()` is load-bearing, not defensive.
+   *
+   * `emitDecoratorMetadata` turns `NodeJS.ProcessEnv` into `design:paramtypes:
+   * [Object]`, and a default value is invisible to that metadata — dependency
+   * injection always passes its own resolved argument. So Nest saw a required
+   * dependency of type `Object`, could not find a provider for it, and refused
+   * to build this class. Since everything downstream needs configuration, that
+   * meant the application could not start at all.
+   *
+   * `@Optional()` makes Nest pass `undefined` instead of throwing, and
+   * `undefined` is exactly what triggers a JavaScript default parameter — so
+   * the container gets `process.env` and `new ConfigService(fake)` still works
+   * in a test.
+   */
+  constructor(@Optional() source: NodeJS.ProcessEnv = process.env) {
     this.env = loadEnv(source);
   }
 

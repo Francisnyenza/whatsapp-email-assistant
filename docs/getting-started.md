@@ -6,7 +6,7 @@ in about forty minutes. Roughly ten of those are waiting for consoles.
 This is the walkthrough. [`docs/development.md`](development.md) is the reference for
 what each variable means; this is the order to do things in and the traps between them.
 
-Run `pnpm doctor` whenever you are unsure. It calls Meta and Google for real and tells
+Run `pnpm preflight` whenever you are unsure. It calls Meta and Google for real and tells
 you which value is wrong, which is faster than reading logs that say nothing happened.
 
 ---
@@ -62,7 +62,7 @@ cloudflared tunnel --url http://localhost:3001
 
 Point it at **3001**, the API. Port 3000 is the dashboard; a tunnel aimed there answers
 Meta's verification with HTML and the handshake fails in a way that looks like a token
-problem. `pnpm doctor` distinguishes the two.
+problem. `pnpm preflight` distinguishes the two.
 
 Then, in `.env`:
 
@@ -93,10 +93,10 @@ WHATSAPP_ACCESS_TOKEN=<token>
 > bed, and find everything broken with no error anywhere. For anything beyond one sitting:
 > Business Settings → System Users → create one → Generate token, with
 > `whatsapp_business_messaging` and `whatsapp_business_management`, and no expiry.
-> `pnpm doctor` names this specifically when it sees a 190.
+> `pnpm preflight` names this specifically when it sees a 190.
 
-`WHATSAPP_BUSINESS_ACCOUNT_ID` is optional but worth setting — it is what lets the doctor
-check the subscription in [the next step](#the-webhook), which is otherwise the failure
+`WHATSAPP_BUSINESS_ACCOUNT_ID` is optional but worth setting — it is what lets the preflight
+check verify the subscription in [the next step](#the-webhook), which is otherwise the failure
 you cannot see.
 
 ### Your app secret
@@ -172,7 +172,7 @@ At [console.cloud.google.com](https://console.cloud.google.com), in a new projec
    https://<your-tunnel-hostname>/v1/oauth/google/callback
    ```
 
-   Google compares this string exactly — a trailing slash is a mismatch. `pnpm doctor`
+   Google compares this string exactly — a trailing slash is a mismatch. `pnpm preflight`
    derives the value the API actually serves and prints it ready to paste.
 
 ```
@@ -194,7 +194,7 @@ account. It is the longest part of the setup and you do not need it: mailboxes w
 watch are polled every two minutes, which is a supported way to run.
 
 The difference is that mail arrives within about two minutes rather than within seconds.
-`pnpm doctor` says which mode you are in, so you are not left judging the product by the
+`pnpm preflight` says which mode you are in, so you are not left judging the product by the
 slower one without knowing. Set `GOOGLE_PUBSUB_TOPIC` later if you want the fast path.
 
 ---
@@ -209,7 +209,7 @@ OPENAI_API_KEY=<key>
 Or `AI_PRIMARY_PROVIDER=none` to run without it, deliberately. Naming a provider with no
 key will not boot.
 
-The doctor tries the key rather than looking at it. A key that is valid but on an account
+The preflight check tries the key rather than looking at it. A key that is valid but on an account
 with no credit answers 429 to everything — every summary fails, each one retried as if it
 were transient, and the inbox just quietly has no summaries in it.
 
@@ -218,7 +218,7 @@ were transient, and the inbox just quietly has no summaries in it.
 ## 7. Check before you start
 
 ```bash
-pnpm doctor
+pnpm preflight
 ```
 
 Work down the failures. Each `→` is the thing to change. Warnings are fine to leave:
@@ -263,7 +263,7 @@ address, to whoever the original was from.
 
 An earlier version of `docs/development.md` claimed a Mailpit instance caught development
 mail. It never did — nothing pointed at it — and the service has been removed rather than
-left sitting there looking like a safety net. `pnpm doctor` says this on every run.
+left sitting there looking like a safety net. `pnpm preflight` says this on every run.
 
 Use an address you own for the first few tries. `undo` is the only recall there is, and it
 lasts fifteen seconds.
@@ -272,16 +272,16 @@ lasts fifteen seconds.
 
 ## When something does not work
 
-| What you see                           | What it usually is                                                                                              |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Meta will not save the webhook         | The tunnel is down, or aimed at :3000. `pnpm doctor` performs the same handshake Meta does and tells you which. |
-| Webhook saved, no messages ever arrive | The app is not subscribed to the `messages` field. Configuration → Webhook fields → Manage.                     |
-| Worked yesterday, dead this morning    | The 24-hour token. Use a System User token.                                                                     |
-| `redirect_uri_mismatch` from Google    | Exact-string comparison. Run the doctor; it prints the URI the API actually serves.                             |
-| Mailbox disconnects after a week       | Consent screen in Testing. Reconnect, or publish the app.                                                       |
-| Mail arrives, but no summaries         | AI key rejected or out of credit. The doctor tries the key rather than trusting it.                             |
-| Mail takes minutes, not seconds        | Polling, because there is no Pub/Sub topic. Expected.                                                           |
-| Everything green, still nothing        | Is the worker running? `pnpm dev` starts it; on its own, the API accepts webhooks and queues work nobody does.  |
+| What you see                           | What it usually is                                                                                                 |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Meta will not save the webhook         | The tunnel is down, or aimed at :3000. `pnpm preflight` performs the same handshake Meta does and tells you which. |
+| Webhook saved, no messages ever arrive | The app is not subscribed to the `messages` field. Configuration → Webhook fields → Manage.                        |
+| Worked yesterday, dead this morning    | The 24-hour token. Use a System User token.                                                                        |
+| `redirect_uri_mismatch` from Google    | Exact-string comparison. Run `pnpm preflight`; it prints the URI the API actually serves.                          |
+| Mailbox disconnects after a week       | Consent screen in Testing. Reconnect, or publish the app.                                                          |
+| Mail arrives, but no summaries         | AI key rejected or out of credit. Preflight tries the key rather than trusting it.                                 |
+| Mail takes minutes, not seconds        | Polling, because there is no Pub/Sub topic. Expected.                                                              |
+| Everything green, still nothing        | Is the worker running? `pnpm dev` starts it; on its own, the API accepts webhooks and queues work nobody does.     |
 
 Logs are JSON with an `event` field on every line. `pnpm dev 2>&1 | grep whatsapp.` is
 usually enough to see what the inbound path did with a message.

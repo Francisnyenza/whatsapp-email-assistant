@@ -131,6 +131,8 @@ export {
   interpretPhoneNumber,
   interpretSubscribedApps,
   interpretWebhookHandshake,
+  interpretLocalApi,
+  interpretDashboardWiring,
   interpretGoogleOAuth,
   interpretGmailDelivery,
   interpretAiConfig,

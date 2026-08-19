@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx watch src/main.ts",
+    "dev": "node --watch --import @swc-node/register/esm-register src/main.ts",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
@@ -13,7 +13,7 @@
     "test:unit": "tsc -p tsconfig.json && vitest run",
     "clean": "rm -rf dist *.tsbuildinfo",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "doctor": "tsx src/doctor.ts"
+    "preflight": "node --import @swc-node/register/esm-register src/preflight.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",
@@ -38,6 +38,7 @@
     "@types/express": "^5.0.0",
     "@types/express-serve-static-core": "^5.0.0",
     "@types/node": "^22.10.2",
+    "pino-pretty": "^13.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

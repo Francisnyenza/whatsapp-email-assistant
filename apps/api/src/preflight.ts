@@ -8,6 +8,8 @@ import {
   interpretPhoneNumber,
   interpretSubscribedApps,
   interpretWebhookHandshake,
+  interpretLocalApi,
+  interpretDashboardWiring,
   interpretGoogleOAuth,
   interpretGmailDelivery,
   interpretAiConfig,
@@ -25,7 +27,7 @@ import { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
 
 /**
- * `pnpm doctor` — the check that runs before the first message.
+ * `pnpm preflight` — the check that runs before the first message.
  *
  * Every failure mode this product has on a fresh install is silent. The
  * environment schema refuses to boot on a variable that is missing or the wrong
@@ -172,6 +174,11 @@ async function main(): Promise<void> {
   handshakeUrl.searchParams.set('hub.verify_token', env.WHATSAPP_WEBHOOK_VERIFY_TOKEN);
   handshakeUrl.searchParams.set('hub.challenge', challenge);
 
+  // Only when the public URL is somewhere else. If `API_BASE_URL` already
+  // points at localhost the handshake below *is* this check, and a second row
+  // reporting the same outage twice is how a report stops being read.
+  const publicIsLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(env.API_BASE_URL);
+
   const aiKeys: Record<string, string | undefined> = {
     openai: env.OPENAI_API_KEY,
     gemini: env.GEMINI_API_KEY,
@@ -180,23 +187,32 @@ async function main(): Promise<void> {
 
   // Everything at once. These are independent, and a serial run spends its time
   // waiting on timeouts for whichever service is down.
-  const [database, redis, phoneNumber, subscribedApps, handshake, aiKey] = await Promise.all([
-    checkDatabase(env.DATABASE_URL),
-    checkRedis(env.REDIS_URL),
-    probe(
-      `${graph}/${env.WHATSAPP_PHONE_NUMBER_ID}?fields=display_phone_number,verified_name,quality_rating`,
-      { headers: auth },
-    ),
-    env.WHATSAPP_BUSINESS_ACCOUNT_ID
-      ? probe(`${graph}/${env.WHATSAPP_BUSINESS_ACCOUNT_ID}/subscribed_apps`, { headers: auth })
-      : Promise.resolve(null),
-    probe(handshakeUrl.toString()),
-    aiProbeFor(env.AI_PRIMARY_PROVIDER, aiKeys) ?? Promise.resolve(null),
-  ]);
+  const [database, redis, phoneNumber, subscribedApps, handshake, aiKey, localApi] =
+    await Promise.all([
+      checkDatabase(env.DATABASE_URL),
+      checkRedis(env.REDIS_URL),
+      probe(
+        `${graph}/${env.WHATSAPP_PHONE_NUMBER_ID}?fields=display_phone_number,verified_name,quality_rating`,
+        { headers: auth },
+      ),
+      env.WHATSAPP_BUSINESS_ACCOUNT_ID
+        ? probe(`${graph}/${env.WHATSAPP_BUSINESS_ACCOUNT_ID}/subscribed_apps`, { headers: auth })
+        : Promise.resolve(null),
+      probe(handshakeUrl.toString()),
+      aiProbeFor(env.AI_PRIMARY_PROVIDER, aiKeys) ?? Promise.resolve(null),
+      publicIsLocal
+        ? Promise.resolve(null)
+        : probe(`http://127.0.0.1:${env.API_PORT}/health/ready`),
+    ]);
+
+  // The handshake reads better knowing whether the process itself is up: "your
+  // tunnel is down" and "start the API" are the same symptom and different
+  // afternoons.
+  const localApiUp = localApi ? localApi.kind === 'response' : undefined;
 
   const whatsapp: CheckResult[] = [
     interpretPhoneNumber(phoneNumber),
-    interpretWebhookHandshake(handshake, challenge),
+    interpretWebhookHandshake(handshake, challenge, { localApiUp }),
   ];
 
   if (subscribedApps) {
@@ -211,7 +227,23 @@ async function main(): Promise<void> {
   }
 
   const sections: ReportSection[] = [
-    { title: 'Local services', results: [...database, redis] },
+    {
+      title: 'Local services',
+      results: [
+        ...database,
+        redis,
+        ...(localApi ? [interpretLocalApi(localApi, env.API_PORT)] : []),
+        interpretDashboardWiring({
+          // Not in the environment schema: only Next reads it, and it is
+          // absent from `Env` for that reason. Reading it straight from the
+          // process is the point — a mismatch here is invisible everywhere
+          // else.
+          configured: process.env['NEXT_PUBLIC_API_BASE_URL'],
+          apiBaseUrl: env.API_BASE_URL,
+          apiPort: env.API_PORT,
+        }),
+      ],
+    },
     { title: 'WhatsApp', results: whatsapp },
     {
       title: 'Mail',

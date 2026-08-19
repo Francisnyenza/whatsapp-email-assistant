@@ -161,7 +161,15 @@ export const envSchema = z
     // Observability
     OTEL_ENABLED: booleanish,
     OTEL_EXPORTER_OTLP_ENDPOINT: z.string().url().optional(),
-    OTEL_SERVICE_NAME: z.string().default('wea-api'),
+    /**
+     * Optional, and deliberately without a default.
+     *
+     * It used to default to `wea-api`, which both services then reported —
+     * so every worker log line arrived in the aggregator labelled as the API,
+     * and a `service:wea-api` filter silently swept up half the other process.
+     * Each app supplies its own name to `createLogger`; this only overrides it.
+     */
+    OTEL_SERVICE_NAME: z.string().optional(),
     SENTRY_DSN: z.string().optional(),
     METRICS_ENABLED: booleanish,
 

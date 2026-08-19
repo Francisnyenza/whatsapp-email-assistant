@@ -15,6 +15,15 @@ async function bootstrap(): Promise<void> {
     // Nest's own logger would bypass our redaction, so it is disabled and every
     // line goes through the pino instance instead.
     logger: false,
+    // Without this, Nest catches a start-up failure itself and calls
+    // `process.exit(1)` from inside its exception zone — before the `catch`
+    // below ever runs, and with the reason routed to the logger disabled on the
+    // line above. The result was a process that died at boot printing nothing
+    // at all, which hid a dependency-injection bug that made the API
+    // unstartable. `false` makes `create` reject instead, so the handler at the
+    // bottom of this file gets the error and writes it where a person can see
+    // it.
+    abortOnError: false,
     // We install our own body parser, because webhook signature verification
     // needs the raw bytes and the default parser discards them.
     bodyParser: false,

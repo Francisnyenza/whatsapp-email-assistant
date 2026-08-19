@@ -27,7 +27,7 @@ printf 'JWT_REFRESH_SECRET=%s\n'    "$(openssl rand -base64 64)" >> .env
 pnpm infra:up        # postgres + redis + minio
 pnpm db:migrate      # from Phase 3
 pnpm db:test-role    # lets the integration suite connect as the restricted role
-pnpm doctor          # checks every external seam and says what to fix
+pnpm preflight          # checks every external seam and says what to fix
 pnpm dev             # all apps in watch mode
 ```
 
@@ -64,7 +64,7 @@ real recipient, from your real address. `undo` takes it back for fifteen seconds
 ## Checking the setup
 
 ```bash
-pnpm doctor
+pnpm preflight
 ```
 
 The boot-time schema refuses to start on a variable that is missing or malformed.
@@ -74,7 +74,7 @@ the app to, a Google redirect URI off by a trailing slash. None of those raise
 anything anywhere: the system starts, passes its health checks, and never delivers a
 message.
 
-`pnpm doctor` calls the real services and prints what to change. It is read-only —
+`pnpm preflight` calls the real services and prints what to change. It is read-only —
 no message sent, no row written, no OAuth flow started — so it is safe to run against
 production, and it exits non-zero only on a genuine failure so it can gate a deploy.
 Warnings (polling instead of push, AI switched off) are supported ways to run and do

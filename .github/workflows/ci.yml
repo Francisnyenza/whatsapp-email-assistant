@@ -95,8 +95,23 @@ jobs:
           --health-timeout 5s
           --health-retries 20
 
+      # Added for the boot tests. `createApplicationContext` runs the worker's
+      # lifecycle hooks, so its queue consumers attach to Redis — and "does the
+      # worker start at all" is not a question worth answering only on a
+      # developer's laptop.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     env:
       DATABASE_URL: postgresql://wea:wea_dev_password@localhost:5432/wea
+      REDIS_URL: redis://localhost:6379
       # The restricted role, and the whole reason this job is worth running.
       # Point it at the owner instead and every isolation assertion passes
       # without proving anything, because Postgres exempts the owner from

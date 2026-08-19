@@ -75,7 +75,7 @@ infra/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 912 tests passing** (1 540 unit + 372 integration against real Postgres). See
+**1 931 tests passing** (1 556 unit + 375 integration against real Postgres and Redis). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 
@@ -96,10 +96,10 @@ including what these ticks do not cover.
 ## Before the first message
 
 ```bash
-pnpm doctor
+pnpm preflight
 ```
 
-The boot check refuses to start on a variable that is missing or malformed. `pnpm doctor`
+The boot check refuses to start on a variable that is missing or malformed. `pnpm preflight`
 catches the other half — a variable that is well-formed and **wrong**: a WhatsApp token
 that expired overnight, a Business Account nobody subscribed the app to, a Google redirect
 URI off by a trailing slash. None of those raise anything anywhere; the system starts,
