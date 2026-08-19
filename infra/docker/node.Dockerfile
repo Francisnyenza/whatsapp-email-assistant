@@ -59,14 +59,27 @@ RUN pnpm build
 ARG APP
 RUN pnpm --filter "@wea/${APP}" deploy --prod --legacy /deploy
 
-# Prisma's generated client used to be carried over here with an explicit
-# `cp -r /repo/packages/db/generated /deploy/node_modules/@wea/db/generated`.
-# That path is a symlink into `.pnpm/@wea+db@…/node_modules/@wea/db`, and the
-# copy did not land where Prisma looks — the image started and died on
-# "Query engine not found", listing that exact directory among the places it had
-# searched. `@wea/db` now declares `generated` in its `files`, so `pnpm deploy`
-# places it wherever it places the package, and the layout is not this
-# Dockerfile's business.
+# Prisma's generated client, put where Prisma will actually look for it.
+#
+# This has been wrong twice, the same way both times: the client was copied to a
+# path that seemed right, nothing checked, and the image failed at runtime with
+# "Query engine not found" listing the directory the copy should have gone to.
+# The client is produced by `pnpm build`, which runs *after* the dependency
+# install, so whatever `pnpm deploy` materialises for `@wea/db` need not contain
+# it — and the layout it materialises (`node_modules/@wea/db` as a symlink into
+# `.pnpm/@wea+db@…`) is pnpm's business and changes between versions.
+#
+# So: find every materialised copy of the package and fill each one in, then
+# **assert an engine is present**. A copy that lands nowhere now fails the build
+# here, which is a much shorter distance from the mistake than a container that
+# starts and dies on its first query.
+RUN set -eux; \
+    ls -la /repo/packages/db/generated/client | head -20; \
+    for dir in $(find /deploy/node_modules -type d -path '*@wea/db'); do \
+      rm -rf "$dir/generated"; \
+      cp -a /repo/packages/db/generated "$dir/generated"; \
+    done; \
+    ls "$(readlink -f /deploy/node_modules/@wea/db)"/generated/client/*.so.node
 
 # ---------------------------------------------------------------------------
 # runtime

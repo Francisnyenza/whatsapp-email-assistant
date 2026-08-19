@@ -51,16 +51,25 @@ on `Cannot find module '/app/dist/main.js'`. Every `packages/*` already declared
 `dist`, `node_modules`, `package.json` — which is what the Dockerfile's own comment
 about shipping no compiler and no test files always claimed it was.
 
-**The Prisma engine was not in the image either.** Once the build was present,
+**The Prisma engine was not in the image either, and took two attempts.** Once the build was present,
 the container got further and died on "Query engine not found", listing
 `/app/node_modules/.pnpm/@wea+db@…/node_modules/@wea/db/generated/client` among the
 places it had searched. The Dockerfile carried the client over with an explicit
 `cp` into `/deploy/node_modules/@wea/db/generated` — a path that is a _symlink_
-into the `.pnpm` store, so the copy did not land where Prisma looks. `@wea/db` now
-declares `generated` in its `files` and `pnpm deploy` places it with the package;
-the `cp` is gone, and the layout is no longer the Dockerfile's business. Verified
-by deploying and booting the tree with no manual copy at all: database connected,
-`/health/ready` 200.
+into the `.pnpm` store, so the copy did not land where Prisma looks. Declaring `generated` in
+`@wea/db`'s `files` looked like it fixed it, and locally it appeared to — but that
+verification was vacuous: pnpm hard-links a `file:` dependency's contents, so the
+deployed tree already shared the source tree's `generated` directory whether or not
+packaging carried it. In the image, where install runs _before_ the build that
+creates it, it was still absent.
+
+The Dockerfile now finds every materialised copy of the package, replaces
+`generated` in each, and — the part that matters — **asserts an engine is present**,
+so a copy that lands nowhere fails the build rather than producing an image that
+dies on its first query. Both the copy loop and the assertion were dry-run against
+a real `pnpm deploy` tree, which is also how the `cp -a` in the first draft was
+caught: it exits non-zero on "are the same file", which `set -e` would have turned
+into a spurious build failure.
 
 **`KMS_PROVIDER` was read by nothing.** This is the one with a security
 consequence rather than a crash. ADR 0002 says the key-encryption key lives in a
