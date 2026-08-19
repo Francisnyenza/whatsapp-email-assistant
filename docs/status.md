@@ -34,6 +34,12 @@ Four more sat behind it, each only reachable once the one in front was fixed:
 | `/health/ready` | Hung indefinitely when Redis was unreachable, and answered **200 with `status: "degraded"`** when it did answer — so Kubernetes kept routing traffic to a pod that had just declared itself broken.       | Both checks bounded at 3s and run concurrently; 503 when degraded. The worker's health listener had always done this, and said why in a comment. |
 | `pnpm doctor`   | The name of pnpm's own built-in command, which shadowed the script: it ran pnpm's checker, printed nothing useful, and exited 0.                                                                          | Renamed to `pnpm preflight`.                                                                                                                     |
 
+One more thing was green throughout and should not have been. CI had a step
+named **“Check the image starts”** which overrode the entrypoint and imported a
+single package — it never started anything, and passed on every run while the
+image it was checking could not boot. It now runs the real entrypoint against a
+real Postgres and Redis and waits for the process to answer `/health/live`.
+
 **How this got past 1 900 tests.** Unit tests build services with `new Service(deps)`
 and never ask the container to do it. `di.spec.ts` counts constructor parameters
 through reflection, which is a different question from whether they resolve. Nothing

@@ -279,6 +279,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
+    # The image smoke check below actually starts the application, and both
+    # services connect to their dependencies on the way up. Without these it
+    # could only prove the image assembles — which it did, for months, while
+    # neither service could boot.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: wea
+          POSTGRES_PASSWORD: wea_dev_password
+          POSTGRES_DB: wea
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wea -d wea"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     strategy:
       # Both, even when one fails. They share a Dockerfile, so a break in the
       # shared stages shows up in both and a break in one argument shows up in
@@ -309,12 +337,51 @@ jobs:
           cache-from: type=gha,scope=${{ matrix.app }}
           cache-to: type=gha,mode=max,scope=${{ matrix.app }}
 
-      # The build succeeding proves the image assembles. This proves it runs:
-      # the entrypoint resolves, every workspace dependency survived the
-      # production install, and the Prisma client is where the code expects it.
-      # An image that builds and then cannot require its own dependencies is the
-      # specific failure a staged build invites.
+      # This step used to override the entrypoint and import one package,
+      # under the name "Check the image starts". It did not start anything, and
+      # it passed on every run while neither service could boot at all — the
+      # exact shape of failure a smoke test exists to prevent.
+      #
+      # So it now runs the real entrypoint, against real dependencies, and waits
+      # for the process to answer its own liveness endpoint. Anything short of
+      # that — dependency injection, environment validation, the Prisma client's
+      # location after a production install — is something this cannot see.
       - name: Check the image starts
         run: |
-          docker run --rm --entrypoint node wea-${{ matrix.app }}:ci \
-            -e "import('@wea/db').then(() => console.log('deps resolve'))"
+          set -euo pipefail
+
+          port=$([ "${{ matrix.app }}" = api ] && echo 3001 || echo 3002)
+
+          docker run -d --name smoke --network host \
+            -e NODE_ENV=production \
+            -e API_PORT=3001 \
+            -e WORKER_PORT=3002 \
+            -e API_BASE_URL=http://localhost:3001 \
+            -e WEB_BASE_URL=http://localhost:3000 \
+            -e DATABASE_URL="postgresql://wea:wea_dev_password@localhost:5432/wea" \
+            -e REDIS_URL="redis://localhost:6379" \
+            -e S3_BUCKET=wea-attachments \
+            -e ENCRYPTION_MASTER_KEY="$(head -c 32 /dev/zero | base64 -w0)" \
+            -e BLIND_INDEX_KEY="$(head -c 32 /dev/zero | base64 -w0)" \
+            -e JWT_ACCESS_SECRET="$(head -c 64 /dev/zero | base64 -w0)" \
+            -e JWT_REFRESH_SECRET="$(head -c 64 /dev/zero | base64 -w0)" \
+            -e WHATSAPP_PHONE_NUMBER_ID=1234567890 \
+            -e WHATSAPP_ACCESS_TOKEN=ci-token \
+            -e WHATSAPP_WEBHOOK_VERIFY_TOKEN=ci-verify \
+            -e WHATSAPP_APP_SECRET=ci-secret \
+            -e AI_PRIMARY_PROVIDER=none \
+            wea-${{ matrix.app }}:ci
+
+          for i in $(seq 1 30); do
+            if curl -fsS "http://localhost:${port}/health/live" >/dev/null 2>&1; then
+              echo "${{ matrix.app }} answered /health/live"
+              docker rm -f smoke >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::${{ matrix.app }} never answered /health/live"
+          docker logs smoke
+          docker rm -f smoke >/dev/null
+          exit 1
