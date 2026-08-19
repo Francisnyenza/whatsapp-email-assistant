@@ -86,8 +86,15 @@ is the most common setup mistake after the token.
 ```
 WHATSAPP_PHONE_NUMBER_ID=<phone number id>
 WHATSAPP_BUSINESS_ACCOUNT_ID=<WhatsApp Business Account id>
+WHATSAPP_BUSINESS_NUMBER=<the dialable number, E.164>
 WHATSAPP_ACCESS_TOKEN=<token>
 ```
+
+`WHATSAPP_BUSINESS_NUMBER` is the one people message — `+15550100`, not the id above.
+It is optional and worth setting: it is the number the “verify your phone” screen
+prints, and without it that screen says “send this code to **our WhatsApp number**”
+and names nothing. Verification is the one step you cannot finish from the dashboard
+alone, so that is a bad place to be left guessing.
 
 > **The token on that tab expires in 24 hours.** It is long enough to finish setup, go to
 > bed, and find everything broken with no error anywhere. For anything beyond one sitting:
