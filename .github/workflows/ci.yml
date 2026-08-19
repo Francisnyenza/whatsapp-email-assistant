@@ -387,7 +387,18 @@ jobs:
             sleep 2
           done
 
-          echo "::error::${{ matrix.app }} never answered /health/live"
-          docker logs smoke
+          # The diagnosis goes into the annotation as well as the log. A failing
+          # step's own output is buried under the runner's post-job cleanup, and
+          # a smoke test whose reason is hard to retrieve is most of the way back
+          # to the one this replaced.
+          state=$(docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}}' smoke || echo unknown)
+          echo "----- container log -----"
+          docker logs smoke 2>&1 | tail -40
+          echo "----- /app contents -----"
+          docker run --rm --entrypoint ls wea-${{ matrix.app }}:ci -la /app || true
+
+          summary=$(docker logs smoke 2>&1 | tail -6 | tr '\n' ' ~ ')
+          echo "::error::${{ matrix.app }} never answered /health/live (${state}) — ${summary}"
+
           docker rm -f smoke >/dev/null
           exit 1
