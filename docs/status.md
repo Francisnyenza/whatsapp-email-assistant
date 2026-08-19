@@ -40,6 +40,11 @@ single package — it never started anything, and passed on every run while the
 image it was checking could not boot. It now runs the real entrypoint against a
 real Postgres and Redis and waits for the process to answer `/health/live`.
 
+It failed on its first five runs, and every one of those failures was a genuine
+defect in the image: no build, then no Prisma client, then the wrong Prisma
+engine. **It now passes** — which is the first time either container has ever
+started.
+
 Chasing the same thread into the container found two more.
 
 **The images could not run either.** `apps/api` and `apps/worker` declared no

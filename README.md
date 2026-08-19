@@ -79,19 +79,19 @@ Built in phases; each lands complete, documented and tested.
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover.
 
-| Phase |                              | Status                                |
-| ----- | ---------------------------- | ------------------------------------- |
-| 1     | Architecture & ADRs          | ✅                                    |
-| 2     | Monorepo structure & tooling | ✅                                    |
-| 3     | Database schema              | ✅                                    |
-| 4     | Backend core                 | ✅                                    |
-| 5     | WhatsApp integration         | ✅                                    |
-| 6     | Gmail integration            | ✅                                    |
-| 7     | Outlook / Microsoft 365      | ✅                                    |
-| 8     | AI layer                     | ✅                                    |
-| 9     | Frontend dashboard           | 🔨 setup and settings; no mail views  |
-| 10    | Testing                      | 🔨 unit, integration and CI; no E2E   |
-| 11    | Deployment & ops             | 🔨 images, k8s, alerts, data-layer TF |
+| Phase |                              | Status                                    |
+| ----- | ---------------------------- | ----------------------------------------- |
+| 1     | Architecture & ADRs          | ✅                                        |
+| 2     | Monorepo structure & tooling | ✅                                        |
+| 3     | Database schema              | ✅                                        |
+| 4     | Backend core                 | ✅                                        |
+| 5     | WhatsApp integration         | ✅                                        |
+| 6     | Gmail integration            | ✅                                        |
+| 7     | Outlook / Microsoft 365      | ✅                                        |
+| 8     | AI layer                     | ✅                                        |
+| 9     | Frontend dashboard           | 🔨 setup and settings; no mail views      |
+| 10    | Testing                      | 🔨 unit, integration and CI; no E2E       |
+| 11    | Deployment & ops             | 🔨 images run, k8s, alerts, data-layer TF |
 
 ## Before the first message
 
