@@ -14,8 +14,20 @@
 //    plus the object-storage sweep; nothing is left orphaned by design.
 
 generator client {
-  provider        = "prisma-client-js"
-  output          = "../generated/client"
+  provider = "prisma-client-js"
+  output   = "../generated/client"
+
+  // Pinned, not detected. `native` alone asks Prisma to work out the platform
+  // at *generate* time, and generation happens in a build stage that does not
+  // install openssl — so it guessed `debian-openssl-1.1.x`, while the runtime
+  // stage (which does install openssl) needs `debian-openssl-3.0.x`. The engine
+  // shipped, it was simply the wrong one, and the container died on
+  // "could not locate the Query Engine for runtime debian-openssl-3.0.x".
+  //
+  // A developer machine with OpenSSL 3 resolves `native` to the right thing,
+  // which is why this was invisible outside the image.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+
   previewFeatures = ["postgresqlExtensions", "relationJoins"]
 }
 

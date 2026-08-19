@@ -70,7 +70,10 @@ RUN pnpm --filter "@wea/${APP}" deploy --prod --legacy /deploy
 # `.pnpm/@wea+db@…`) is pnpm's business and changes between versions.
 #
 # So: find every materialised copy of the package and fill each one in, then
-# **assert an engine is present**. A copy that lands nowhere now fails the build
+# **assert the engine this image needs is present**. `*.so.node` was the first
+# version of that check and it passed on the wrong engine, which is the same
+# mistake one level up: assert the thing you need, not that something is there.
+# A copy that lands nowhere now fails the build
 # here, which is a much shorter distance from the mistake than a container that
 # starts and dies on its first query.
 RUN set -eux; \
@@ -79,7 +82,7 @@ RUN set -eux; \
       rm -rf "$dir/generated"; \
       cp -a /repo/packages/db/generated "$dir/generated"; \
     done; \
-    ls "$(readlink -f /deploy/node_modules/@wea/db)"/generated/client/*.so.node
+    ls "$(readlink -f /deploy/node_modules/@wea/db)"/generated/client/libquery_engine-debian-openssl-3.0.x.so.node
 
 # ---------------------------------------------------------------------------
 # runtime
@@ -117,7 +120,7 @@ COPY --from=build --chown=wea:wea /deploy /app
 RUN set -eux; \
     readlink -f /app/node_modules/@wea/db; \
     ls -la "$(readlink -f /app/node_modules/@wea/db)"/generated/client/ | head -30; \
-    ls "$(readlink -f /app/node_modules/@wea/db)"/generated/client/*.so.node
+    ls "$(readlink -f /app/node_modules/@wea/db)"/generated/client/libquery_engine-debian-openssl-3.0.x.so.node
 
 USER wea
 

@@ -63,8 +63,21 @@ deployed tree already shared the source tree's `generated` directory whether or 
 packaging carried it. In the image, where install runs _before_ the build that
 creates it, it was still absent.
 
-The Dockerfile now finds every materialised copy of the package, replaces
-`generated` in each, and — the part that matters — **asserts an engine is present**,
+The engine was then present and still wrong. Prisma's `binaryTargets` defaulted to
+`native`, which resolves the platform _at generate time_ — and generation happens in
+a build stage that does not install openssl, so it produced
+`debian-openssl-1.1.x` while the runtime stage (which does install openssl) needs
+`debian-openssl-3.0.x`. A developer machine with OpenSSL 3 resolves `native` to the
+right thing, which is exactly why this was invisible outside the image.
+`binaryTargets` is now pinned.
+
+The first version of the assertion below asserted `*.so.node` — and passed happily
+on the wrong engine, which is the same mistake one level up. It now names the
+target the runtime needs.
+
+The Dockerfile finds every materialised copy of the package, replaces
+`generated` in each, and — the part that matters — **asserts the required engine is
+present**,
 so a copy that lands nowhere fails the build rather than producing an image that
 dies on its first query. Both the copy loop and the assertion were dry-run against
 a real `pnpm deploy` tree, which is also how the `cp -a` in the first draft was
