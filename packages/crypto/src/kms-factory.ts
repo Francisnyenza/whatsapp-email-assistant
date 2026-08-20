@@ -1,5 +1,6 @@
 import { AppError } from '@wea/shared';
 import { LocalKmsProvider, CachingKmsProvider, type KmsProvider } from './kms.js';
+import { AwsKmsProvider, awsKmsClient } from './kms-aws.js';
 
 /**
  * The one place the KEK provider is chosen.
@@ -34,7 +35,7 @@ export interface KmsSelection {
 }
 
 /** Providers named by the environment schema that nothing implements yet. */
-export const UNIMPLEMENTED_KMS_PROVIDERS = ['aws', 'azure', 'gcp'] as const;
+export const UNIMPLEMENTED_KMS_PROVIDERS = ['azure', 'gcp'] as const;
 
 /**
  * Builds the provider named by the environment.
@@ -58,6 +59,17 @@ export function createKmsProvider(env: KmsSelection): KmsProvider {
     return new CachingKmsProvider(LocalKmsProvider.fromBase64(env.ENCRYPTION_MASTER_KEY));
   }
 
+  if (env.KMS_PROVIDER === 'aws') {
+    if (!env.KMS_KEY_ID) {
+      throw new AppError(
+        'ENCRYPTION_FAILURE',
+        'KMS_PROVIDER=aws needs KMS_KEY_ID (a key id, alias/name or ARN)',
+        { retryable: false },
+      );
+    }
+    return new CachingKmsProvider(new AwsKmsProvider(awsKmsClient(), env.KMS_KEY_ID));
+  }
+
   // Deliberately a refusal rather than a fallback. The environment schema
   // already forbids `local` in production, so reaching this line means the
   // operator asked for managed key material and there is none to give them —
@@ -65,7 +77,7 @@ export function createKmsProvider(env: KmsSelection): KmsProvider {
   // exactly the outcome ADR 0002 exists to prevent.
   throw new AppError(
     'ENCRYPTION_FAILURE',
-    `KMS_PROVIDER=${env.KMS_PROVIDER} is not implemented — only "local" is. ` +
+    `KMS_PROVIDER=${env.KMS_PROVIDER} is not implemented — "local" and "aws" are. ` +
       'ADR 0002 specifies a managed KEK and the adapter for it has not been written, ' +
       'so there is no configuration in which this process both starts and keeps the ' +
       'key-encryption key outside its own environment. See docs/status.md.',

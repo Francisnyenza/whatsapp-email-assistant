@@ -24,6 +24,7 @@
     "clean": "rm -rf dist *.tsbuildinfo"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "^3.1115.0",
     "@wea/shared": "workspace:*",
     "argon2": "^0.41.1"
   },

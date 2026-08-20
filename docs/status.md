@@ -132,13 +132,13 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 943 tests** (1 568 unit + 375 integration
+Everything below has tests that run and pass. **1 965 tests** (1 590 unit + 375 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
 | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `@wea/shared`   | 108              | Env contract, domain types, queue definitions, log redaction, action-payload codec, phone normalization, preflight checks                            |
-| `@wea/crypto`   | 113              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
+| `@wea/crypto`   | 135              | Envelope encryption (AES-256-GCM + KMS), Argon2id, TOTP (RFC 6238), token hashing, signatures, blind indexes                                         |
 | `@wea/db`       | 9 (integration)  | Prisma schema, thirteen migrations, seed. RLS verified against real Postgres 16 + pgvector — including a sweep over every table carrying a `user_id` |
 | `@wea/whatsapp` | 219              | Session window, delivery policy, webhook parsing, builders, templates, Cloud API client, command parser                                              |
 | `@wea/mail`     | 235              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                     |
@@ -148,7 +148,7 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 568 unit tests
+pnpm -r test          # 1 590 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 
@@ -321,6 +321,28 @@ pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_ap
   cannot be completed from the dashboard alone, so an unnamed destination is a dead
   end at the worst moment. `pnpm preflight` now warns about it.
 
+- **Production mode boots.** It never had. `KMS_PROVIDER=aws` now builds a real
+  adapter — `GenerateDataKey` for a fresh 256-bit key, `Decrypt` to unwrap it, the KEK
+  never leaving KMS — wrapped in the existing cache so a read of an encrypted column is
+  not a billed round trip. Verified by deploying the production tree and starting it
+  with `NODE_ENV=production`, `KMS_PROVIDER=aws` and a key ARN: `db.connected`,
+  `api.started`, `/health/ready` 200, 31 metric series.
+
+  Getting there was four consecutive _correct_ refusals, worth recording because each
+  is a guard doing its job: the schema rejected `local` in production, then required a
+  key id, then Prisma refused a database role that bypasses row-level security, and
+  only a connection as `wea_app` was accepted.
+
+  Three decisions in the adapter are pinned by tests. `Decrypt` passes `KeyId`
+  explicitly, so a wrapped key from _another_ CMK is refused rather than successfully
+  decrypted — without it, an attacker supplying their own blob gets a working key. A
+  data key that is not exactly 32 bytes is rejected at the source rather than failing
+  somewhere inside `createCipheriv`. And throttling and internal errors are retryable
+  while denied grants and disabled keys are not, because those fail identically on the
+  second attempt and retrying only delays the alert. No encryption context is set
+  here: ADR 0002's per-record binding is the envelope layer's `userId:field` AAD, and
+  a coarser one at this level would imply a guarantee this class is not making.
+
 - The alert rules are validated twice, because the two tools answer different questions.
   kubeconform checks the `PrometheusRule` is shaped correctly; the PromQL inside it is just
   a string to a schema, and a malformed expression is accepted by the cluster and then
@@ -461,14 +483,13 @@ discover_ which tenant a delivery belongs to — but the other three are a gap r
 design, and are pinned by an equality assertion in `tenant-isolation.integration.spec.ts`
 so the list cannot quietly grow.
 
-1. **A managed KMS provider.** `createKmsProvider` accepts `aws`, `azure` and
-   `gcp` and implements none of them, so the only provider that works is the local
-   static key the environment schema forbids in production. Until an adapter
-   exists there is no configuration in which the process starts _and_ keeps the
-   key-encryption key outside its own environment, which is the central claim of
-   ADR 0002. The Terraform module already provisions the AWS key, so `aws` is the
-   one to write; the interface is four methods and the adapter is testable against
-   a stubbed client exactly as the Gmail and Graph adapters are.
+1. **AWS KMS against a real CMK.** The adapter now exists and production boots with
+   it — but every test of it runs against a fake `KmsCryptoApi`, the same arrangement
+   the Gmail and Graph adapters use. Nobody has pointed it at a real key, so what is
+   unverified is AWS's behaviour rather than this code's: whether the IAM grant is
+   right, whether `Decrypt` with an explicit `KeyId` rejects a foreign blob as
+   expected, and whether the retry classification matches what KMS actually throws
+   under throttling. `azure` and `gcp` remain refusals.
 2. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
    the secret; it deliberately does not create an EKS cluster, because every organisation
    with Kubernetes already has an opinion about how clusters are made and a module that

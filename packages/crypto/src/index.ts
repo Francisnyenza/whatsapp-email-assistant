@@ -1,6 +1,8 @@
 /** Public surface of @wea/crypto. */
 
 export { LocalKmsProvider, CachingKmsProvider, type KmsProvider, type DataKey } from './kms.js';
+export { AwsKmsProvider, awsKmsClient, AWS_KEY_VERSION, type KmsCryptoApi } from './kms-aws.js';
+
 export {
   createKmsProvider,
   UNIMPLEMENTED_KMS_PROVIDERS,

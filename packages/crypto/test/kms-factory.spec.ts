@@ -49,9 +49,9 @@ describe('a local provider', () => {
 
 describe('a managed provider', () => {
   it.each(UNIMPLEMENTED_KMS_PROVIDERS)('refuses rather than pretending: %s', (provider) => {
-    expect(() =>
-      createKmsProvider({ KMS_PROVIDER: provider, KMS_KEY_ID: 'arn:aws:kms:...:key/abc' }),
-    ).toThrow(/not implemented/);
+    expect(() => createKmsProvider({ KMS_PROVIDER: provider, KMS_KEY_ID: 'x' })).toThrow(
+      /not implemented/,
+    );
   });
 
   it('does not fall back to the master key when one happens to be set', () => {
@@ -61,22 +61,52 @@ describe('a managed provider', () => {
     // in a managed service.
     expect(() =>
       createKmsProvider({
-        KMS_PROVIDER: 'aws',
-        KMS_KEY_ID: 'arn:aws:kms:...:key/abc',
+        KMS_PROVIDER: 'azure',
+        KMS_KEY_ID: 'https://vault.example/keys/wea',
         ENCRYPTION_MASTER_KEY: KEY,
       }),
     ).toThrow(/not implemented/);
   });
 
-  it('says where to read about the gap', () => {
-    // The message is the only thing an operator has to go on, since there is no
-    // configuration that both starts and satisfies ADR 0002.
+  it('says which providers do work', () => {
     try {
-      createKmsProvider({ KMS_PROVIDER: 'aws', KMS_KEY_ID: 'x' });
+      createKmsProvider({ KMS_PROVIDER: 'gcp', KMS_KEY_ID: 'x' });
       expect.unreachable('should have thrown');
     } catch (err) {
+      expect((err as Error).message).toMatch(/"local" and "aws"/);
       expect((err as Error).message).toMatch(/ADR 0002/);
-      expect((err as Error).message).toMatch(/status\.md/);
     }
+  });
+});
+
+describe('aws', () => {
+  it('builds a provider', () => {
+    // Constructing the SDK client opens no connection, so this needs neither
+    // credentials nor a network — the first call would, and there is none here.
+    const kms = createKmsProvider({
+      KMS_PROVIDER: 'aws',
+      KMS_KEY_ID: 'arn:aws:kms:eu-west-1:000000000000:key/abc',
+    });
+
+    expect(kms.name).toBe('caching(aws)');
+  });
+
+  it('is cached, so a decrypt is not a KMS call every time', () => {
+    // ADR 0002 names this explicitly: without the cache, every read of an
+    // encrypted column is a billed round trip to KMS.
+    const kms = createKmsProvider({ KMS_PROVIDER: 'aws', KMS_KEY_ID: 'k' });
+
+    expect(kms.name).toMatch(/^caching\(/);
+  });
+
+  it('refuses without a key id, naming what a key id looks like', () => {
+    expect(() => createKmsProvider({ KMS_PROVIDER: 'aws' })).toThrow(/KMS_KEY_ID/);
+  });
+
+  it('does not quietly use the master key when the key id is missing', () => {
+    // The dangerous shape again: aws named, no key id, but a local key present.
+    expect(() => createKmsProvider({ KMS_PROVIDER: 'aws', ENCRYPTION_MASTER_KEY: KEY })).toThrow(
+      /KMS_KEY_ID/,
+    );
   });
 });
