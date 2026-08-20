@@ -15,6 +15,7 @@ import {
   type WhatsAppOutboundPayload,
   type DeliverAttachmentJob,
   type MailOperation,
+  jobKey,
 } from '@wea/shared';
 import { parseRecipientList } from '@wea/mail';
 import {
@@ -379,7 +380,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
         QUEUE.NOTIFY,
         JOB.SEND_DIGEST,
         { userId },
-        { jobId: `digest:${userId}:reopen:${Math.floor(at.getTime() / 3_600_000)}` },
+        { jobId: jobKey('digest', userId, 'reopen', Math.floor(at.getTime() / 3_600_000)) },
       );
     } catch (err) {
       this.logger.warn(
@@ -1021,7 +1022,7 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
                 JOB.DELIVER_ATTACHMENT,
                 { userId, emailMessageId, attachmentId: file.id } satisfies DeliverAttachmentJob,
                 // Keyed on the attachment, so asking twice does not send twice.
-                { jobId: `media:${file.id}` },
+                { jobId: jobKey('media', file.id) },
               );
             }
 

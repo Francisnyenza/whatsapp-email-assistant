@@ -2285,7 +2285,7 @@ describeIfDb('command loop (real database)', () => {
 
       expect(sends()).toHaveLength(1);
       expect(sends()[0]!.queue).toBe('send');
-      expect(sends()[0]!.opts.jobId).toMatch(/^send:/);
+      expect(sends()[0]!.opts.jobId).toMatch(/^send~/);
       expect(sends()[0]!.payload).toMatchObject({ userId, accountId });
     });
 

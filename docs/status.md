@@ -6,6 +6,38 @@ Last updated: 2026-08-15.
 
 ---
 
+## Nothing reached the queues
+
+Found by delivering a signed WhatsApp webhook to a running API with a running
+worker behind it — the first time anything had exercised that path — and then
+looking in the database for the result. It was not there.
+
+Every custom BullMQ job id in this codebase was written as `` `send:${draftId}` ``.
+**BullMQ rejects a colon in a custom id**; it is how BullMQ namespaces its own
+Redis keys, and `add` throws `Custom Id cannot contain :`. Sixteen call sites did
+it, which is all of them: inbound WhatsApp, Gmail push, Graph push, outbound
+send, analysis, embedding, notification, digests, reminders, media and polling.
+
+The failure was silent by construction. Each enqueue threw, each caller logged
+and carried on, and the webhook controllers returned the 200 that stops Meta and
+Google redelivering. The system accepted work, reported success to every provider
+that offered it, and did none of it. `pnpm preflight` would have said everything
+was fine, because everything it checks _was_ fine.
+
+Ids are now built by `jobKey()` in one place, and the test that pins it uses a
+real Redis and asserts BullMQ accepts the result — including one case asserting
+that a colon is still rejected, so a future relaxation is noticed deliberately
+rather than by someone reintroducing template literals. Every existing test
+stubbed the queue producer, so all of them asserted `enqueue` was _called_ with
+particular arguments; that is a different question from whether BullMQ would take
+them, and only the second one was ever wrong.
+
+With it fixed, the same webhook now round-trips: `phone_verified` goes true,
+`phone_number` is set, the worker logs `command.phone_verified`, and the API
+records no enqueue failures. The reply back to WhatsApp still fails here, because
+this sandbox cannot reach Meta — which is the honest boundary of what can be
+checked without your credentials.
+
 ## The application could not start
 
 Worth putting before anything else, because it undercuts how the rest of this
@@ -132,7 +164,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 965 tests** (1 590 unit + 375 integration
+Everything below has tests that run and pass. **1 978 tests** (1 594 unit + 384 integration
 against real Postgres), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
@@ -144,11 +176,11 @@ against real Postgres), lint and typecheck clean across every package and app.
 | `@wea/mail`     | 235              | Threading, forwarding, MIME, recipient validation, Gmail + Microsoft Graph adapters, OAuth, error classification                                     |
 | `@wea/ai`       | 218              | Injection envelope, instruction detection, analysis, embeddings, translation, drafting, speech, question answering, OpenAI + Gemini + Anthropic      |
 | `apps/api`      | 198 + 52 (int.)  | Auth, 2FA, phone verification, mailbox list/disconnect, preferences, webhooks, OAuth connect, health, metrics                                        |
-| `apps/worker`   | 439 + 314 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
+| `apps/worker`   | 443 + 323 (int.) | Ingest, analysis, embeddings, search, summarise, translate, read aloud, ask, draft, deadlines, notify, planner, actions, sweeps, health, metrics     |
 | `apps/web`      | 38               | API client (token handling, refresh), Content-Security-Policy, sign-in, mailboxes, phone, settings                                                   |
 
 ```bash
-pnpm -r test          # 1 590 unit tests
+pnpm -r test          # 1 594 unit tests
 pnpm --filter @wea/db test:integration   # needs TEST_DATABASE_URL on the wea_app role
 ```
 

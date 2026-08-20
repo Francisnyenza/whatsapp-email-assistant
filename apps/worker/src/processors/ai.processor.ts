@@ -1,7 +1,7 @@
 import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { AppError, QUEUE, JOB, type AnalyzeEmailJob } from '@wea/shared';
+import { AppError, QUEUE, JOB, type AnalyzeEmailJob, jobKey } from '@wea/shared';
 import { analyzeEmail, embedEmail, canEmbed, type EmbeddingProvider } from '@wea/ai';
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
@@ -172,7 +172,7 @@ export class AiProcessor implements OnModuleInit, OnModuleDestroy {
         QUEUE.AI,
         JOB.EMBED_EMAIL,
         { userId, emailMessageId },
-        { jobId: `embed:${emailMessageId}` },
+        { jobId: jobKey('embed', emailMessageId) },
       );
     } catch (err) {
       // Swallowed on purpose. The email has already been queued for delivery;
@@ -308,7 +308,7 @@ export class AiProcessor implements OnModuleInit, OnModuleDestroy {
       { userId, emailMessageId },
       // The same id ingest would have used, so a path that notified directly
       // and this one cannot both produce a card for the same email.
-      { jobId: `notify:${emailMessageId}` },
+      { jobId: jobKey('notify', emailMessageId) },
     );
   }
 

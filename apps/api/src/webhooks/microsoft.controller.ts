@@ -2,7 +2,7 @@ import { Controller, Post, Req, Res, Query, HttpStatus, Inject } from '@nestjs/c
 import { timingSafeEqual } from 'node:crypto';
 import type { Request, Response } from 'express';
 import type { Logger } from 'pino';
-import { QUEUE, JOB } from '@wea/shared';
+import { QUEUE, JOB, jobKey } from '@wea/shared';
 import { ConfigService } from '../config/config.service.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 import { PrismaService } from '../common/prisma.service.js';
@@ -125,7 +125,7 @@ export class MicrosoftWebhookController {
       // Collapsed per account per minute. Graph sends one notification per
       // message, so a burst of twenty arriving mail produces twenty
       // notifications — and one delta walk catches all of them.
-      { jobId: `ingest:${account.id}:${Math.floor(Date.now() / 60_000)}` },
+      { jobId: jobKey('ingest', account.id, Math.floor(Date.now() / 60_000)) },
     );
 
     this.logger.info(

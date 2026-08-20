@@ -147,7 +147,7 @@ describe('the endpoint', () => {
       'ingest',
       'ingest.processChange',
       expect.objectContaining({ userId: 'user-1', accountId: 'account-1', cursor: '5' }),
-      expect.objectContaining({ jobId: 'ingest:account-1:5' }),
+      expect.objectContaining({ jobId: 'ingest~account-1~5' }),
     );
   });
 

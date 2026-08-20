@@ -115,6 +115,8 @@ export {
 
 export { normalizePhone, isE164, toWhatsAppFormat, fromWhatsAppFormat } from './utils/phone.js';
 
+export { jobKey } from './utils/job-key.js';
+
 // preflight — see packages/shared/src/preflight/types.ts for why this exists
 export {
   metaErrorCode,

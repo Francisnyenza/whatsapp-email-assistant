@@ -1,6 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import type { Logger } from 'pino';
-import { AppError, QUEUE, JOB } from '@wea/shared';
+import { AppError, QUEUE, JOB, jobKey } from '@wea/shared';
 import { PrismaService } from '../common/prisma.service.js';
 import { MailboxActionService } from './mailbox-action.service.js';
 import { ReminderRepository } from '../repositories/reminder.repository.js';
@@ -102,7 +102,7 @@ export class SnoozeService {
         JOB.NOTIFY_EMAIL,
         { userId, emailMessageId, force: true },
         // Keyed on the reminder, so a retried sweep cannot deliver it twice.
-        { jobId: `notify:reminder:${reminderId}` },
+        { jobId: jobKey('notify', 'reminder', reminderId) },
       );
 
       this.logger.info({ event: 'snooze.returned', emailMessageId }, 'Snoozed message returned');

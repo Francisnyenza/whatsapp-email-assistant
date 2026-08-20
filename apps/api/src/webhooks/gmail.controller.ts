@@ -11,7 +11,7 @@ import {
 import type { Request, Response } from 'express';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { Logger } from 'pino';
-import { QUEUE, JOB } from '@wea/shared';
+import { QUEUE, JOB, jobKey } from '@wea/shared';
 import { ConfigService } from '../config/config.service.js';
 import { QueueProducer } from '../queue/queue.producer.js';
 import { PrismaService } from '../common/prisma.service.js';
@@ -137,7 +137,7 @@ export class GmailWebhookController {
         // mailbox in quick succession collapse into a single sync, which is
         // exactly right — history.list catches everything since the cursor
         // regardless of how many pushes triggered it.
-        { jobId: `ingest:${route.accountId}:${push.historyId}` },
+        { jobId: jobKey('ingest', route.accountId, push.historyId) },
       );
 
       this.logger.info(

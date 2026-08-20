@@ -1,7 +1,7 @@
 import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { AppError, QUEUE, JOB, type ProcessChangeJob } from '@wea/shared';
+import { AppError, QUEUE, JOB, type ProcessChangeJob, jobKey } from '@wea/shared';
 import { isHistoryExpired } from '@wea/mail';
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
@@ -126,7 +126,7 @@ export class IngestProcessor implements OnModuleInit, OnModuleDestroy {
           { emailMessageId: stored.emailMessageId, userId },
           // Keyed on our own row id, so a redelivered ingest job cannot produce
           // a second notification for the same email.
-          { jobId: `analyze:${stored.emailMessageId}` },
+          { jobId: jobKey('analyze', stored.emailMessageId) },
         );
       }
 

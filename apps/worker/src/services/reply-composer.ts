@@ -7,6 +7,7 @@ import {
   SEND_DELAY_MS,
   type EmailAddress,
   type SendEmailJob,
+  jobKey,
 } from '@wea/shared';
 import { buildReplyHeaders, resolveReplyRecipients } from '@wea/mail';
 import { AccountService } from './account.service.js';
@@ -131,7 +132,7 @@ export class ReplyComposer {
       // Keyed on the draft: a retried enqueue cannot become a second email, and
       // the send path's status guard catches whatever slips past that.
       {
-        jobId: `send:${draft.id}`,
+        jobId: jobKey('send', draft.id),
         delay: SEND_DELAY_MS,
         // The window "undo send" lives in. The job sits in Redis until it
         // passes; the draft's status guard is what decides whether it goes.

@@ -7,6 +7,7 @@ import {
   SEND_DELAY_MS,
   type SendEmailJob,
   type EmailAddress,
+  jobKey,
 } from '@wea/shared';
 import { QueueProducer } from '../queue/queue.producer.js';
 import { AccountService } from './account.service.js';
@@ -126,7 +127,7 @@ export class ComposeComposer {
       // become a second email, and the send path's status guard catches
       // whatever slips past that.
       {
-        jobId: `send:${draft.id}`,
+        jobId: jobKey('send', draft.id),
         // The window "undo send" lives in. The job sits in Redis until it
         // passes; the draft's status guard is what decides whether it goes.
         delay: SEND_DELAY_MS,

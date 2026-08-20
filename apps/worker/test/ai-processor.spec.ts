@@ -148,12 +148,12 @@ describe('the analysis step', () => {
       await run();
 
       expect(notified()).toHaveLength(1);
-      expect(notified()[0]![3]).toMatchObject({ jobId: 'notify:email-1' });
+      expect(notified()[0]![3]).toMatchObject({ jobId: 'notify~email-1' });
     });
 
     it('uses the id ingest would have used, so a card cannot be sent twice', async () => {
       await run();
-      expect(notified()[0]![3].jobId).toBe('notify:email-1');
+      expect(notified()[0]![3].jobId).toBe('notify~email-1');
     });
   });
 
@@ -355,7 +355,7 @@ describe('the analysis step', () => {
     it('is queued once per email, so a replayed job does not re-bill', async () => {
       await run();
       expect(enqueue.mock.calls.find((c) => c[1] === 'ai.embedEmail')![3]).toMatchObject({
-        jobId: 'embed:email-1',
+        jobId: 'embed~email-1',
       });
     });
 

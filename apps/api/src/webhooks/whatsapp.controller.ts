@@ -13,7 +13,7 @@ import type { Request, Response } from 'express';
 import { verifyMetaSignature } from '@wea/crypto';
 import { parseWebhook, handleVerificationChallenge, webhookDedupeKey } from '@wea/whatsapp';
 import type { Logger } from 'pino';
-import { QUEUE, JOB } from '@wea/shared';
+import { QUEUE, JOB, jobKey } from '@wea/shared';
 import { QueueProducer } from '../queue/queue.producer.js';
 import { ConfigService } from '../config/config.service.js';
 
@@ -117,7 +117,7 @@ export class WhatsAppWebhookController {
             },
             // Meta's wamid as the job id: a redelivered webhook resolves to the
             // same job and BullMQ discards the duplicate.
-            { jobId: `wa:${message.id}` },
+            { jobId: jobKey('wa', message.id) },
           ),
         ),
         ...parsed.statuses.map((status) =>
@@ -125,7 +125,7 @@ export class WhatsAppWebhookController {
             QUEUE.NOTIFY,
             JOB.RETRY_DELIVERY,
             { statusUpdate: status },
-            { jobId: `wast:${status.messageId}:${status.status}` },
+            { jobId: jobKey('wast', status.messageId, status.status) },
           ),
         ),
       ]);

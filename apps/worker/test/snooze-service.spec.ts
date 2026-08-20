@@ -100,7 +100,7 @@ describe('bringing it back', () => {
 
     await service.fire('user-1', 'rem-1', 'email-1');
 
-    expect(queue.enqueue.mock.calls[0]![3]).toMatchObject({ jobId: 'notify:reminder:rem-1' });
+    expect(queue.enqueue.mock.calls[0]![3]).toMatchObject({ jobId: 'notify~reminder~rem-1' });
   });
 });
 

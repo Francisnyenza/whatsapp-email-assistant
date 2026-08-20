@@ -1,3 +1,4 @@
+import { jobKey } from '@wea/shared';
 /**
  * When a Gmail watch is due for renewal, and how a renewal is identified.
  *
@@ -72,7 +73,7 @@ export const POLL_BATCH_SIZE = 200;
  */
 export function renewalJobId(accountId: string, dueAt: Date | null, sweepAt: Date): string {
   const bucket = Math.floor((dueAt ?? sweepAt).getTime() / SWEEP_INTERVAL_MS);
-  return `watch:${accountId}:${bucket}`;
+  return jobKey('watch', accountId, bucket);
 }
 
 /**

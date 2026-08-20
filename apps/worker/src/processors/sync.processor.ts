@@ -1,7 +1,14 @@
 import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { AppError, QUEUE, JOB, type SweepWatchesJob, type RenewWatchJob } from '@wea/shared';
+import {
+  AppError,
+  QUEUE,
+  JOB,
+  type SweepWatchesJob,
+  type RenewWatchJob,
+  jobKey,
+} from '@wea/shared';
 import { ConfigService } from '../config/config.service.js';
 import { AccountService } from '../services/account.service.js';
 import { WatchRepository } from '../repositories/watch.repository.js';
@@ -228,7 +235,7 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
           cursor: 'poll',
         },
         // One sync per account per interval, however many sweeps overlap.
-        { jobId: `poll:${account.accountId}:${Math.floor(now / POLL_INTERVAL_MS)}` },
+        { jobId: jobKey('poll', account.accountId, Math.floor(now / POLL_INTERVAL_MS)) },
       );
     }
 
@@ -338,7 +345,7 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
           { userId },
           // Bucketed per sweep interval so two ticks cannot both fire while the
           // first digest is still in flight.
-          { jobId: `digest:${userId}:${Math.floor(now.getTime() / DIGEST_SWEEP_INTERVAL_MS)}` },
+          { jobId: jobKey('digest', userId, Math.floor(now.getTime() / DIGEST_SWEEP_INTERVAL_MS)) },
         );
       }
 
@@ -409,7 +416,7 @@ export class SyncProcessor implements OnModuleInit, OnModuleDestroy {
             QUEUE.AI,
             JOB.EMBED_EMAIL,
             { userId, emailMessageId },
-            { jobId: `embed:${emailMessageId}` },
+            { jobId: jobKey('embed', emailMessageId) },
           );
           queued++;
         }

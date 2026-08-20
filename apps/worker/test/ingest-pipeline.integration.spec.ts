@@ -369,7 +369,7 @@ describeIfDb('ingest pipeline (real database)', () => {
       await runIngest();
 
       const job = enqueued.find((e) => e.queue === 'ai');
-      expect(job!.opts.jobId).toMatch(/^analyze:/);
+      expect(job!.opts.jobId).toMatch(/^analyze~/);
     });
 
     it('does not notify directly, so a card can carry a summary', async () => {

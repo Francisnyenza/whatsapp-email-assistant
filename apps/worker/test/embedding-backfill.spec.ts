@@ -75,7 +75,7 @@ describe('embedding backfill', () => {
     expect(embedJobs()).toHaveLength(2);
     expect(embedJobs()[0]![0]).toBe('ai');
     expect(embedJobs()[0]![2]).toEqual({ userId: 'user-1', emailMessageId: 'email-1' });
-    expect(embedJobs()[0]![3]).toMatchObject({ jobId: 'embed:email-1' });
+    expect(embedJobs()[0]![3]).toMatchObject({ jobId: 'embed~email-1' });
   });
 
   it('marks a user done when there is nothing left', async () => {

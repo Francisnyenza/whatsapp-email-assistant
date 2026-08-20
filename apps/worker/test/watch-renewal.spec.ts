@@ -173,7 +173,7 @@ describe('the sync processor', () => {
 
       await sweep();
 
-      expect(enqueue.mock.calls[0]![3]).toMatchObject({ jobId: expect.stringMatching(/^watch:/) });
+      expect(enqueue.mock.calls[0]![3]).toMatchObject({ jobId: expect.stringMatching(/^watch~/) });
     });
 
     it('caps the fan-out', async () => {
@@ -334,7 +334,7 @@ describe('the sync processor', () => {
         'ingest',
         'ingest.processChange',
         expect.objectContaining({ userId: 'user-1', accountId: 'acct-1' }),
-        expect.objectContaining({ jobId: expect.stringMatching(/^poll:acct-1:/) }),
+        expect.objectContaining({ jobId: expect.stringMatching(/^poll~acct-1~/) }),
       );
     });
 

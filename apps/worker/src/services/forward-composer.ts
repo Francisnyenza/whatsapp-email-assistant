@@ -7,6 +7,7 @@ import {
   SEND_DELAY_MS,
   MAX_OUTBOUND_ATTACHMENT_BYTES,
   type SendEmailJob,
+  jobKey,
 } from '@wea/shared';
 import { buildForwardBody, buildForwardSubject } from '@wea/mail';
 import { AccountService } from './account.service.js';
@@ -156,7 +157,7 @@ export class ForwardComposer {
         idempotencyKey: draft.idempotencyKey,
       } satisfies SendEmailJob,
       {
-        jobId: `send:${draft.id}`,
+        jobId: jobKey('send', draft.id),
         // The window "undo send" lives in. The job sits in Redis until it
         // passes; the draft's status guard is what decides whether it goes.
         delay: SEND_DELAY_MS,

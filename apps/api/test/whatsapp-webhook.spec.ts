@@ -253,7 +253,7 @@ describe('WhatsApp webhook', () => {
         'commands',
         'commands.handleInbound',
         expect.objectContaining({ whatsappMessageId: 'wamid.ABC', phoneNumber: '254712345678' }),
-        { jobId: 'wa:wamid.ABC' },
+        { jobId: 'wa~wamid.ABC' },
       );
     });
 
@@ -272,7 +272,7 @@ describe('WhatsApp webhook', () => {
       await controller.receive({ rawBody: raw, body } as any, makeResponse(), sign(raw));
 
       expect(enqueue).toHaveBeenCalledWith('notify', 'notify.retryDelivery', expect.anything(), {
-        jobId: 'wast:wamid.SENT:delivered',
+        jobId: 'wast~wamid.SENT~delivered',
       });
     });
 
