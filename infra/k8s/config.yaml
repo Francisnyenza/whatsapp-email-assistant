@@ -59,6 +59,11 @@ data:
 # so the values never exist in Git, in a shell history, or in a `kubectl apply`
 # that someone can scroll back to.
 #
+# `infra/k8s/secrets/` is that mechanism, and it produces an object with this
+# same name. Apply one or the other — never both. Two controllers owning
+# `wea-secrets` is a fight External Secrets loses politely, by leaving whatever
+# was already there, which looks exactly like a sync that has not run yet.
+#
 # The two database URLs are separate on purpose. The application connects as
 # `wea_app`, which cannot bypass row-level security and cannot alter a table;
 # the migration job connects as the owner, which can do both. Pointing the app

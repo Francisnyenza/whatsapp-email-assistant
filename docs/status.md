@@ -693,9 +693,25 @@ so the list cannot quietly grow.
 2. **The cluster itself.** The Terraform module provisions the data layer, the KMS key and
    the secret; it deliberately does not create an EKS cluster, because every organisation
    with Kubernetes already has an opinion about how clusters are made and a module that
-   insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
-   subnet groups and security groups the module takes as inputs, and External Secrets wired
-   from the Secrets Manager secret into the namespace.
+   insisted on its own would be forked or ignored.
+
+   Two thirds of the glue now exists. `infra/terraform/network/` is a separate module —
+   apply it if you have no VPC, skip it and pass your own if you do — producing exactly
+   the three inputs the root module asks for: a DB subnet group, an ElastiCache subnet
+   group and a security group that admits only the workload's own groups rather than a
+   CIDR. Private subnets for everything that holds data, an S3 gateway endpoint so
+   attachment traffic never crosses the NAT twice, one NAT per zone in production and one
+   in total elsewhere, and REJECT-only flow logs in production. `infra/k8s/secrets/` wires
+   External Secrets from the Secrets Manager secret into `wea-secrets`, in two pieces
+   because the halves have different lifecycles: what Terraform writes, and what a person
+   typed. Both are validated in CI — `terraform validate` against the real AWS provider
+   schema, kubeconform against the published External Secrets CRDs.
+
+   What is still missing is the cluster, which remains deliberate, and the IAM role the
+   `wea-secrets-reader` service account assumes. That role needs `GetSecretValue` on the
+   secret and `kms:Decrypt` on the module's key; it is not in the module because the trust
+   policy names an OIDC provider that only exists once a cluster does.
+
 3. **More metrics than queue depth, request rate and job outcomes.** The worker now
    exports `wea_jobs_total{queue,job,outcome}` and `wea_job_duration_seconds`, which is
    what says _why_ a backlog is growing rather than only that it is — arrival rate,

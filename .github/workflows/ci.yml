@@ -189,6 +189,7 @@ jobs:
             -schema-location default \
             -ignore-filename-pattern 'keda/' \
             -ignore-filename-pattern 'monitoring/' \
+            -ignore-filename-pattern 'secrets/' \
             infra/k8s/
 
       # The KEDA ScaledObject, against the published CRD schema. Worth the extra
@@ -206,7 +207,7 @@ jobs:
             -kubernetes-version 1.30.0 \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
-            infra/k8s/keda/ infra/k8s/monitoring/
+            infra/k8s/keda/ infra/k8s/monitoring/ infra/k8s/secrets/
 
       # Schema validation says the PrometheusRule is shaped correctly. It says
       # nothing about whether the PromQL inside it parses — that is a string as
@@ -253,8 +254,10 @@ jobs:
           # a check should do.
           terraform_wrapper: false
 
+      # `-recursive`, or the network submodule is not checked at all — `fmt`
+      # looks only at the directory it is given.
       - name: Formatting
-        run: terraform -chdir=infra/terraform fmt -check -diff
+        run: terraform -chdir=infra/terraform fmt -check -diff -recursive
 
       # `-backend=false` because there is no state to configure here — this
       # downloads the provider schemas, which is the only reason init is needed
@@ -273,6 +276,17 @@ jobs:
       # why this job exists.
       - name: Validate
         run: terraform -chdir=infra/terraform validate
+
+      # The network module is standalone — the root module takes subnet groups
+      # and security groups as inputs, and this is what produces them for
+      # someone who has no VPC to name. Separate init and validate because it
+      # is a separate root: nothing in `infra/terraform` references it, so the
+      # step above would not see it.
+      - name: Init the network module
+        run: terraform -chdir=infra/terraform/network init -backend=false -input=false
+
+      - name: Validate the network module
+        run: terraform -chdir=infra/terraform/network validate
 
   images:
     name: Container images
