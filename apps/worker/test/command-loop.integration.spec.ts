@@ -476,19 +476,33 @@ describeIfDb('command loop (real database)', () => {
     await prisma.$disconnect();
   });
 
+  /**
+   * A message, delivered the way BullMQ delivers one.
+   *
+   * The `JSON.parse(JSON.stringify(…))` is not ceremony. This helper used to
+   * hand the processor an in-memory object with a real `Date` on it, so every
+   * test in this file — the file whose whole purpose is to be the realistic one
+   * — exercised a payload shape that cannot occur in production. A queue payload
+   * has been through JSON, which turns `timestamp` into a string, and the
+   * handler threw `at.getTime is not a function` on the first line that treated
+   * it as a date. Two thousand tests missed it because they all built the object
+   * here rather than putting it through the transport.
+   */
   const deliver = (over: Partial<InboundWhatsAppMessage> = {}) =>
     processor.handle({
       data: {
         whatsappMessageId: 'x',
         phoneNumber: phone.slice(1),
-        payload: {
-          id: `wamid.IN.${randomUUID().slice(0, 8)}`,
-          from: phone.slice(1),
-          timestamp: new Date(),
-          type: 'text',
-          text: 'yes',
-          ...over,
-        },
+        payload: JSON.parse(
+          JSON.stringify({
+            id: `wamid.IN.${randomUUID().slice(0, 8)}`,
+            from: phone.slice(1),
+            timestamp: new Date(),
+            type: 'text',
+            text: 'yes',
+            ...over,
+          }),
+        ) as never,
       },
     } as never);
 
@@ -1269,13 +1283,15 @@ describeIfDb('command loop (real database)', () => {
         data: {
           whatsappMessageId: 'x',
           phoneNumber: stranger.slice(1),
-          payload: {
-            id: `wamid.IN.${randomUUID().slice(0, 8)}`,
-            from: stranger.slice(1),
-            timestamp: new Date(),
-            type: 'text',
-            text,
-          },
+          payload: JSON.parse(
+            JSON.stringify({
+              id: `wamid.IN.${randomUUID().slice(0, 8)}`,
+              from: stranger.slice(1),
+              timestamp: new Date(),
+              type: 'text',
+              text,
+            }),
+          ) as never,
         },
       } as never);
 
@@ -1332,13 +1348,15 @@ describeIfDb('command loop (real database)', () => {
         data: {
           whatsappMessageId: 'x',
           phoneNumber: phone.slice(1),
-          payload: {
-            id: `wamid.IN.${randomUUID().slice(0, 8)}`,
-            from: phone.slice(1),
-            timestamp: new Date(),
-            type: 'text',
-            text: CODE,
-          },
+          payload: JSON.parse(
+            JSON.stringify({
+              id: `wamid.IN.${randomUUID().slice(0, 8)}`,
+              from: phone.slice(1),
+              timestamp: new Date(),
+              type: 'text',
+              text: CODE,
+            }),
+          ) as never,
         },
       } as never);
 
@@ -2105,13 +2123,15 @@ describeIfDb('command loop (real database)', () => {
       data: {
         whatsappMessageId: 'x',
         phoneNumber: '254700000123',
-        payload: {
-          id: `wamid.IN.${randomUUID().slice(0, 8)}`,
-          from: '254700000123',
-          timestamp: new Date(),
-          type: 'text',
-          text: 'hello',
-        },
+        payload: JSON.parse(
+          JSON.stringify({
+            id: `wamid.IN.${randomUUID().slice(0, 8)}`,
+            from: '254700000123',
+            timestamp: new Date(),
+            type: 'text',
+            text: 'hello',
+          }),
+        ) as never,
       },
     } as never);
 

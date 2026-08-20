@@ -76,6 +76,7 @@ export {
   type SweepWatchesJob,
   type RenewWatchJob,
   type HandleInboundJob,
+  type RetryDeliveryJob,
 } from './constants/queues.js';
 
 export {
@@ -116,6 +117,13 @@ export {
 export { normalizePhone, isE164, toWhatsAppFormat, fromWhatsAppFormat } from './utils/phone.js';
 
 export { jobKey } from './utils/job-key.js';
+
+export {
+  reviveDate,
+  reviveInboundMessage,
+  reviveStatusUpdate,
+  type Wire,
+} from './utils/wire.js';
 
 // preflight — see packages/shared/src/preflight/types.ts for why this exists
 export {

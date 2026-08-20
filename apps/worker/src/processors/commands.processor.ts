@@ -16,6 +16,7 @@ import {
   type DeliverAttachmentJob,
   type MailOperation,
   jobKey,
+  reviveInboundMessage,
 } from '@wea/shared';
 import { parseRecipientList } from '@wea/mail';
 import {
@@ -118,7 +119,9 @@ export class CommandsProcessor implements OnModuleInit, OnModuleDestroy {
   }
 
   async handle(job: Job<HandleInboundJob>): Promise<void> {
-    let message = job.data.payload as InboundWhatsAppMessage;
+    // Revived, not asserted: the payload has been through JSON, so its
+    // `timestamp` arrives as a string. See @wea/shared `wire.ts`.
+    let message = reviveInboundMessage(job.data.payload);
     const phoneNumber = fromWhatsAppFormat(job.data.phoneNumber);
 
     const user = await this.inbox.findUserByPhone(phoneNumber);

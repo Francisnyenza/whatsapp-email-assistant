@@ -5,6 +5,7 @@ import { MessageRepository } from '../src/repositories/message.repository.js';
 import { ContactRepository } from '../src/repositories/contact.repository.js';
 import { IngestProcessor } from '../src/processors/ingest.processor.js';
 import { NotifyProcessor } from '../src/processors/notify.processor.js';
+import { InboxRepository } from '../src/repositories/inbox.repository.js';
 import { MAX_STORED_BODY_BYTES } from '../src/processors/ingest.processor.js';
 import { AppError, type NormalizedMessage } from '@wea/shared';
 import { EnvelopeEncryption, LocalKmsProvider } from '@wea/crypto';
@@ -171,7 +172,15 @@ describeIfDb('ingest pipeline (real database)', () => {
       queue as never,
       logger as never,
     );
-    notify = new NotifyProcessor(config as never, messages, outbound as never, logger as never);
+    // The inbox repository is only reached by delivery receipts, which this
+    // suite does not produce — a real one here would be scenery.
+    notify = new NotifyProcessor(
+      config as never,
+      messages,
+      new InboxRepository(service as never),
+      outbound as never,
+      logger as never,
+    );
 
     await prisma.user.create({
       data: {

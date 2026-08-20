@@ -2,6 +2,29 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../common/prisma.service.js';
 import { withoutTenantScope, Prisma } from '@wea/db';
 import type { ResolutionCandidate } from '../services/thread-resolver.js';
+import { fromWhatsAppFormat } from '@wea/shared';
+import type { WhatsAppStatusUpdate, WhatsAppDeliveryStatus } from '@wea/shared';
+
+/**
+ * Which column a receipt fills.
+ *
+ * A table rather than a switch because the statuses are a closed set and the
+ * mapping is the whole content: `accepted` is Meta acknowledging the request,
+ * which the send path already recorded as `sent`, so it re-stamps the same
+ * column rather than inventing an `acceptedAt`.
+ */
+const TIMESTAMP_FOR: Record<WhatsAppDeliveryStatus, (at: Date) => Record<string, Date>> = {
+  accepted: (at) => ({ sentAt: at }),
+  sent: (at) => ({ sentAt: at }),
+  delivered: (at) => ({ deliveredAt: at }),
+  read: (at) => ({ readAt: at }),
+  failed: (at) => ({ failedAt: at }),
+};
+
+/** Meta's error, flattened into the one column that holds it. */
+function metaErrorText(error: { title: string; details?: string }): string {
+  return error.details ? `${error.title}: ${error.details}` : error.title;
+}
 
 /**
  * The reads the command pipeline needs.
@@ -429,6 +452,66 @@ export class InboxRepository {
           ...(input.status === 'failed' ? { failedAt: new Date() } : { sentAt: new Date() }),
         },
       });
+    });
+  }
+
+  /**
+   * Applies a delivery receipt from Meta.
+   *
+   * Every outbound message produces a stream of these — `sent`, `delivered`,
+   * `read`, or `failed` — and until now the worker had no handler for the job
+   * that carries them, so all four dead-lettered. The columns they fill have
+   * existed since the first migration and were never written by anything.
+   *
+   * The one that costs money to lose is `failed`. Meta reports an undelivered
+   * message asynchronously: the send returns 200, the receipt arrives seconds
+   * later, and without it a user's mail is silently not delivered while the
+   * system records a successful send.
+   *
+   * A receipt names a `wamid` and a phone number and no user id, so the owner
+   * has to be established before anything can be read — `whatsapp_deliveries`
+   * is behind row-level security, and an unscoped read of it returns nothing
+   * rather than the row. The phone number is the way in: `users` carries no
+   * policy precisely because it is the table that answers "whose is this", and
+   * from there the read and the write are both properly scoped. That is also
+   * the tighter arrangement, since the `wamid` in a receipt is off the wire —
+   * this way a forged one can only ever name a row belonging to the number in
+   * the same payload.
+   *
+   * @returns the delivery, or null when there is nothing to apply the receipt
+   *   to — which is ordinary rather than alarming.
+   */
+  async applyDeliveryReceipt(update: WhatsAppStatusUpdate): Promise<{
+    userId: string;
+    emailMessageId: string | null;
+    phoneNumber: string;
+  } | null> {
+    const user = await this.findUserByPhone(fromWhatsAppFormat(update.recipient));
+
+    // A number we do not know: a message sent by another tool on the same
+    // WhatsApp number, or a user who has since changed theirs.
+    if (!user) return null;
+
+    return this.prisma.forUser(user.id, async (tx) => {
+      const delivery = await tx.whatsAppDelivery.findUnique({
+        where: { whatsappMessageId: update.messageId },
+        select: { id: true, userId: true, emailMessageId: true, phoneNumber: true },
+      });
+
+      if (!delivery) return null;
+
+      await tx.whatsAppDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: update.status,
+          ...TIMESTAMP_FOR[update.status](update.timestamp),
+          ...(update.error
+            ? { errorCode: update.error.code, errorMessage: metaErrorText(update.error) }
+            : {}),
+        },
+      });
+
+      return delivery;
     });
   }
 

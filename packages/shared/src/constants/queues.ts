@@ -1,3 +1,6 @@
+import type { InboundWhatsAppMessage, WhatsAppStatusUpdate } from '../types/whatsapp.js';
+import type { Wire } from '../utils/wire.js';
+
 /**
  * Queue names and job contracts.
  *
@@ -213,6 +216,17 @@ export interface HandleInboundJob {
   /** Meta's `wamid.…`, also used as the BullMQ job id for de-duplication. */
   whatsappMessageId: string;
   phoneNumber: string;
-  /** Full validated inbound payload, serialized. */
-  payload: unknown;
+  /**
+   * The validated inbound message — as JSON leaves it, which is not the same
+   * shape it went in as. `Wire` rather than `unknown` because this field used
+   * to be `unknown` and the consumer bridged the gap with `as
+   * InboundWhatsAppMessage`; the assertion was wrong about `timestamp` and
+   * nothing checked it. Open it with `reviveInboundMessage`.
+   */
+  payload: Wire<InboundWhatsAppMessage>;
+}
+
+/** A delivery receipt from Meta: `sent`, `delivered`, `read` or `failed`. */
+export interface RetryDeliveryJob {
+  statusUpdate: Wire<WhatsAppStatusUpdate>;
 }

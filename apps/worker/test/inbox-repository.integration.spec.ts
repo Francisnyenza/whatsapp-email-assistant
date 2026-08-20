@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient, withTenant as scopedTx } from '@wea/db';
 import { InboxRepository } from '../src/repositories/inbox.repository.js';
 import { ThreadResolver } from '../src/services/thread-resolver.js';
-import type { InboundWhatsAppMessage } from '@wea/shared';
+import type { InboundWhatsAppMessage, WhatsAppStatusUpdate } from '@wea/shared';
 
 /**
  * The resolution ladder against a real database.
@@ -392,6 +392,152 @@ describeIfDb('inbox repository (real database)', () => {
           receivedAt: message.timestamp,
         }),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  /**
+   * Delivery receipts.
+   *
+   * `sent_at`, `delivered_at`, `read_at`, `failed_at`, `error_code` and
+   * `error_message` have been in the schema since the first migration, and
+   * until now nothing wrote any of them — the job carrying the receipts had no
+   * handler, so every one of them dead-lettered.
+   *
+   * The lookup is deliberately unscoped, because a receipt names a `wamid` and
+   * a phone number and nothing else. That makes "does it stay inside the right
+   * tenant anyway" a question worth asking of a real database rather than a
+   * mock.
+   */
+  describe('applying a delivery receipt', () => {
+    /**
+     * A fresh row per test.
+     *
+     * The suite's shared fixtures are seeded once and never reset, and every
+     * test here writes to the row it names — sharing one would make the results
+     * depend on the order vitest happens to run them in.
+     */
+    let waId: string;
+
+    beforeEach(async () => {
+      waId = `wamid.RECEIPT.${randomUUID().slice(0, 8)}`;
+      await withTenant(userId, (tx) =>
+        tx.whatsAppDelivery.create({
+          data: {
+            userId,
+            emailMessageId: emails['sarah']!,
+            whatsappMessageId: waId,
+            phoneNumber: phone,
+            status: 'sent',
+          },
+        }),
+      );
+    });
+
+    const receipt = (over: Partial<WhatsAppStatusUpdate> = {}): WhatsAppStatusUpdate => ({
+      messageId: waId,
+      recipient: phone.slice(1),
+      status: 'delivered',
+      timestamp: new Date('2026-08-20T10:00:00.000Z'),
+      ...over,
+    });
+
+    async function row() {
+      return withTenant(userId, (tx) =>
+        tx.whatsAppDelivery.findUnique({ where: { whatsappMessageId: waId } }),
+      );
+    }
+
+    it('stamps the column the status names', async () => {
+      await repo.applyDeliveryReceipt(receipt({ status: 'read' }));
+
+      const stored = await row();
+      expect(stored?.status).toBe('read');
+      expect(stored?.readAt?.toISOString()).toBe('2026-08-20T10:00:00.000Z');
+    });
+
+    it('records a failure with the reason, which is the whole point', async () => {
+      // Meta answers a send with 200 and reports the failure seconds later. A
+      // receipt that goes nowhere means the system believes it delivered mail
+      // the user never got.
+      await repo.applyDeliveryReceipt(
+        receipt({
+          status: 'failed',
+          error: { code: 131_047, title: 'Re-engagement message', details: 'outside the window' },
+        }),
+      );
+
+      const stored = await row();
+      expect(stored?.status).toBe('failed');
+      expect(stored?.failedAt).not.toBeNull();
+      expect(stored?.errorCode).toBe(131_047);
+      expect(stored?.errorMessage).toBe('Re-engagement message: outside the window');
+    });
+
+    it('returns who it belongs to, since the receipt does not say', async () => {
+      const found = await repo.applyDeliveryReceipt(receipt());
+
+      expect(found?.userId).toBe(userId);
+      expect(found?.emailMessageId).toBe(emails['sarah']);
+    });
+
+    it('shrugs at a receipt for a message it has no record of', async () => {
+      // Another tool sending on the same number, or a row lost to a restore.
+      // Ordinary, and nothing to do about it.
+      await expect(
+        repo.applyDeliveryReceipt(receipt({ messageId: 'wamid.NEVER.SENT' })),
+      ).resolves.toBeNull();
+    });
+
+    it('leaves the other statuses on their own columns', async () => {
+      await repo.applyDeliveryReceipt(receipt({ status: 'sent' }));
+      await repo.applyDeliveryReceipt(
+        receipt({ status: 'delivered', timestamp: new Date('2026-08-20T10:00:05.000Z') }),
+      );
+
+      const stored = await row();
+      expect(stored?.sentAt?.toISOString()).toBe('2026-08-20T10:00:00.000Z');
+      expect(stored?.deliveredAt?.toISOString()).toBe('2026-08-20T10:00:05.000Z');
+      // The last receipt wins the status, and the earlier stamps survive it.
+      expect(stored?.status).toBe('delivered');
+      expect(stored?.readAt).toBeNull();
+    });
+
+    it('shrugs at a receipt for a number with no account', async () => {
+      // Another tool sending on the same WhatsApp number, or a user who has
+      // since changed theirs.
+      await expect(
+        repo.applyDeliveryReceipt(receipt({ recipient: '254700000077' })),
+      ).resolves.toBeNull();
+    });
+
+    it("will not let one number stamp another number's delivery", async () => {
+      // The `wamid` in a receipt comes off the wire. Resolving the owner from
+      // the phone number first — rather than looking the `wamid` up across all
+      // tenants — is what keeps a forged one confined to the account that owns
+      // the number in the same payload.
+      const otherPhone = `+2547${Math.floor(10_000_000 + Math.random() * 89_999_999)}`;
+      await prisma.user.update({
+        where: { id: otherUserId },
+        data: { phoneNumber: otherPhone, phoneVerified: true },
+      });
+
+      const applied = await repo.applyDeliveryReceipt(
+        receipt({ status: 'read', recipient: otherPhone.slice(1) }),
+      );
+
+      expect(applied).toBeNull();
+      expect((await row())?.status).toBe('sent');
+    });
+
+    it('writes inside the owning tenant, not the one that asked', async () => {
+      // The lookup crosses tenants by necessity. The update must not: a
+      // receipt is attacker-influenced input — the `wamid` comes off the wire.
+      await repo.applyDeliveryReceipt(receipt({ status: 'read' }));
+
+      const visibleToOther = await withTenant(otherUserId, (tx) =>
+        tx.whatsAppDelivery.findMany({ where: { whatsappMessageId: waId } }),
+      );
+      expect(visibleToOther).toHaveLength(0);
     });
   });
 });

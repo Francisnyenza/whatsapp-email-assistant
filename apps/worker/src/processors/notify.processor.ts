@@ -1,7 +1,15 @@
 import { Injectable, Inject, type OnModuleInit, type OnModuleDestroy } from '@nestjs/common';
 import type { Worker, Job } from 'bullmq';
 import type { Logger } from 'pino';
-import { AppError, QUEUE, JOB, type NotifyEmailJob, type EmailPriority } from '@wea/shared';
+import {
+  AppError,
+  QUEUE,
+  JOB,
+  reviveStatusUpdate,
+  type NotifyEmailJob,
+  type RetryDeliveryJob,
+  type EmailPriority,
+} from '@wea/shared';
 import {
   buildEmailNotification,
   buildNewEmailTemplate,
@@ -12,6 +20,7 @@ import {
 } from '@wea/whatsapp';
 import { ConfigService } from '../config/config.service.js';
 import { MessageRepository } from '../repositories/message.repository.js';
+import { InboxRepository } from '../repositories/inbox.repository.js';
 import { OutboundService } from '../services/outbound.service.js';
 import { startWorker } from './base.processor.js';
 
@@ -29,17 +38,18 @@ import { startWorker } from './base.processor.js';
  */
 @Injectable()
 export class NotifyProcessor implements OnModuleInit, OnModuleDestroy {
-  private worker?: Worker<NotifyEmailJob>;
+  private worker?: Worker<NotifyEmailJob | RetryDeliveryJob>;
 
   constructor(
     private readonly config: ConfigService,
     private readonly messages: MessageRepository,
+    private readonly inbox: InboxRepository,
     private readonly outbound: OutboundService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
   onModuleInit(): void {
-    this.worker = startWorker<NotifyEmailJob>({
+    this.worker = startWorker<NotifyEmailJob | RetryDeliveryJob>({
       queueName: QUEUE.NOTIFY,
       redisUrl: this.config.env.REDIS_QUEUE_URL ?? this.config.env.REDIS_URL,
       logger: this.logger,
@@ -47,17 +57,66 @@ export class NotifyProcessor implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  async handle(job: Job<NotifyEmailJob>): Promise<void> {
+  async handle(job: Job<NotifyEmailJob | RetryDeliveryJob>): Promise<void> {
     switch (job.name) {
       case JOB.NOTIFY_EMAIL:
-        return this.notifyOne(job.data);
+        return this.notifyOne(job.data as NotifyEmailJob);
       case JOB.SEND_DIGEST:
-        return this.sendDigest(job.data.userId);
+        return this.sendDigest((job.data as NotifyEmailJob).userId);
+      case JOB.RETRY_DELIVERY:
+        return this.applyReceipt(job.data as RetryDeliveryJob);
       default:
         // Not retryable: an unknown job name will still be unknown on the
         // fourth attempt.
         throw new AppError('BAD_REQUEST', `Unknown notify job: ${job.name}`, { retryable: false });
     }
+  }
+
+  /**
+   * A delivery receipt from Meta.
+   *
+   * Enqueued for every outbound message and, until this handler existed,
+   * dispatched to a `default:` that threw `Unknown notify job` — so all four
+   * receipt kinds dead-lettered and the delivery columns stayed null.
+   *
+   * `failed` is the one that changes an outcome. Meta accepts a send with a 200
+   * and reports the failure asynchronously, so without this the system records
+   * a successful delivery for mail the user never received. What it does about
+   * it is deliberately narrow: mark the row and say so in the log. Resending
+   * automatically is the wrong reflex — the common failure is a closed 24-hour
+   * window or a blocked number, where a retry fails identically, and the
+   * deferral path already exists to hold mail until the window reopens.
+   */
+  private async applyReceipt(data: RetryDeliveryJob): Promise<void> {
+    const update = reviveStatusUpdate(data.statusUpdate);
+    const delivery = await this.inbox.applyDeliveryReceipt(update);
+
+    if (!delivery) {
+      this.logger.debug(
+        { event: 'notify.receipt_unknown', status: update.status },
+        'Receipt for a message we did not send',
+      );
+      return;
+    }
+
+    if (update.status === 'failed') {
+      this.logger.warn(
+        {
+          event: 'notify.delivery_failed',
+          userId: delivery.userId,
+          emailMessageId: delivery.emailMessageId,
+          errorCode: update.error?.code,
+          errorTitle: update.error?.title,
+        },
+        'WhatsApp did not deliver a message',
+      );
+      return;
+    }
+
+    this.logger.debug(
+      { event: 'notify.receipt', userId: delivery.userId, status: update.status },
+      'Delivery receipt recorded',
+    );
   }
 
   /**

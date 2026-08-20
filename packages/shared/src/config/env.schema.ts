@@ -85,6 +85,17 @@ export const envSchema = z
     WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().optional(),
     WHATSAPP_ACCESS_TOKEN: nonEmpty('WHATSAPP_ACCESS_TOKEN'),
     WHATSAPP_API_VERSION: z.string().default('v21.0'),
+    /**
+     * Where the Cloud API lives. Unset means Meta's own host, which is what a
+     * real deployment wants.
+     *
+     * It exists so the outbound half of the loop can be exercised against a
+     * stub — every other seam in this product is testable offline and this one
+     * was not, which is how "the reply never sends" would have stayed invisible
+     * until a real trial. Meta also publishes regional endpoints, so an override
+     * is not solely a test affordance.
+     */
+    WHATSAPP_API_BASE_URL: z.string().url().optional(),
     WHATSAPP_WEBHOOK_VERIFY_TOKEN: nonEmpty('WHATSAPP_WEBHOOK_VERIFY_TOKEN'),
     WHATSAPP_APP_SECRET: nonEmpty('WHATSAPP_APP_SECRET'),
 
