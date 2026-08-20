@@ -1,6 +1,7 @@
 import { Worker, type Job, type Processor } from 'bullmq';
 import { AppError, QUEUE_DEFAULTS, type QueueName } from '@wea/shared';
 import type { Logger } from 'pino';
+import { jobMetrics } from '../health/job-metrics.js';
 
 /**
  * Shared wiring for every queue consumer.
@@ -23,17 +24,32 @@ export function startWorker<T>(options: {
     const startedAt = Date.now();
     try {
       await options.handler(job);
+
+      const ms = Date.now() - startedAt;
+      jobMetrics.record({
+        queue: options.queueName,
+        job: job.name,
+        outcome: 'completed',
+        seconds: ms / 1_000,
+      });
+
       options.logger.debug(
-        {
-          event: 'job.completed',
-          queue: options.queueName,
-          job: job.name,
-          ms: Date.now() - startedAt,
-        },
+        { event: 'job.completed', queue: options.queueName, job: job.name, ms },
         'Job completed',
       );
     } catch (err) {
       const error = AppError.from(err);
+
+      // Every failed *attempt*, not every lost job — a job that exhausts four
+      // retries counts here four times and dead-letters once. The pair is the
+      // point: this is the error rate, and an alert on dead-letters alone pages
+      // only after the retries are spent.
+      jobMetrics.record({
+        queue: options.queueName,
+        job: job.name,
+        outcome: 'failed',
+        seconds: (Date.now() - startedAt) / 1_000,
+      });
 
       options.logger.error(
         {
@@ -65,7 +81,16 @@ export function startWorker<T>(options: {
 
   worker.on('failed', (job, err) => {
     if (job && job.attemptsMade >= (job.opts.attempts ?? defaults.attempts)) {
-      // Exhausted. This is the line that should page someone.
+      // Exhausted: work the system accepted and will not do. No duration — the
+      // attempt that got here already recorded its own, and timing it twice
+      // would count the same work twice in the histogram.
+      jobMetrics.record({
+        queue: options.queueName,
+        job: job.name,
+        outcome: 'dead_lettered',
+      });
+
+      // This is the line that should page someone.
       options.logger.error(
         { event: 'job.dead_lettered', queue: options.queueName, jobId: job.id, err: err.message },
         'Job exhausted its retries',

@@ -12,12 +12,20 @@
  * total — it goes down as well as up — and exporting it as a counter would make
  * `rate()` produce nonsense at every drain.
  *
- * What this does *not* do is keep state between scrapes. There is no in-process
+ * The depths themselves keep no state between scrapes. There is no in-process
  * accumulation, so a restarted worker exports the truth immediately rather than
  * a series that resets to zero, and two replicas scraped separately do not
  * double-count: both read the same Redis and report the same depth, which is
  * what the alert wants — a backlog is a property of the queue, not of the pod.
+ *
+ * The job counters rendered alongside them (`job-metrics.ts`) are the opposite
+ * on purpose: work done belongs to the process that did it, so each replica
+ * reports its own and a restart resets a counter, which is what a counter is
+ * for. Depth says a backlog exists; the counters say whether it is arrival
+ * rate, slowness, or failure, and those want different answers.
  */
+
+import { jobMetrics } from './job-metrics.js';
 
 /** Escapes per the exposition format: backslash, newline, and quote in labels. */
 function escapeLabel(value: string): string {
@@ -53,6 +61,10 @@ export function renderMetrics(depths: Record<string, number>): string {
   lines.push('# HELP wea_worker_up Always 1. Presence is the signal.');
   lines.push('# TYPE wea_worker_up gauge');
   lines.push('wea_worker_up 1');
+
+  // Rendered from the same endpoint rather than a second one, so a scrape
+  // config that already works needs no change to start collecting these.
+  lines.push(jobMetrics.render());
 
   // A trailing newline is required by the format; without it the last sample is
   // silently dropped by some parsers.

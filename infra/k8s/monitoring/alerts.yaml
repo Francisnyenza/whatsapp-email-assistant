@@ -215,6 +215,61 @@ spec:
               consumer rather than a busy one. Check worker readiness first — a worker that
               cannot reach Redis reports unready and stops consuming.
 
+        - alert: WeaJobFailureRate
+          # Depth says a backlog exists; this says it is failure rather than
+          # arrival rate or slowness. A queue draining at a steady depth while
+          # every job fails and retries looks healthy from depth alone.
+          expr: |
+            sum by (queue) (rate(wea_jobs_total{outcome="failed"}[10m]))
+              /
+            sum by (queue) (rate(wea_jobs_total[10m]))
+              > 0.1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'More than one job in ten is failing on {{ $labels.queue }}'
+            description: >-
+              Counted per attempt, so retries of one bad job inflate this — which is the
+              point, since four attempts is four times the provider load. Check
+              job.failed lines for the `code` field; a non-retryable code means the
+              payload, a retryable one means the dependency.
+
+        - alert: WeaJobsDeadLettered
+          # Work the system accepted, retried to exhaustion, and will not do.
+          # Unlike the failure rate this is not a ratio: one lost message is
+          # worth knowing about even in a quiet hour.
+          expr: |
+            sum by (queue) (increase(wea_jobs_total{outcome="dead_lettered"}[1h])) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Jobs exhausted their retries on {{ $labels.queue }}'
+            description: >-
+              Each one is a message, an email or a reply the system took responsibility
+              for and dropped. The DLQ holds the payloads; they are replayable once the
+              cause is fixed.
+
+        - alert: WeaJobsSlow
+          # The third reason a backlog grows, and the one depth hides best:
+          # arrival rate unchanged, failure rate zero, each job simply taking
+          # longer than it did yesterday.
+          expr: |
+            histogram_quantile(
+              0.95,
+              sum by (le, queue) (rate(wea_job_duration_seconds_bucket[10m]))
+            ) > 60
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'p95 job duration above a minute on {{ $labels.queue }}'
+            description: >-
+              Not itself a failure — an LLM call or a large mailbox sync is legitimately
+              slow. It matters because concurrency is fixed, so duration and throughput
+              trade directly: at this p95 the queue drains slower than it fills.
+
         - alert: WeaMetricsMissing
           # The alert about the alerts. Every rule above goes quiet if the
           # scrape stops, and silence from a monitoring system is

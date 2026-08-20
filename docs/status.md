@@ -95,6 +95,33 @@ Boot now refuses any value in production, and anything but loopback elsewhere.
 Unset, the client still defaults to `graph.facebook.com/$WHATSAPP_API_VERSION`
 exactly as before.
 
+### The worker says why, not only that
+
+`wea_queue_depth` has always said a backlog exists. It cannot say which of the
+three causes it is — jobs arriving faster than they finish, jobs finishing
+slowly, or jobs failing and retrying into the same queue — and those want
+different responses. A queue holding steady while every job fails four times
+looks, from depth alone, exactly like a healthy one.
+
+`wea_jobs_total{queue,job,outcome}` and `wea_job_duration_seconds` close that.
+Everything they record was already measured: `startWorker` timed each job for
+its `job.completed` line and classified every failure for `job.failed` and
+`job.dead_lettered`, so this adds an export rather than instrumentation, and no
+handler changed.
+
+`failed` counts every failed _attempt_ and `dead_lettered` only the last, which
+is the pair worth having — the first is the error rate, the second is the number
+of things actually lost, and an alert on the second alone pages after the
+retries are already spent. Three alerts use them: failure ratio per queue,
+dead-letters in the last hour, and p95 duration.
+
+Verified against the running worker rather than only in tests: driving two
+inbound commands, one delivery receipt and one deliberately unknown job name
+produced `completed`, `failed` and `dead_lettered` series with a populated
+histogram — and the non-retryable case correctly recorded one failure and one
+dead-letter rather than four failures, because `job.discard()` stopped the
+retries.
+
 ### What the local run does not prove
 
 The one thing still unexercised end to end is the provider call itself — the
@@ -261,7 +288,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **2 008 tests** (1 625 unit + 383 integration
+Everything below has tests that run and pass. **2 023 tests** (1 640 unit + 383 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
@@ -625,14 +652,14 @@ so the list cannot quietly grow.
    insisted on its own would be forked or ignored. What is missing is the glue: a VPC, the
    subnet groups and security groups the module takes as inputs, and External Secrets wired
    from the Secrets Manager secret into the namespace.
-3. **More metrics than queue depth and request rate.** The worker exports
-   `wea_queue_depth` and the API now exports its request counters and latency histogram,
-   which between them cover the backlog, error-rate and p95 alerts. Still unexported and
-   still only a log line: a mailbox stuck in `polling`, a user's token budget exhausted,
-   the retention sweep failing quietly. Each is a condition the code already knows and
-   writes an `event` field for, so what is missing is the export rather than the detection.
-   The worker's own work is also unmeasured — job duration and failure rate per queue would
-   say _why_ a backlog is growing, where depth only says that it is.
+3. **More metrics than queue depth, request rate and job outcomes.** The worker now
+   exports `wea_jobs_total{queue,job,outcome}` and `wea_job_duration_seconds`, which is
+   what says _why_ a backlog is growing rather than only that it is — arrival rate,
+   slowness, or failure want different answers, and depth cannot tell them apart. The API
+   exports its request counters and latency histogram. Still unexported and still only a
+   log line: a mailbox stuck in `polling`, a user's token budget exhausted, the retention
+   sweep failing quietly. Each is a condition the code already knows and writes an `event`
+   field for, so what is missing is the export rather than the detection.
 4. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
    but stub every third party. What is untested end to end is the seam with Meta and with
    Google, which is where a contract changes without telling anyone. `pnpm preflight` narrows

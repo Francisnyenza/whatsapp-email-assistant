@@ -7,6 +7,13 @@
 # rather than one virtual address. Balancing would give a scraper a random
 # replica each interval, and `wea_queue_depth` would appear to jitter between
 # pods that are all reporting the same number.
+#
+# Per-pod is not merely tidier now that the worker also exports `wea_jobs_total`
+# and `wea_job_duration_seconds`. Those are counters owned by the process that
+# did the work, so each replica's series is its own; a balanced Service would
+# hand the scraper a different pod's counter each interval and `rate()` would
+# read the difference as a reset, reporting near-zero throughput on a busy
+# system.
 apiVersion: v1
 kind: Service
 metadata:
