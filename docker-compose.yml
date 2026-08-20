@@ -76,7 +76,7 @@ services:
   # with the user's own OAuth token, in every environment, and there is no SMTP
   # in the send path to intercept. Keeping it meant a dev machine that looked
   # sandboxed and was not, which is the worst version of this to be wrong about.
-  # `pnpm doctor` now says so out loud on every run.
+  # `pnpm preflight` now says so out loud on every run.
 
   # OpenTelemetry traces + Jaeger UI on :16686.
   jaeger:

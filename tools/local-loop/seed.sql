@@ -5,9 +5,10 @@
 --
 --   psql "$DATABASE_URL" -v phone="'+15559990007'" -f tools/local-loop/seed.sql
 --
--- The OAuth token bytes are deliberately fake. Anything that reaches the mail
--- provider will stop at ENCRYPTION_FAILURE decrypting them, which is the
--- fixture being a fixture — connect a real account for that half.
+-- Run it through seed.sh rather than directly: the OAuth token columns are real
+-- ciphertext under ENCRYPTION_MASTER_KEY, and that script is what seals them.
+-- The tokens decrypt but are not real Google grants, so a command that reaches
+-- the mail provider fails at the HTTP call rather than several steps earlier.
 
 \set QUIET on
 \pset tuples_only on
@@ -31,10 +32,12 @@ SET LOCAL app.current_user_id = '11111111-1111-4111-8111-111111111111';
 INSERT INTO email_accounts (
   id, user_id, provider, email_address, display_name, status,
   access_token_cipher, access_token_dek, token_key_version, provider_account_id,
+  refresh_token_cipher, refresh_token_dek, token_expires_at,
   consecutive_failures, is_primary, created_at, updated_at
 ) VALUES (
   :aid::uuid, :uid::uuid, 'gmail', 'me@example.com', 'Me', 'active',
-  '\x00'::bytea, '\x00'::bytea, 1, 'provider-acct-1',
+  decode(:'access_cipher', 'hex'), decode(:'access_dek', 'hex'), :key_version, 'provider-acct-1',
+  decode(:'refresh_cipher', 'hex'), decode(:'refresh_dek', 'hex'), now() + interval '1 hour',
   0, true, now(), now()
 );
 

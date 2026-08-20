@@ -154,11 +154,25 @@ already at this boundary with no third-party client in between.
 
 ### What the local run does not prove
 
-The one thing still unexercised end to end is the provider call itself — the
-Gmail or Graph request behind `archive`, `reply`, `delete`. It needs a real
-OAuth token, so the local run stops at `ENCRYPTION_FAILURE` decrypting a fixture
-token, which is the fixture being fake rather than a defect. That half unblocks
-the moment a real account is connected.
+Less than it did. The fixture's OAuth tokens are now real ciphertext under
+`ENCRYPTION_MASTER_KEY`, sealed through the same envelope layer with the same
+AAD binding, which turned out to matter: the command pipeline decrypts the
+mailbox token before it dispatches anything, so a placeholder token stopped
+_every_ command — including ones that never touch a mailbox — several steps
+before the code being exercised. Discovered by running `snooze until tomorrow
+9am` and finding it fail inside `AccountService.load`.
+
+With a decryptable token the run reaches the provider call. And since this
+sandbox can reach Google (it cannot reach `graph.facebook.com`), that call goes
+to the real Gmail API: Google rejects the fake grant with its own 401,
+`mapGmailError` turns it into "We lost access to your mailbox. Please reconnect
+it.", and that reply arrives at the stub. Every step but the grant itself is
+real, which makes the unauthorized path verified against Google rather than
+against a fixture.
+
+What remains unproven is the two things a credential buys: that a **valid**
+grant does what the adapters expect, and that Meta accepts what the stub
+accepted. The second has never been touched at all.
 
 ## Nothing reached the queues
 
@@ -707,11 +721,19 @@ so the list cannot quietly grow.
    mailbox behaves as the adapter expects. `WHATSAPP_API_BASE_URL` is what makes the first
    half reproducible; unset, it defaults to `graph.facebook.com` as before.
 
-An earlier revision of this paragraph said every feature in the product spec was built.
-The parity audit above is what that claim looks like when it is checked verb by verb, and
-it is not true. Composing, attachments in both directions, Cc and Bcc have since been
-built; what is missing now is on the other half — the filing verbs beyond archive, which
-are labels, folders and snooze.
+An earlier revision of this paragraph said every feature in the product spec was built,
+and the parity audit above is what that claim looks like when it is checked verb by verb.
+At the time it was written the audit contradicted it. It no longer does: composing,
+attachments in both directions, Cc and Bcc, and then labels, folders and snooze were each
+built afterwards, and every row above is now green.
+
+That paragraph then sat unchanged for several revisions, still naming as missing three
+things that had been finished — which is the same failure this document exists to avoid,
+committed by the document itself. Worth saying plainly rather than editing away silently:
+a status file is only worth reading if it is re-checked against the code, and this one was
+not.
+
+What remains is below, and none of it is a product verb.
 
 ### After that
 

@@ -42,14 +42,25 @@ python3 tools/local-loop/stub-meta.py &            # captures to meta-capture.js
 node apps/api/dist/main.js &
 node apps/worker/dist/main.js &
 
-psql "$DATABASE_URL" -v phone="'+15559990007'" -f tools/local-loop/seed.sql
+FROM=15559990007 tools/local-loop/seed.sh
 ```
 
 The seed makes one verified user, one email, one outbound card to reply to, and
-an open 24-hour messaging window. Its OAuth token bytes are deliberately fake,
-so anything that reaches the mail provider stops at `ENCRYPTION_FAILURE` — that
-is the fixture being a fixture, not a defect. Commands that need no mailbox
-(`help`, and the confirmation prompts) go all the way through.
+an open 24-hour messaging window.
+
+Its OAuth tokens are **real ciphertext** under `ENCRYPTION_MASTER_KEY`, sealed
+by `seed.sh` through the same envelope layer production uses, with the same
+`userId:field` AAD binding. That matters more than it sounds. The command
+pipeline decrypts the mailbox token before it dispatches anything, so a
+placeholder token stops every command — including ones that never touch a
+mailbox — at `ENCRYPTION_FAILURE`, several steps before the code you are trying
+to exercise. With a decryptable token the run goes all the way to the provider
+call and fails _there_, on the credential, which is the honest boundary.
+
+So `snooze until tomorrow 9am` reaches Gmail, Google rejects the fake grant with
+a 401, `mapGmailError` turns it into "We lost access to your mailbox. Please
+reconnect it.", and that arrives at the stub. Every step but the grant itself is
+real.
 
 Then send yourself a message:
 
@@ -79,7 +90,14 @@ same status is dropped by the queue rather than applied twice, which is what
 
 ## What it still does not prove
 
-That Meta accepts what the stub accepted, and that a real OAuth token behind
-`archive` or `reply` behaves as the provider adapters expect. Both need
-credentials. `pnpm preflight` is the check for the first one; `docs/getting-started.md`
-is the walkthrough for the second.
+That Meta accepts what the stub accepted, and that a **valid** OAuth grant
+behind `archive` or `reply` does what the adapters expect. Both need
+credentials.
+
+Note the asymmetry: the Gmail half already talks to Google over the real
+network here, so its unauthorized path is verified against Google's own
+response rather than a fixture. What is missing there is only the successful
+case. The WhatsApp half has never touched Meta at all.
+
+`pnpm preflight` is the check for the first; `docs/getting-started.md` is the
+walkthrough for the second.
