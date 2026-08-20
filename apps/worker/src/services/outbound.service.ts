@@ -32,9 +32,7 @@ export class OutboundService {
       // Absent in every real deployment; present when the outbound half is
       // being exercised against a stub, which is the only way to see it work
       // without a live WhatsApp Business account.
-      ...(config.env.WHATSAPP_API_BASE_URL
-        ? { baseUrl: config.env.WHATSAPP_API_BASE_URL }
-        : {}),
+      ...(config.env.WHATSAPP_API_BASE_URL ? { baseUrl: config.env.WHATSAPP_API_BASE_URL } : {}),
     });
   }
 

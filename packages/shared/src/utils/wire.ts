@@ -69,7 +69,9 @@ export function reviveDate(value: unknown, fallback: Date = new Date()): Date {
  * to {@link InboundWhatsAppMessage} without handling it here is a type error
  * rather than a field that silently stays a string.
  */
-export function reviveInboundMessage(payload: Wire<InboundWhatsAppMessage>): InboundWhatsAppMessage {
+export function reviveInboundMessage(
+  payload: Wire<InboundWhatsAppMessage>,
+): InboundWhatsAppMessage {
   return { ...payload, timestamp: reviveDate(payload.timestamp) };
 }
 

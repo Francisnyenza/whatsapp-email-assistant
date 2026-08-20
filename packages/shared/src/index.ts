@@ -118,12 +118,7 @@ export { normalizePhone, isE164, toWhatsAppFormat, fromWhatsAppFormat } from './
 
 export { jobKey } from './utils/job-key.js';
 
-export {
-  reviveDate,
-  reviveInboundMessage,
-  reviveStatusUpdate,
-  type Wire,
-} from './utils/wire.js';
+export { reviveDate, reviveInboundMessage, reviveStatusUpdate, type Wire } from './utils/wire.js';
 
 // preflight — see packages/shared/src/preflight/types.ts for why this exists
 export {

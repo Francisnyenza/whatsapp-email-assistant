@@ -63,6 +63,26 @@ All four receipt kinds are now verified against a running system, including a
 `failed` carrying Meta's error code 131047 landing in `error_code` and
 `error_message`.
 
+### The email a recipient receives
+
+The product's headline promise is one sentence: _the recipient gets a normal
+email and never knows it was answered from WhatsApp_. Two suites each checked
+half of it and neither checked the promise.
+
+`mime-builder.spec.ts` renders real RFC 822 bytes and asserts they carry nothing
+extra — from a hand-written input. `send-forward.spec.ts` runs the real send
+path against a real draft — and stops at a stubbed `provider.send`, asserting on
+the `OutboundMessage` object without ever rendering it. "Does what the worker
+builds render into an email with no trace of WhatsApp in it" fell exactly
+between them, which is the same producer/consumer gap as both bugs above.
+
+`reply-bytes.spec.ts` closes it: the provider stub composes with the same
+`composeMime` the Gmail and Graph adapters call, so every assertion is against
+bytes. No mention of WhatsApp, no `wamid`, the user's phone number absent
+despite being on the draft record the send path reads, `From` the user's own
+address, `In-Reply-To` and the full `References` chain so it threads in clients
+that are not Gmail, `Re:` exactly once, and no `X-Mailer` or originating header.
+
 ### What the local run does not prove
 
 The one thing still unexercised end to end is the provider call itself — the
@@ -229,7 +249,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 994 tests** (1 611 unit + 383 integration
+Everything below has tests that run and pass. **2 004 tests** (1 621 unit + 383 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |

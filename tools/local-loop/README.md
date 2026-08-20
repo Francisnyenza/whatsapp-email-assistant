@@ -71,7 +71,7 @@ FROM=15559990007 tools/local-loop/send-status.sh wamid.STUB.0002 failed \
 ```
 
 Each lands in `whatsapp_deliveries` — a column per status, plus `error_code` and
-`error_message` for the failure. A second receipt with the same wamid *and* the
+`error_message` for the failure. A second receipt with the same wamid _and_ the
 same status is dropped by the queue rather than applied twice, which is what
 `jobKey('wast', id, status)` is for: Meta redelivers.
 
