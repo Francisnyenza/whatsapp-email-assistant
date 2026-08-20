@@ -2,9 +2,74 @@
 
 Honest accounting of what exists, what is verified, and what remains.
 
-Last updated: 2026-08-15.
+Last updated: 2026-08-20.
 
 ---
+
+## The loop is closed
+
+The whole round trip now runs locally, with the Cloud API replaced by a stub on
+localhost and nothing else stubbed: a signed webhook reaches the API, the job
+crosses Redis, the worker identifies the user, parses the intent, resolves the
+thread, produces a response, and sends it as a correctly-shaped Cloud API
+request. Delivery receipts come back the same way and land in the database.
+
+Getting there took two more fixes, and both were found by running the product
+rather than by the test suite. The pattern from the previous two entries held
+exactly: in each case the tests and the code shared an assumption, so they
+agreed with each other and were both wrong.
+
+### A queue payload has been through JSON
+
+`HandleInboundJob.payload` was typed `unknown` and opened with
+`job.data.payload as InboundWhatsAppMessage`. The declared type says
+`timestamp: Date`. JSON has no `Date`. The first line to treat it as one threw
+`at.getTime is not a function`.
+
+It fires only when the sender is a **known** user — an unrecognised number
+returns earlier — so onboarding worked and every existing customer sending a
+command hit it. `command-loop.integration.spec.ts`, the suite whose entire
+purpose is to be the realistic one, built its payload in memory with a real
+`Date` and passed it with `as never`. It now round-trips through
+`JSON.parse(JSON.stringify(…))` the way BullMQ does; reverting the fix fails 145
+of its 151 tests with the production error.
+
+The job type is now `Wire<InboundWhatsAppMessage>`, which maps `Date` to
+`string` recursively, so reading `.getTime()` off a queue payload is a compile
+error and `reviveInboundMessage` is the only way in.
+
+### Delivery receipts had no handler
+
+The API enqueues every `sent`/`delivered`/`read`/`failed` receipt as
+`notify.retryDelivery`. The notify processor's switch had no case for that name,
+so all four hit the `default:` that throws as non-retryable. The columns they
+fill — `sent_at`, `delivered_at`, `read_at`, `failed_at`, `error_code`,
+`error_message` — have been in the schema since the first migration and were
+never written by anything.
+
+`failed` is the one that costs something. Meta answers a send with 200 and
+reports the failure asynchronously, so the system recorded a successful delivery
+for mail the user never received. The handler now records the receipt and logs
+the failure; it deliberately does not resend, because the usual cause is a
+closed 24-hour window or a blocked number, where an immediate retry fails
+identically and the deferral path already covers it.
+
+Nothing caught this because the producer and the consumer were tested
+separately: the controller test asserted the job was enqueued under the right
+name, and the processor test only ever passed names the processor already knew.
+Neither asked whether the name one side sends is one the other side handles.
+
+All four receipt kinds are now verified against a running system, including a
+`failed` carrying Meta's error code 131047 landing in `error_code` and
+`error_message`.
+
+### What the local run does not prove
+
+The one thing still unexercised end to end is the provider call itself — the
+Gmail or Graph request behind `archive`, `reply`, `delete`. It needs a real
+OAuth token, so the local run stops at `ENCRYPTION_FAILURE` decrypting a fixture
+token, which is the fixture being fake rather than a defect. That half unblocks
+the moment a real account is connected.
 
 ## Nothing reached the queues
 
@@ -164,8 +229,8 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **1 978 tests** (1 594 unit + 384 integration
-against real Postgres), lint and typecheck clean across every package and app.
+Everything below has tests that run and pass. **1 994 tests** (1 611 unit + 383 integration
+against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
 | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -545,6 +610,13 @@ so the list cannot quietly grow.
    `pnpm preflight` verifies each seam, but nobody has yet taken a live Meta app and a live
    Gmail account from clone to a reply landing in someone's inbox. Every claim in that
    document is checked against the code; none of it is checked against Meta.
+
+   Narrower than it was. The loop now runs locally against a stub Cloud API on
+   localhost — webhook in, reply out, receipts back — which leaves two things
+   genuinely unverified rather than four: that Meta accepts what the stub
+   accepted, and that a Gmail token behind an `archive` or a `reply` does what
+   the provider adapters expect. `WHATSAPP_API_BASE_URL` is what makes the first
+   half reproducible; unset, it defaults to `graph.facebook.com` as before.
 
 An earlier revision of this paragraph said every feature in the product spec was built.
 The parity audit above is what that claim looks like when it is checked verb by verb, and
