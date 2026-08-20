@@ -256,9 +256,14 @@ Then try `archive`, `forward to sam@example.com`, `snooze until tomorrow 9am`,
 `label as invoices`, `search from anna last week`, a photo (it rides along with your next
 email), and a voice note.
 
-Anything irreversible asks first, with a button. `undo` takes back the last thing for ten
-minutes, and every outgoing email waits fifteen seconds before it is actually sent so
-`undo` can still stop it.
+Anything irreversible asks first, with a button. `undo` reverses the last thing for ten
+minutes — archive, delete, a label, a snooze — because those go back through the mailbox
+the same way they went out.
+
+**Sending is the exception, and it is the one worth knowing.** An outgoing email waits
+fifteen seconds in the queue before the worker claims it, and `undo` inside those fifteen
+seconds stops it. After that it has left, no API takes it back, and `undo` says so rather
+than claiming a recall that did not happen.
 
 ---
 
@@ -272,23 +277,24 @@ An earlier version of `docs/development.md` claimed a Mailpit instance caught de
 mail. It never did — nothing pointed at it — and the service has been removed rather than
 left sitting there looking like a safety net. `pnpm preflight` says this on every run.
 
-Use an address you own for the first few tries. `undo` is the only recall there is, and it
-lasts fifteen seconds.
+Use an address you own for the first few tries. Fifteen seconds is the entire recall
+window — after that `undo` can still reverse an archive or a label, but not a send.
 
 ---
 
 ## When something does not work
 
-| What you see                           | What it usually is                                                                                                 |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Meta will not save the webhook         | The tunnel is down, or aimed at :3000. `pnpm preflight` performs the same handshake Meta does and tells you which. |
-| Webhook saved, no messages ever arrive | The app is not subscribed to the `messages` field. Configuration → Webhook fields → Manage.                        |
-| Worked yesterday, dead this morning    | The 24-hour token. Use a System User token.                                                                        |
-| `redirect_uri_mismatch` from Google    | Exact-string comparison. Run `pnpm preflight`; it prints the URI the API actually serves.                          |
-| Mailbox disconnects after a week       | Consent screen in Testing. Reconnect, or publish the app.                                                          |
-| Mail arrives, but no summaries         | AI key rejected or out of credit. Preflight tries the key rather than trusting it.                                 |
-| Mail takes minutes, not seconds        | Polling, because there is no Pub/Sub topic. Expected.                                                              |
-| Everything green, still nothing        | Is the worker running? `pnpm dev` starts it; on its own, the API accepts webhooks and queues work nobody does.     |
+| What you see                                  | What it usually is                                                                                                                                                                                                 |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Meta will not save the webhook                | The tunnel is down, or aimed at :3000. `pnpm preflight` performs the same handshake Meta does and tells you which.                                                                                                 |
+| Webhook saved, no messages ever arrive        | The app is not subscribed to the `messages` field. Configuration → Webhook fields → Manage.                                                                                                                        |
+| Worked yesterday, dead this morning           | The 24-hour token. Use a System User token.                                                                                                                                                                        |
+| `redirect_uri_mismatch` from Google           | Exact-string comparison. Run `pnpm preflight`; it prints the URI the API actually serves.                                                                                                                          |
+| Mailbox disconnects after a week              | Consent screen in Testing. Reconnect, or publish the app.                                                                                                                                                          |
+| Mail arrives, but no summaries                | AI key rejected or out of credit. Preflight tries the key rather than trusting it.                                                                                                                                 |
+| Mail takes minutes, not seconds               | Polling, because there is no Pub/Sub topic. Expected.                                                                                                                                                              |
+| Everything green, still nothing               | Is the worker running? `pnpm dev` starts it; on its own, the API accepts webhooks and queues work nobody does.                                                                                                     |
+| A reply you sent never showed up on the phone | Meta answers a send with 200 and reports the outcome afterwards. Look in `whatsapp_deliveries`: `status` and `error_code` carry what Meta said. 131047 is a closed 24-hour window, 131026 an undeliverable number. |
 
 Logs are JSON with an `event` field on every line. `pnpm dev 2>&1 | grep whatsapp.` is
 usually enough to see what the inbound path did with a message.

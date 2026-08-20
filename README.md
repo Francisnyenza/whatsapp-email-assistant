@@ -21,8 +21,9 @@ gives it away.
 - **Full mailbox control** — compose, archive, delete, forward, mark read/unread/important,
   search, label, move between folders, snooze, report spam, CC, Bcc and reply-all. Anything
   irreversible — a delete, a forward, a brand-new email — asks first, with a button, and
-  `undo` takes back the last thing for ten minutes afterwards. Every outgoing message
-  waits fifteen seconds before it is sent, so `undo` can stop it.
+  `undo` reverses the last thing for ten minutes afterwards. Sending is the exception:
+  an outgoing message waits fifteen seconds in the queue, and `undo` inside those fifteen
+  seconds stops it — after that it has gone, and no API takes an email back.
 - **AI throughout** — summarize, draft, rewrite, translate (10+ languages), classify, detect
   urgency and spam, extract deadlines, invoices, meeting times and action items.
 - **Attachments both ways** — ask for an email's files and they arrive in the chat; send a
