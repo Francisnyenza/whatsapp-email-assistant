@@ -123,3 +123,45 @@ describe('environment validation', () => {
     expect(loadEnv(baseEnv()).OTEL_ENABLED).toBe(false);
   });
 });
+
+/**
+ * The stub redirect.
+ *
+ * `WHATSAPP_API_BASE_URL` exists so the outbound half of the loop can be
+ * pointed at a local stub. It redirects requests that carry
+ * `WHATSAPP_ACCESS_TOKEN`, so the failure worth preventing is not an attack —
+ * setting an env var already requires the process — but a debugging leftover
+ * riding a deploy and quietly sending a live token somewhere else.
+ */
+describe('redirecting the Cloud API', () => {
+  it('is allowed at loopback outside production', () => {
+    expect(() =>
+      loadEnv(baseEnv({ WHATSAPP_API_BASE_URL: 'http://127.0.0.1:4010' })),
+    ).not.toThrow();
+  });
+
+  it('is refused in production, however harmless the value looks', () => {
+    expect(() =>
+      loadEnv(
+        baseEnv({
+          NODE_ENV: 'production',
+          KMS_PROVIDER: 'aws',
+          KMS_KEY_ID: 'alias/wea',
+          WHATSAPP_API_BASE_URL: 'http://127.0.0.1:4010',
+        }),
+      ),
+    ).toThrow(/WHATSAPP_API_BASE_URL/);
+  });
+
+  it('is refused when it points off the machine', () => {
+    // The shape of the leak: a value left over from a staging experiment,
+    // naming a host that is not this one.
+    expect(() =>
+      loadEnv(baseEnv({ WHATSAPP_API_BASE_URL: 'https://capture.example.com' })),
+    ).toThrow(/WHATSAPP_ACCESS_TOKEN/);
+  });
+
+  it('is fine unset, which is how every real deployment runs', () => {
+    expect(loadEnv(baseEnv()).WHATSAPP_API_BASE_URL).toBeUndefined();
+  });
+});

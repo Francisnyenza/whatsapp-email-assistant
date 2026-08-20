@@ -83,6 +83,18 @@ despite being on the draft record the send path reads, `From` the user's own
 address, `In-Reply-To` and the full `References` chain so it threads in clients
 that are not Gmail, `Re:` exactly once, and no `X-Mailer` or originating header.
 
+### The redirect is fenced
+
+`WHATSAPP_API_BASE_URL` is what makes the local loop possible, and it
+redirects requests that carry `WHATSAPP_ACCESS_TOKEN`. That is not a new way
+into the process — setting an env var already requires it — but it is a way a
+debugging leftover rides a deploy and sends a live token to whatever host it
+names, which is both likelier and quieter.
+
+Boot now refuses any value in production, and anything but loopback elsewhere.
+Unset, the client still defaults to `graph.facebook.com/$WHATSAPP_API_VERSION`
+exactly as before.
+
 ### What the local run does not prove
 
 The one thing still unexercised end to end is the provider call itself — the
@@ -249,7 +261,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **2 004 tests** (1 621 unit + 383 integration
+Everything below has tests that run and pass. **2 008 tests** (1 625 unit + 383 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |

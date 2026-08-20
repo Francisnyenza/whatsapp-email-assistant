@@ -219,6 +219,30 @@ export const envSchema = z
       });
     }
 
+    // `WHATSAPP_API_BASE_URL` exists so the outbound half of the loop can be
+    // pointed at a local stub (`tools/local-loop`). It redirects requests that
+    // carry the WhatsApp access token, so a value that survives into a real
+    // deployment sends that token to whatever host it names. Setting an env var
+    // already requires control of the process, so this is not a new way in — it
+    // is a way a debugging leftover turns into a credential leak, which is a
+    // different and much likelier failure.
+    //
+    // Loopback only, and only outside production. Refusing at boot beats a
+    // deployment that silently talks to the wrong Graph.
+    if (env.WHATSAPP_API_BASE_URL) {
+      const host = new URL(env.WHATSAPP_API_BASE_URL).hostname;
+      const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+
+      if (env.NODE_ENV === 'production' || !loopback) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['WHATSAPP_API_BASE_URL'],
+          message:
+            'must be unset in production and loopback-only elsewhere — it redirects requests carrying WHATSAPP_ACCESS_TOKEN',
+        });
+      }
+    }
+
     // A configured AI provider without its key is a runtime failure disguised as
     // a config value; catch it at boot.
     const aiKeys: Record<string, string | undefined> = {

@@ -30,7 +30,9 @@ Add the line that redirects outbound sends at the stub:
 export WHATSAPP_API_BASE_URL=http://127.0.0.1:4010
 ```
 
-Leave it unset in a real deployment. The client defaults to
+Leave it unset in a real deployment — boot refuses it there, and refuses
+anything but loopback anywhere else, because requests through it carry
+`WHATSAPP_ACCESS_TOKEN`. Unset, the client defaults to
 `https://graph.facebook.com/$WHATSAPP_API_VERSION`.
 
 ## Each run
