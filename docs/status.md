@@ -122,6 +122,36 @@ histogram — and the non-retryable case correctly recorded one failure and one
 dead-letter rather than four failures, because `job.discard()` stopped the
 retries.
 
+### What the Gmail SDK actually throws
+
+Every test of the Gmail adapter answered a different question than the one that
+matters at its boundary. The error tests built
+`{ code: 401, errors: [{ reason: 'authError' }] }` by hand and checked the
+mapping; the send tests never left `composeMime`. Both assumed a shape for what
+`googleapis` does, and nothing checked the assumption — the same arrangement
+that let sixteen job ids be built in a form BullMQ rejects.
+
+`gmail-transport.integration.spec.ts` runs the real client against a local HTTP
+server: `googleapis` builds the request, signs it, parses the response and
+constructs the error, and only Google is replaced. The assumption turned out to
+be **correct** — the SDK throws a numeric `code` alongside an `errors[].reason`,
+which is exactly what `mapGmailError` reads. That is worth having as evidence
+rather than as a belief, and worth pinning: a major version that stringifies
+`code` would send every branch of the mapping to its default, and a revoked
+grant would be retried forever instead of prompting a reconnect.
+
+It also confirms the request itself — base64url rather than base64 (asserted
+non-vacuously, by first confirming the payload is one where the two alphabets
+differ), the thread id present so Gmail groups the reply, the token in a header
+rather than the query string, and the response ids read back correctly.
+
+The seam is a constructor option, deliberately **not** an environment variable
+like the WhatsApp one. Requests here carry a mailbox OAuth token; a config key
+that redirects them is a config key that exfiltrates them, and only code can
+reach a constructor. There is no Graph equivalent and should not be: that
+adapter speaks HTTP directly and already takes a `fetchImpl`, so its tests are
+already at this boundary with no third-party client in between.
+
 ### What the local run does not prove
 
 The one thing still unexercised end to end is the provider call itself — the
@@ -288,7 +318,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **2 023 tests** (1 640 unit + 383 integration
+Everything below has tests that run and pass. **2 035 tests** (1 652 unit + 383 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
@@ -670,11 +700,11 @@ so the list cannot quietly grow.
    Gmail account from clone to a reply landing in someone's inbox. Every claim in that
    document is checked against the code; none of it is checked against Meta.
 
-   Narrower than it was. The loop now runs locally against a stub Cloud API on
-   localhost — webhook in, reply out, receipts back — which leaves two things
-   genuinely unverified rather than four: that Meta accepts what the stub
-   accepted, and that a Gmail token behind an `archive` or a `reply` does what
-   the provider adapters expect. `WHATSAPP_API_BASE_URL` is what makes the first
+   Narrower than it was. The loop runs locally against a stub Cloud API, and the
+   Gmail adapter now runs against a local HTTP server with the real SDK in the
+   path, so what is left unverified is what a real credential does: that Meta
+   accepts what the stub accepted, and that a live OAuth grant against a real
+   mailbox behaves as the adapter expects. `WHATSAPP_API_BASE_URL` is what makes the first
    half reproducible; unset, it defaults to `graph.facebook.com` as before.
 
 An earlier revision of this paragraph said every feature in the product spec was built.

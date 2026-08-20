@@ -39,6 +39,23 @@ export class GmailProvider implements MailProvider {
       pubsubTopic?: string;
       /** Called when an access token is refreshed, so the caller can persist it. */
       onTokenRefresh?: TokenRefreshCallback;
+      /**
+       * Where the Gmail API lives. Defaults to Google.
+       *
+       * A constructor option and **deliberately not an environment variable**,
+       * unlike the WhatsApp equivalent. Requests through here carry a user's
+       * mailbox OAuth token, which is the most sensitive credential this system
+       * holds; a config key that redirects them is a config key that exfiltrates
+       * them, and no fence on the value is worth having when simply not
+       * offering it costs nothing. The only way to set it is to construct the
+       * provider differently in code, which a deployment cannot do by accident.
+       *
+       * What it exists for is
+       * `packages/mail/test/gmail-transport.integration.spec.ts`, which points
+       * it at a local server to check what the SDK actually sends and actually
+       * throws — as opposed to what the offline tests assume it does.
+       */
+      apiBaseUrl?: string;
     },
   ) {}
 
@@ -67,7 +84,11 @@ export class GmailProvider implements MailProvider {
       });
     });
 
-    return google.gmail({ version: 'v1', auth });
+    return google.gmail({
+      version: 'v1',
+      auth,
+      ...(this.options.apiBaseUrl ? { rootUrl: this.options.apiBaseUrl } : {}),
+    });
   }
 
   async verifyAccess(
