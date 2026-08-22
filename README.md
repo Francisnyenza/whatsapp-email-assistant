@@ -43,8 +43,9 @@ gives it away.
 | [`docs/development.md`](docs/development.md)         | Local setup, credentials, conventions                 |
 | [`docs/status.md`](docs/status.md)                   | What is built and verified, and what is not           |
 | [`docs/data-model.md`](docs/data-model.md)           | Schema design, tenant isolation, retention            |
+| [`docs/runbook.md`](docs/runbook.md)                 | What to do when an alert fires, and what it means     |
+| [`tools/local-loop/`](tools/local-loop/)             | Running the whole path locally, without credentials   |
 | `docs/security.md`                                   | Threat model and controls (Phase 10)                  |
-| `docs/runbook.md`                                    | Operations (Phase 11)                                 |
 
 ## Repository layout
 
@@ -69,16 +70,23 @@ packages/
 infra/
   docker/     Local Postgres, Redis and MinIO
   k8s/        Deployments, Service, PDBs, HPA, migration Job,
-              KEDA autoscaler, Prometheus scrape targets and alerts
-  terraform/  RDS + pgvector, ElastiCache, KMS, S3, Secrets Manager
+              KEDA autoscaler, Prometheus scrape targets and alerts,
+              External Secrets wiring
+  terraform/  RDS + pgvector, ElastiCache, KMS, S3, Secrets Manager,
+              and network/ — a standalone VPC module for anyone
+              who has no network to bring
+tools/
+  local-loop/ The whole path against a stub Cloud API: real API,
+              worker, Redis, Postgres and RLS, no credentials
 ```
 
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**1 978 tests passing** (1 594 unit + 384 integration against real Postgres and Redis). See
+**2 035 tests passing** (1 652 unit + 383 integration against real Postgres and Redis). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
-including what these ticks do not cover.
+including what these ticks do not cover, and three bugs that a green suite of that size
+did not catch.
 
 | Phase |                              | Status                                    |
 | ----- | ---------------------------- | ----------------------------------------- |
@@ -91,8 +99,8 @@ including what these ticks do not cover.
 | 7     | Outlook / Microsoft 365      | ✅                                        |
 | 8     | AI layer                     | ✅                                        |
 | 9     | Frontend dashboard           | 🔨 setup and settings; no mail views      |
-| 10    | Testing                      | 🔨 unit, integration and CI; no E2E       |
-| 11    | Deployment & ops             | 🔨 images run, k8s, alerts, data-layer TF |
+| 10    | Testing                      | 🔨 unit, integration and CI; no load test |
+| 11    | Deployment & ops             | ✅ everything but the cluster itself      |
 
 ## Before the first message
 

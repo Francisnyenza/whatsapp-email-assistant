@@ -2,7 +2,16 @@
 
 Honest accounting of what exists, what is verified, and what remains.
 
-Last updated: 2026-08-20.
+Newest first, so the top of this file is the current state and everything below it is how
+that state was arrived at. The three sections after this one are the bugs that made the
+rest of the document worth doubting — each was found by running the product, none by the
+test suite, and all three had the same shape: a producer and a consumer tested separately,
+agreeing with each other, and wrong about the seam between them.
+
+"Verified" here means it was executed, not that a test asserts it. Where the two differ,
+the section says which.
+
+Last updated: 2026-08-22.
 
 ---
 
@@ -676,6 +685,10 @@ Listed plainly, because a half-wired OAuth flow is worse than an absent one.
 Reordered against the parity audit above. The deployment work is real but it ships a
 product that cannot compose an email, and that ordering was wrong.
 
+Items 2 and 3 are done and kept here with their outcomes, because a list that only ever
+grows tells you nothing about which way it is moving. What is left is items 1, 4 and 5 —
+and 1 and 5 both need credentials nobody here has.
+
 Also open, and found by the RLS sweep added with the attachment work: `subscriptions`,
 `org_memberships` and `audit_logs` carry a `user_id` and have no tenant policy.
 `provider_account_routes` legitimately has none — the webhook endpoints read it _to
@@ -728,11 +741,17 @@ so the list cannot quietly grow.
    log line: a mailbox stuck in `polling`, a user's token budget exhausted, the retention
    sweep failing quietly. Each is a condition the code already knows and writes an `event`
    field for, so what is missing is the export rather than the detection.
-4. **E2E, load and security suites (Phase 10).** The integration tests reach a real database
-   but stub every third party. What is untested end to end is the seam with Meta and with
-   Google, which is where a contract changes without telling anyone. `pnpm preflight` narrows
-   this — it exercises both seams for real — but it checks that they are reachable and
-   configured, not that a message round-trips.
+4. **E2E, load and security suites (Phase 10).** Narrower than it was, on both seams.
+   `tools/local-loop/` runs the whole WhatsApp path against a stub Cloud API — webhook in,
+   reply out, receipts back — and `gmail-transport.integration.spec.ts` runs the Gmail
+   adapter against a local HTTP server with the real `googleapis` client in the path, which
+   is what checks that the SDK throws the shape `mapGmailError` reads rather than assuming
+   it. `pnpm preflight` checks both seams are reachable and configured.
+
+   What none of that is: a load test, or a security suite. Neither exists. And the Meta
+   seam has still never carried a real message — a stub that accepts everything cannot
+   fail the way a contract change does.
+
 5. **A real end-to-end run.** `docs/getting-started.md` is the ordered walkthrough and
    `pnpm preflight` verifies each seam, but nobody has yet taken a live Meta app and a live
    Gmail account from clone to a reply landing in someone's inbox. Every claim in that
