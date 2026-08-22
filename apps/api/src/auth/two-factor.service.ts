@@ -13,6 +13,7 @@ import { EnvelopeEncryption, createKmsProvider } from '@wea/crypto';
 import { PrismaService } from '../common/prisma.service.js';
 import { ConfigService } from '../config/config.service.js';
 import { SessionService } from './session.service.js';
+import { AuditService } from '../common/audit.service.js';
 
 /**
  * The second factor.
@@ -57,6 +58,7 @@ export class TwoFactorService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly sessions: SessionService,
+    private readonly audit: AuditService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {
     // `createKmsProvider` is the only place the provider is chosen. Building
@@ -147,6 +149,11 @@ export class TwoFactorService {
         twoFactorLastUsedStep: BigInt(verified.step),
       },
     });
+
+    // Turning a second factor on or off is the change an account takeover
+    // makes first, in either direction — on to lock the owner out, off to keep
+    // the door open. Both are recorded.
+    await this.audit.record({ action: 'auth.2fa_enabled', userId });
 
     if (sessionId) await this.sessions.markMfaSatisfied(userId, sessionId);
 
@@ -256,6 +263,8 @@ export class TwoFactorService {
     });
 
     await this.sessions.revokeAll(userId, 'two-factor authentication disabled');
+
+    await this.audit.record({ action: 'auth.2fa_disabled', userId });
 
     this.logger.warn(
       { event: 'auth.2fa_disabled', userId },

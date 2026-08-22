@@ -5,6 +5,7 @@ import type { Logger } from 'pino';
 import { PrismaService } from '../common/prisma.service.js';
 import { SessionService } from './session.service.js';
 import { TokenService } from './token.service.js';
+import { AuditService } from '../common/audit.service.js';
 
 /**
  * Signing up and signing in.
@@ -30,6 +31,7 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly sessions: SessionService,
     private readonly tokens: TokenService,
+    private readonly audit: AuditService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
@@ -78,6 +80,8 @@ export class AuthService {
 
     this.logger.info({ event: 'auth.signed_up', userId: user.id }, 'Account created');
 
+    await this.audit.record({ action: 'auth.signup', userId: user.id, ...input.context });
+
     return this.grant(user.id, user.email, false, input.context);
   }
 
@@ -117,16 +121,41 @@ export class AuthService {
       // Spend comparable time so a missing account is not faster than a wrong
       // password. Without this the response time is a user-enumeration oracle.
       await verifyPassword(DUMMY_HASH, input.password);
+      // `userId: null`, because there is no user — which is itself the finding.
+      // A burst of these against many addresses is enumeration; against one, a
+      // typo. Only the trail can tell them apart.
+      await this.audit.record({
+        action: 'auth.signin',
+        success: false,
+        failureReason: 'no such account',
+        ...input.context,
+      });
       throw invalid;
     }
 
     if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
       // Same error as a wrong password: telling an attacker they have
-      // successfully locked an account confirms it exists.
+      // successfully locked an account confirms it exists. The audit trail is
+      // where the distinction is allowed to live, because only the account
+      // owner and an investigator can read it.
+      await this.audit.record({
+        action: 'auth.signin',
+        userId: user.id,
+        success: false,
+        failureReason: 'account locked',
+        ...input.context,
+      });
       throw invalid;
     }
 
     if (user.status === 'suspended' || user.status === 'deleted') {
+      await this.audit.record({
+        action: 'auth.signin',
+        userId: user.id,
+        success: false,
+        failureReason: `account ${user.status}`,
+        ...input.context,
+      });
       throw invalid;
     }
 
@@ -134,6 +163,16 @@ export class AuthService {
 
     if (!correct) {
       await this.recordFailure(user.id, user.failedLoginAttempts);
+      await this.audit.record({
+        action: 'auth.signin',
+        userId: user.id,
+        success: false,
+        failureReason: 'wrong password',
+        // The count, not the password. How close an attacker got to the
+        // lockout is the useful part of this entry.
+        metadata: { attempt: user.failedLoginAttempts + 1 },
+        ...input.context,
+      });
       throw invalid;
     }
 
@@ -153,6 +192,16 @@ export class AuthService {
     });
 
     this.logger.info({ event: 'auth.signed_in', userId: user.id }, 'Signed in');
+
+    await this.audit.record({
+      action: 'auth.signin',
+      userId: user.id,
+      // A successful sign-in from an unfamiliar address is the entry a user
+      // asking "was that me?" is shown, so the successes matter as much as the
+      // failures.
+      metadata: { twoFactorRequired: user.twoFactorEnabled },
+      ...input.context,
+    });
 
     // With 2FA enabled the session exists but is not yet fully authorized; the
     // access token carries mfa: false until the code is verified.

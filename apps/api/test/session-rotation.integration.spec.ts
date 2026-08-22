@@ -35,7 +35,7 @@ describeIfDb('refresh rotation (real database)', () => {
     });
 
     logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    sessions = new SessionService(service as never, logger as never);
+    sessions = new SessionService(service as never, { record: vi.fn() } as never, logger as never);
 
     await prisma.user.create({
       data: { id: userId, email: `${userId.slice(0, 8)}@example.com`, status: 'active' },

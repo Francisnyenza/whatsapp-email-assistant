@@ -77,7 +77,6 @@ model Organization {
   members      OrgMembership[]
   teams        Team[]
   subscription Subscription?
-  auditLogs    AuditLog[]
   apiKeys      ApiKey[]
 
   @@index([slug])
@@ -232,7 +231,6 @@ model User {
   drafts            Draft[]
   sessions          Session[]
   apiKeys           ApiKey[]
-  auditLogs         AuditLog[]
   preferences       UserPreference?
   aiMemory          AiMemory?
   contacts          Contact[]
@@ -1217,8 +1215,12 @@ model AuditLog {
 
   createdAt DateTime @default(now()) @map("created_at")
 
-  user         User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  /// No foreign key, deliberately — see migration
+  /// `20260822000100_audit_trail_outlives_its_subject`. `ON DELETE SET NULL` is
+  /// an UPDATE, and the append-only trigger rejects every UPDATE, so the
+  /// constraint made deleting any user with an audit row impossible. Keeping
+  /// the id unconstrained is also the better record: an investigation asks
+  /// which account did this, including when that account is gone.
 
   @@index([userId, createdAt(sort: Desc)])
   @@index([organizationId, createdAt(sort: Desc)])

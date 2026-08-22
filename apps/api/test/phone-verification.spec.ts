@@ -27,6 +27,7 @@ describe('issuing a code', () => {
     update = vi.fn().mockResolvedValue({});
     service = new PhoneVerificationService(
       { user: { update } } as never,
+      { record: vi.fn() } as never,
       { info: vi.fn(), warn: vi.fn() } as never,
     );
   });
@@ -74,6 +75,7 @@ describe('redeeming a code', () => {
     update = vi.fn().mockResolvedValue({});
     service = new PhoneVerificationService(
       { user: { findFirst, update } } as never,
+      { record: vi.fn() } as never,
       { info: vi.fn(), warn: vi.fn() } as never,
     );
   });
@@ -160,6 +162,7 @@ describe('status and unlinking', () => {
     update = vi.fn().mockResolvedValue({});
     service = new PhoneVerificationService(
       { user: { findUnique, update } } as never,
+      { record: vi.fn() } as never,
       { info: vi.fn(), warn: vi.fn() } as never,
     );
   });

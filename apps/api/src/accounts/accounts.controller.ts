@@ -15,6 +15,7 @@ import { AppError } from '@wea/shared';
 import { AuthGuard } from '../auth/auth.guard.js';
 import { AccountsService, type ConnectedAccount } from './accounts.service.js';
 import { PreferencesService, type Preferences } from './preferences.service.js';
+import { AuditService } from '../common/audit.service.js';
 
 /**
  * What the settings screen talks to.
@@ -30,6 +31,7 @@ export class AccountsController {
   constructor(
     private readonly accounts: AccountsService,
     private readonly preferences: PreferencesService,
+    private readonly audit: AuditService,
   ) {}
 
   @Get('accounts')
@@ -54,6 +56,17 @@ export class AccountsController {
     }
 
     await this.accounts.disconnect(req.user!.id, id);
+
+    // A disconnect is what an attacker does to cover their tracks, and what a
+    // confused user does before asking why mail stopped. The trail is how the
+    // two are told apart. No email address in it — `resourceId` is the account
+    // id, which resolves to one only for someone who can already read the row.
+    await this.audit.record({
+      action: 'account.disconnected',
+      userId: req.user!.id,
+      resource: 'email_account',
+      resourceId: id,
+    });
   }
 
   @Get('preferences')

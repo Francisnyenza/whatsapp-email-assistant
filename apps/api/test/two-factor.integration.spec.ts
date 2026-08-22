@@ -24,6 +24,7 @@ describeIfDb('two-factor authentication (real database)', () => {
   let prisma: PrismaClient;
   let sessions: SessionService;
   let twoFactor: TwoFactorService;
+  let audit: { record: ReturnType<typeof vi.fn> };
   let logger: {
     info: ReturnType<typeof vi.fn>;
     warn: ReturnType<typeof vi.fn>;
@@ -61,7 +62,11 @@ describeIfDb('two-factor authentication (real database)', () => {
     });
 
     logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    sessions = new SessionService(service as never, logger as never);
+    // Enabling and disabling a second factor writes an audit entry. Stubbed
+    // here rather than pointed at the real table: what this suite is about is
+    // the enrolment logic, and the audit path has its own tests.
+    audit = { record: vi.fn() };
+    sessions = new SessionService(service as never, audit as never, logger as never);
     twoFactor = new TwoFactorService(
       service as never,
       {
@@ -71,6 +76,7 @@ describeIfDb('two-factor authentication (real database)', () => {
         },
       } as never,
       sessions,
+      audit as never,
       logger as never,
     );
 

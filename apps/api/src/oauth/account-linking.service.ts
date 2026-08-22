@@ -4,6 +4,7 @@ import { EnvelopeEncryption, createKmsProvider } from '@wea/crypto';
 import { GmailProvider, GraphProvider, GMAIL_SCOPES, GRAPH_SCOPES } from '@wea/mail';
 import type { Logger } from 'pino';
 import { PrismaService } from '../common/prisma.service.js';
+import { AuditService } from '../common/audit.service.js';
 import { ConfigService } from '../config/config.service.js';
 
 /**
@@ -23,6 +24,7 @@ export class AccountLinkingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly audit: AuditService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {
     // `createKmsProvider` is the only place the provider is chosen. Building
@@ -205,6 +207,18 @@ export class AccountLinkingService {
       { event: 'account.linked', accountId: account.id, provider },
       'Mailbox connected',
     );
+
+    // The moment this system gains access to someone's mail. `provider` is
+    // metadata worth keeping; the address is not — it is already on the row
+    // this `resourceId` names, and putting it here would make the audit table
+    // a second, less protected index of who has which mailbox.
+    await this.audit.record({
+      action: 'account.connected',
+      userId,
+      resource: 'email_account',
+      resourceId: account.id,
+      metadata: { provider },
+    });
 
     return { accountId: account.id, emailAddress: account.emailAddress };
   }

@@ -32,16 +32,16 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
     ['MetricsController', 'health/metrics.controller.js', 'MetricsController', 1],
     ['HttpMetricsMiddleware', 'health/http-metrics.middleware.js', 'HttpMetricsMiddleware', 1],
     ['QueueProducer', 'queue/queue.producer.js', 'QueueProducer', 1],
-    ['TwoFactorService', 'auth/two-factor.service.js', 'TwoFactorService', 4],
-    ['AuthController', 'auth/auth.controller.js', 'AuthController', 5],
+    ['TwoFactorService', 'auth/two-factor.service.js', 'TwoFactorService', 5],
+    ['AuthController', 'auth/auth.controller.js', 'AuthController', 6],
     [
       'PhoneVerificationService',
       'auth/phone-verification.service.js',
       'PhoneVerificationService',
-      2,
+      3,
     ],
     ['GoogleOAuthController', 'oauth/google.controller.js', 'GoogleOAuthController', 3],
-    ['AccountsController', 'accounts/accounts.controller.js', 'AccountsController', 2],
+    ['AccountsController', 'accounts/accounts.controller.js', 'AccountsController', 3],
     ['AccountsService', 'accounts/accounts.service.js', 'AccountsService', 3],
     ['PreferencesService', 'accounts/preferences.service.js', 'PreferencesService', 1],
     ['MicrosoftOAuthController', 'oauth/microsoft.controller.js', 'MicrosoftOAuthController', 3],
@@ -52,7 +52,7 @@ describe.skipIf(!built)('dependency injection metadata (compiled output)', () =>
       'MicrosoftWebhookController',
       4,
     ],
-    ['AccountLinkingService', 'oauth/account-linking.service.js', 'AccountLinkingService', 3],
+    ['AccountLinkingService', 'oauth/account-linking.service.js', 'AccountLinkingService', 4],
   ];
 
   for (const [name, file, exported, expectedCount] of cases) {

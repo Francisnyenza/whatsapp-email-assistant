@@ -1,8 +1,21 @@
-import { Controller, Post, Get, Body, Req, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
-import type { Request } from 'express';
+import {
+  Controller,
+  Post,
+  Get,
+  Body,
+  Req,
+  Res,
+  UseGuards,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { AppError } from '@wea/shared';
 import { AuthService, type AuthResult } from './auth.service.js';
-import { SessionService } from './session.service.js';
+import { clientAddress } from '../common/rate-limit.js';
+import { refreshCookie, clearedRefreshCookie, readCookie } from './refresh-cookie.js';
+import { AuditService } from '../common/audit.service.js';
+import { SessionService, REFRESH_TTL_MS } from './session.service.js';
 import { TwoFactorService } from './two-factor.service.js';
 import { PhoneVerificationService } from './phone-verification.service.js';
 import { ConfigService } from '../config/config.service.js';
@@ -12,15 +25,25 @@ import { MfaGuard } from './mfa.guard.js';
 /**
  * Authentication endpoints.
  *
- * Refresh tokens are returned in the body rather than set as cookies, because
- * the mobile app is a first-class client and cannot use them. That puts the
- * storage decision on the client, which is the right place for it — but it does
- * mean the web app must keep the refresh token out of localStorage.
+ * The refresh token is set as an HttpOnly cookie **and** returned in the body.
+ * Three files used to disagree about which: this comment said body-only for the
+ * sake of a mobile client, the dashboard's `api.ts` said cookie and sent no
+ * body, and invariant 15 in `docs/status.md` said cookie too. Nothing set one,
+ * so `POST /v1/auth/refresh` answered 400 to every request the dashboard made
+ * and the user was signed out the moment their access token expired — fifteen
+ * minutes into using the product, every time.
+ *
+ * Both, because both readings had a point. The cookie is what a browser sends
+ * automatically and the only copy the page cannot read, so an XSS cannot lift a
+ * session that outlives the tab. The body is what a client with no cookie jar
+ * needs, and dropping it would break a mobile app that does not exist yet in
+ * exchange for a property the cookie already provides.
  */
 @Controller('v1/auth')
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
+    private readonly audit: AuditService,
     private readonly sessions: SessionService,
     private readonly twoFactor: TwoFactorService,
     private readonly phone: PhoneVerificationService,
@@ -28,43 +51,89 @@ export class AuthController {
   ) {}
 
   @Post('signup')
-  signUp(@Req() req: Request, @Body() body: unknown): Promise<AuthResult> {
+  async signUp(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Body() body: unknown,
+  ): Promise<AuthResult> {
     const input = requireCredentials(body);
-    return this.auth.signUp({
+    const result = await this.auth.signUp({
       ...input,
       ...(typeof (body as { fullName?: unknown }).fullName === 'string'
         ? { fullName: (body as { fullName: string }).fullName }
         : {}),
       context: clientContext(req),
     });
+
+    this.setRefreshCookie(res, result.refreshToken);
+    return result;
   }
 
   @Post('signin')
   @HttpCode(HttpStatus.OK)
-  signIn(@Req() req: Request, @Body() body: unknown): Promise<AuthResult> {
+  async signIn(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Body() body: unknown,
+  ): Promise<AuthResult> {
     const input = requireCredentials(body);
-    return this.auth.signIn({ ...input, context: clientContext(req) });
+    const result = await this.auth.signIn({ ...input, context: clientContext(req) });
+
+    this.setRefreshCookie(res, result.refreshToken);
+    return result;
   }
 
+  /**
+   * Cookie first, body second.
+   *
+   * The cookie is what a browser sends and the only copy the page itself cannot
+   * read. The body is kept as a fallback for clients that have no cookie jar —
+   * and because, before the cookie existed, the body was the *only* way, which
+   * is why this endpoint answered 400 to every request the dashboard made.
+   */
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  refresh(@Req() req: Request, @Body() body: unknown): Promise<AuthResult> {
-    const token = (body as { refreshToken?: unknown })?.refreshToken;
-    if (typeof token !== 'string' || !token) {
+  async refresh(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Body() body: unknown,
+  ): Promise<AuthResult> {
+    const token = this.refreshTokenFrom(req, body);
+    if (!token) {
       throw new AppError('BAD_REQUEST', 'refreshToken is required', {
         publicMessage: 'Please sign in again.',
       });
     }
-    return this.auth.refresh(token, clientContext(req));
+
+    const result = await this.auth.refresh(token, clientContext(req));
+
+    // Rotated, so the old cookie is now the one whose reuse revokes the family.
+    // Replacing it here is what keeps the next refresh from doing exactly that.
+    this.setRefreshCookie(res, result.refreshToken);
+    return result;
   }
 
   @Post('signout')
   @UseGuards(AuthGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
-  async signOut(@Req() req: Request, @Body() body: unknown): Promise<void> {
-    const token = (body as { refreshToken?: unknown })?.refreshToken;
-    if (typeof token === 'string' && token) {
+  async signOut(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+    @Body() body: unknown,
+  ): Promise<void> {
+    const token = this.refreshTokenFrom(req, body);
+
+    // Cleared whether or not a token was supplied. A sign-out that leaves the
+    // cookie in place is a sign-out the next page load undoes.
+    res.setHeader('Set-Cookie', clearedRefreshCookie(this.cookieOptions()));
+
+    if (token) {
       await this.auth.signOut(req.user!.id, token);
+      await this.audit.record({
+        action: 'auth.signout',
+        userId: req.user!.id,
+        ...clientContext(req),
+      });
     }
   }
 
@@ -72,10 +141,23 @@ export class AuthController {
   @Post('signout-all')
   @UseGuards(AuthGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
-  async signOutEverywhere(@Req() req: Request): Promise<void> {
+  async signOutEverywhere(
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<void> {
     // Revoking one family would leave sessions from other logins alive, so this
     // revokes every family and bumps tokensValidFrom.
+    res.setHeader('Set-Cookie', clearedRefreshCookie(this.cookieOptions()));
+
     await this.sessions.revokeAll(req.user!.id, 'user signed out everywhere');
+
+    // The button someone presses after losing a phone, and also the one an
+    // attacker presses to evict the owner. Worth an entry either way.
+    await this.audit.record({
+      action: 'auth.signout_all',
+      userId: req.user!.id,
+      ...clientContext(req),
+    });
   }
 
   @Get('me')
@@ -214,6 +296,34 @@ export class AuthController {
   async unlinkPhone(@Req() req: Request): Promise<void> {
     await this.phone.unlink(req.user!.id);
   }
+
+  /** Where the refresh token may come from, in order of trustworthiness. */
+  private refreshTokenFrom(req: Request, body: unknown): string | null {
+    const fromCookie = readCookie(req.headers.cookie, this.config.env.SESSION_COOKIE_NAME);
+    if (fromCookie) return fromCookie;
+
+    const fromBody = (body as { refreshToken?: unknown } | null)?.refreshToken;
+    return typeof fromBody === 'string' && fromBody ? fromBody : null;
+  }
+
+  private cookieOptions(): { name: string; secure: boolean } {
+    return {
+      name: this.config.env.SESSION_COOKIE_NAME,
+      // `Secure` outside production would make the cookie unusable against a
+      // localhost dashboard served over http, which is every first run.
+      secure: this.config.isProduction,
+    };
+  }
+
+  private setRefreshCookie(res: Response, token: string): void {
+    res.setHeader(
+      'Set-Cookie',
+      refreshCookie(token, {
+        ...this.cookieOptions(),
+        maxAgeSeconds: Math.floor(REFRESH_TTL_MS / 1_000),
+      }),
+    );
+  }
 }
 
 /**
@@ -249,14 +359,27 @@ function requireCredentials(body: unknown): { email: string; password: string } 
  * `x-forwarded-for` is only trustworthy behind our own proxy; it is recorded for
  * display and never used for an access decision.
  */
+/**
+ * Who is calling, for the session record and the audit trail.
+ *
+ * This used to take the *first* `X-Forwarded-For` entry, which is the one the
+ * client chose to send — so an address recorded against a sign-in was whatever
+ * the person signing in wanted it to be. Both places it lands are read to
+ * answer "was this me?", and an answer built from attacker-supplied input is
+ * not an answer.
+ *
+ * `clientAddress` takes the last hop instead, which is the entry added by the
+ * proxy actually in front of us. It is shared with the rate limiter, which had
+ * arrived at the correct version separately — two implementations of one
+ * question, disagreeing, is how the wrong one survives.
+ */
 function clientContext(req: Request): { userAgent?: string; ipAddress?: string } {
-  const forwarded = req.headers['x-forwarded-for'];
-  const ip = Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(',')[0]?.trim();
+  const address = clientAddress(req.headers as Record<string, unknown>, req.ip);
 
   return {
     ...(req.headers['user-agent']
       ? { userAgent: String(req.headers['user-agent']).slice(0, 300) }
       : {}),
-    ...(ip || req.ip ? { ipAddress: (ip ?? req.ip)!.slice(0, 45) } : {}),
+    ...(address === 'unknown' ? {} : { ipAddress: address.slice(0, 45) }),
   };
 }

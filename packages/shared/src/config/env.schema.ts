@@ -167,6 +167,22 @@ export const envSchema = z
     // Retention
     RETENTION_BODY_DAYS: intFrom(30, 1),
     RETENTION_ATTACHMENT_DAYS: intFrom(30, 1),
+    /**
+     * How long audit entries are kept — **not enforced by this application**,
+     * and it cannot be.
+     *
+     * `audit_logs` is append-only: the application role is granted INSERT and
+     * SELECT only, with a trigger behind that, precisely so the code being
+     * audited cannot edit or erase the record. A sweep that expired old entries
+     * would need DELETE, and granting DELETE would give it back to everything
+     * else the role can reach.
+     *
+     * So this is the number an operator's purge job runs on, not one the worker
+     * reads — `docs/runbook.md` has the procedure and `docs/security.md` states
+     * the erasure trade-off it creates. Kept here rather than deleted because
+     * the value belongs with the other retention settings; what it must not do
+     * is read as something the system does on its own.
+     */
     RETENTION_AUDIT_DAYS: intFrom(365, 1),
 
     // Observability

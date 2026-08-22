@@ -15,6 +15,83 @@ Last updated: 2026-08-22.
 
 ---
 
+## Five settings that did nothing, and a table nobody wrote to
+
+Found while writing `docs/security.md` — by looking for the code behind each
+claim as the claim was written down, which turns out to be a productive way to
+read your own system.
+
+**`RATE_LIMIT_GLOBAL_PER_MIN`, `RATE_LIMIT_AUTH_PER_MIN` and
+`RATE_LIMIT_WEBHOOK_PER_MIN`** had been in `.env.example` since the first phase
+and no code referenced any of them. `/v1/auth/signin` was an oracle anyone could
+query at line rate — credential stuffing, and user enumeration through signup.
+Now a fixed-window limiter counted in Redis, failing open and loudly, with the
+client address taken from the _last_ `X-Forwarded-For` hop rather than the first
+so a spoofed header cannot buy a fresh bucket.
+
+Verified against the running API: fourteen requests at a limit of ten, and
+eleven got through. The eleventh was a real hole rather than an off-by-one — the
+Redis connection was lazy, so the first request after every start raced the
+socket, the command failed, and the limiter failed open. Connecting eagerly at
+module init closed it: ten through, four refused, zero fail-open events.
+
+**`SESSION_COOKIE_NAME`** was read by nothing, and behind it was a worse
+problem. See below.
+
+**`audit_logs`** had indexes, a comment describing what belonged in it, and
+grants rejecting UPDATE and DELETE at both the role and trigger level. Nothing
+had ever written a row. Authentication outcomes, session revocations,
+second-factor changes, phone verification and mailbox connections are now
+recorded; an audit write never fails the request it describes, and the
+append-only property is asserted against a real database rather than asserted in
+a document.
+
+Turning the trail on immediately broke account deletion. `user_id` carried a
+foreign key with `ON DELETE SET NULL`; SET NULL is an UPDATE; the append-only
+trigger rejects every UPDATE. So deleting a user with any audit row failed —
+which is the operation a GDPR erasure request performs. Nothing had noticed
+because nothing wrote audit rows. The constraint is dropped, the id is kept
+rather than nulled, and the erasure trade-off it creates is stated in
+`docs/security.md` instead of being decided silently.
+
+**`RETENTION_AUDIT_DAYS`** is the fifth, and it is left unenforced on purpose:
+the application role cannot delete audit rows, which is the whole point, so
+expiring them is an operator job. What changed is that the setting now says so —
+in the schema, in `.env.example` and in `docs/runbook.md` — rather than reading
+like something the system does on its own.
+
+## The dashboard signed everyone out every fifteen minutes
+
+Three files disagreed about one design and none of them was run against
+another.
+
+`auth.controller.ts` said refresh tokens were returned in the body rather than
+set as cookies. `apps/web/src/lib/api.ts` said the opposite — "the refresh token
+rides in an HttpOnly cookie" — and sent `POST /v1/auth/refresh` with
+`credentials: 'include'` and no body. Invariant 15 below agreed with the
+dashboard. The API agreed with its own comment and required the token in the
+body. Nothing set a cookie.
+
+So every refresh the dashboard made answered 400, and a signed-in user was
+signed out the moment their fifteen-minute access token expired — during exactly
+the connect-a-mailbox-and-verify-a-phone flow that `docs/getting-started.md`
+walks a new user through.
+
+Both suites were green throughout. The API tests post a body; the dashboard
+tests stub `fetch`. Two suites describing different products.
+
+The API now sets an `HttpOnly; SameSite=Strict; Path=/v1/auth` cookie and reads
+the token from cookie-or-body, and the dashboard needed no change — it had been
+written against the correct design all along. `auth-http.integration.spec.ts`
+runs the real Nest app on a real port and talks to it the way a browser does:
+no body, whatever cookie the last response set. Reverting the fix fails it with
+`expected 400 to be 200`, which is the production symptom exactly.
+
+Checked live along the way: rotation replaces the cookie, replaying an old one
+returns 401 _and_ revokes the family so the legitimate client is signed out too
+(invariant 8, through cookies), and sign-out clears it on the same path it was
+set on.
+
 ## The loop is closed
 
 The whole round trip now runs locally, with the Cloud API replaced by a stub on
@@ -341,7 +418,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **2 035 tests** (1 652 unit + 383 integration
+Everything below has tests that run and pass. **2 096 tests** (1 690 unit + 406 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 | Package         | Tests            | What it does                                                                                                                                         |
@@ -1363,6 +1440,15 @@ Each of these has a test. They are the load-bearing ones.
     variable and dies with the tab; the refresh token is an HttpOnly cookie script cannot
     read. Persisting the access token would turn any XSS on that origin from a session-length
     problem into a permanent one.
+
+    The second half of that sentence was false for several phases and is now true. Nothing
+    set a cookie: the API returned the refresh token in the body and required it in the body,
+    the dashboard sent no body and relied on the cookie, and `SESSION_COOKIE_NAME` was read
+    by nothing. So every refresh answered 400 and a signed-in user was signed out fifteen
+    minutes later, every time — while this line asserted the opposite. Both sides are now
+    exercised together over HTTP in `auth-http.integration.spec.ts`, which fails with the
+    production symptom when the fix is reverted.
+
 16. **A 401 refreshes once, and concurrent 401s refresh together.** Refresh tokens rotate on
     use, so a second concurrent refresh presents an already-rotated token and correctly trips
     invariant 8 — the user is signed out of everything by their own dashboard loading. Both

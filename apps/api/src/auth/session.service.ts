@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { AppError } from '@wea/shared';
 import { generateToken, hashToken } from '@wea/crypto';
 import type { Logger } from 'pino';
+import { AuditService } from '../common/audit.service.js';
 import { PrismaService } from '../common/prisma.service.js';
 
 /**
@@ -42,12 +43,14 @@ export interface IssuedSession {
 }
 
 /** 30 days. Long enough that a phone is not constantly signing in. */
-const REFRESH_TTL_MS = 30 * 24 * 3_600_000;
+/** Thirty days. Exported so the refresh cookie's Max-Age matches the row's expiry. */
+export const REFRESH_TTL_MS = 30 * 24 * 3_600_000;
 
 @Injectable()
 export class SessionService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
@@ -106,6 +109,19 @@ export class SessionService {
         },
         'Refresh token reuse detected — revoking the entire session family',
       );
+
+      // The single most important entry this table holds. It means two parties
+      // held one token, and the response signs both of them out — so this is
+      // the record that lets a user be told why they were logged out, and an
+      // investigator see when the second party appeared.
+      await this.audit.record({
+        action: 'auth.refresh_reuse_detected',
+        userId: session.userId,
+        success: false,
+        failureReason: 'refresh token reuse',
+        resource: 'session',
+        resourceId: session.familyId,
+      });
 
       throw this.rejected('refresh token reuse');
     }

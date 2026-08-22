@@ -3,6 +3,7 @@ import { createHash, randomInt } from 'node:crypto';
 import { AppError, normalizePhone } from '@wea/shared';
 import type { Logger } from 'pino';
 import { PrismaService } from '../common/prisma.service.js';
+import { AuditService } from '../common/audit.service.js';
 
 /**
  * Proving a phone number belongs to the person claiming it.
@@ -26,6 +27,7 @@ import { PrismaService } from '../common/prisma.service.js';
 export class PhoneVerificationService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
 
@@ -123,6 +125,12 @@ export class PhoneVerificationService {
       { event: 'phone.verified', userId: user.id },
       'Phone number verified and linked',
     );
+
+    // The number is where every notification goes and where every command is
+    // accepted from, so linking one is a change to who can act on this account.
+    // The number itself stays out of the entry — the logger masks it, and the
+    // audit table should not become the one place it is stored in clear.
+    await this.audit.record({ action: 'auth.phone_verified', userId: user.id });
 
     return { userId: user.id, phoneNumber };
   }

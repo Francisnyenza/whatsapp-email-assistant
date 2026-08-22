@@ -45,7 +45,7 @@ gives it away.
 | [`docs/data-model.md`](docs/data-model.md)           | Schema design, tenant isolation, retention            |
 | [`docs/runbook.md`](docs/runbook.md)                 | What to do when an alert fires, and what it means     |
 | [`tools/local-loop/`](tools/local-loop/)             | Running the whole path locally, without credentials   |
-| `docs/security.md`                                   | Threat model and controls (Phase 10)                  |
+| [`docs/security.md`](docs/security.md)               | Threat model, controls, and what is unverified        |
 
 ## Repository layout
 
@@ -83,24 +83,24 @@ tools/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**2 035 tests passing** (1 652 unit + 383 integration against real Postgres and Redis). See
+**2 096 tests passing** (1 690 unit + 406 integration against real Postgres and Redis). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
-including what these ticks do not cover, and three bugs that a green suite of that size
-did not catch.
+including what these ticks do not cover, and the bugs a green suite of that size did not
+catch.
 
-| Phase |                              | Status                                    |
-| ----- | ---------------------------- | ----------------------------------------- |
-| 1     | Architecture & ADRs          | ✅                                        |
-| 2     | Monorepo structure & tooling | ✅                                        |
-| 3     | Database schema              | ✅                                        |
-| 4     | Backend core                 | ✅                                        |
-| 5     | WhatsApp integration         | ✅                                        |
-| 6     | Gmail integration            | ✅                                        |
-| 7     | Outlook / Microsoft 365      | ✅                                        |
-| 8     | AI layer                     | ✅                                        |
-| 9     | Frontend dashboard           | 🔨 setup and settings; no mail views      |
-| 10    | Testing                      | 🔨 unit, integration and CI; no load test |
-| 11    | Deployment & ops             | ✅ everything but the cluster itself      |
+| Phase |                              | Status                                        |
+| ----- | ---------------------------- | --------------------------------------------- |
+| 1     | Architecture & ADRs          | ✅                                            |
+| 2     | Monorepo structure & tooling | ✅                                            |
+| 3     | Database schema              | ✅                                            |
+| 4     | Backend core                 | ✅                                            |
+| 5     | WhatsApp integration         | ✅                                            |
+| 6     | Gmail integration            | ✅                                            |
+| 7     | Outlook / Microsoft 365      | ✅                                            |
+| 8     | AI layer                     | ✅                                            |
+| 9     | Frontend dashboard           | 🔨 setup and settings; no mail views          |
+| 10    | Testing                      | 🔨 unit, integration, CI; no load or pen test |
+| 11    | Deployment & ops             | ✅ everything but the cluster itself          |
 
 ## Before the first message
 

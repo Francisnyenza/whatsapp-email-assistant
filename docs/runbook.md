@@ -305,6 +305,31 @@ morning. Use a System User token. Rotating it is a change to `wea-secrets`;
 External Secrets picks it up within its refresh interval, and the pods read it
 at boot, so a restart is needed.
 
+### Expiring audit entries
+
+`RETENTION_AUDIT_DAYS` is the number this runs on, and **the application does
+not enforce it**. `audit_logs` is append-only: the app role holds INSERT and
+SELECT only, with a trigger behind that, so the code being audited cannot erase
+its own record. A sweep inside the worker would need DELETE, and granting DELETE
+would hand it back to everything else the role can reach.
+
+So this is a scheduled job running as the database **owner**, not as `wea_app`:
+
+```sql
+-- The trigger rejects DELETE for everyone, owner included, so it comes off for
+-- the duration of the purge and goes straight back on. Inside one transaction,
+-- so an interrupted run cannot leave the table mutable.
+BEGIN;
+ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_no_update;
+DELETE FROM audit_logs WHERE created_at < now() - interval '365 days';
+ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_no_update;
+COMMIT;
+```
+
+Run it somewhere with its own access trail. A job that can erase the audit log
+is the most privileged thing pointed at this database, and it should be at
+least as auditable as what it deletes.
+
 ### Rotating the KMS key
 
 Nothing to do. KMS rotates the backing material on its own schedule and every

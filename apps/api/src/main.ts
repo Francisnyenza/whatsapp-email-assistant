@@ -9,6 +9,7 @@ import { ConfigService } from './config/config.service.js';
 import { AllExceptionsFilter } from './common/all-exceptions.filter.js';
 import { jsonWithRawBody } from './common/raw-body.js';
 import { HttpMetricsMiddleware } from './health/http-metrics.middleware.js';
+import { RateLimitMiddleware } from './common/rate-limit.middleware.js';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
@@ -38,6 +39,12 @@ async function bootstrap(): Promise<void> {
   // one class of 4xx no metric can see.
   const metrics = app.get(HttpMetricsMiddleware);
   app.use((req: Request, res: Response, next: NextFunction) => metrics.use(req, res, next));
+
+  // Second: inside the metrics, so a 429 is counted like any other response,
+  // and ahead of the body parser, so a flood is rejected before its payload is
+  // read into memory.
+  const rateLimit = app.get(RateLimitMiddleware);
+  app.use((req: Request, res: Response, next: NextFunction) => rateLimit.use(req, res, next));
 
   app.use(jsonWithRawBody());
 
