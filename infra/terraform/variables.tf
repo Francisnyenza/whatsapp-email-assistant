@@ -83,3 +83,33 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "oidc_provider_arn" {
+  description = <<-EOT
+    The cluster's IAM OIDC provider, if it has one.
+
+    Supplying it creates the role External Secrets assumes to read the
+    application secret (see `infra/k8s/secrets/`). Left empty, the role is not
+    created and the secret has to be reached some other way — a node role, an
+    access key, or a different secrets operator entirely.
+
+    It is an input rather than a resource because the provider belongs to the
+    cluster, and this module deliberately does not create one. On EKS it looks
+    like `arn:aws:iam::<account>:oidc-provider/oidc.eks.<region>.amazonaws.com/id/<hash>`;
+    `aws eks describe-cluster` reports the issuer URL it is derived from.
+  EOT
+  type        = string
+  default     = ""
+}
+
+variable "secrets_namespace" {
+  description = "Kubernetes namespace holding the service account. Matches the manifests in infra/k8s."
+  type        = string
+  default     = "wea"
+}
+
+variable "secrets_service_account" {
+  description = "Service account External Secrets authenticates as. Matches infra/k8s/secrets/external-secrets.yaml."
+  type        = string
+  default     = "wea-secrets-reader"
+}

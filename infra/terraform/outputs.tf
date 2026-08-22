@@ -35,3 +35,24 @@ output "database_password" {
   value       = random_password.db.result
   sensitive   = true
 }
+
+output "secrets_reader_role_arn" {
+  description = <<-EOT
+    Role for the `wea-secrets-reader` service account. Empty when no OIDC
+    provider was supplied.
+
+    This is the value that replaces REPLACE_ME_ROLE_ARN in the
+    `eks.amazonaws.com/role-arn` annotation in infra/k8s/secrets/.
+  EOT
+  value       = try(aws_iam_role.secrets_reader[0].arn, "")
+}
+
+output "secret_name_prefix" {
+  description = "Replaces REPLACE_ME_PREFIX in infra/k8s/secrets/ — the ExternalSecrets read <prefix>/app and <prefix>/providers."
+  value       = local.name
+}
+
+output "region" {
+  description = "Replaces REPLACE_ME_REGION in the SecretStore. A wrong one fails as a not-found, which reads like a missing secret."
+  value       = data.aws_region.current.name
+}

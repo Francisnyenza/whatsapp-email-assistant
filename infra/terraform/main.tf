@@ -31,6 +31,12 @@ terraform {
 locals {
   name = "${var.name_prefix}-${var.environment}"
 
+  # An IAM condition key is written against the provider's *issuer host*, not
+  # its ARN — `oidc.eks.eu-west-1.amazonaws.com/id/ABC:sub`, never the ARN. The
+  # two differ only by the prefix, and getting it wrong produces a role that
+  # simply never matches, with no error anywhere to say so.
+  oidc_issuer = replace(var.oidc_provider_arn, "/^arn:aws:iam::\\d+:oidc-provider//", "")
+
   tags = merge(var.tags, {
     Application = "wea"
     Environment = var.environment
@@ -312,3 +318,102 @@ resource "aws_secretsmanager_secret_version" "app" {
     ignore_changes = [secret_string]
   }
 }
+
+# ---------------------------------------------------------------------------
+# Reading the secret from the cluster
+# ---------------------------------------------------------------------------
+
+# The role `infra/k8s/secrets/external-secrets.yaml` annotates its service
+# account with.
+#
+# Created only when an OIDC provider is supplied, because the trust policy has
+# to name one and this module does not create clusters. That is the honest
+# shape of the dependency rather than a missing feature: without a cluster there
+# is no identity to trust, and a role trusting nothing is worse than no role.
+#
+# Both halves matter and granting one without the other is the failure worth
+# naming. `GetSecretValue` alone fails at read time with an access-denied that
+# points at Secrets Manager, when the missing statement is `kms:Decrypt` on a
+# different service's key — the secret is encrypted with this module's own key,
+# not the AWS-managed default, because `aws_secretsmanager_secret.app` sets
+# `kms_key_id`.
+data "aws_iam_policy_document" "secrets_reader_trust" {
+  count = var.oidc_provider_arn == "" ? 0 : 1
+
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [var.oidc_provider_arn]
+    }
+
+    # Both conditions, not just the subject. Without the audience check the
+    # role trusts any token that provider issued, including ones minted for a
+    # different audience entirely.
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_issuer}:sub"
+      values   = ["system:serviceaccount:${var.secrets_namespace}:${var.secrets_service_account}"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "${local.oidc_issuer}:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "secrets_reader" {
+  count = var.oidc_provider_arn == "" ? 0 : 1
+
+  # Scoped to this deployment's secrets, by prefix rather than by exact ARN:
+  # Secrets Manager appends six random characters to every secret's ARN, so an
+  # exact match cannot be written before the secret exists, and the second
+  # secret — the provider credentials, created out of band — has no ARN here at
+  # all.
+  statement {
+    effect = "Allow"
+    actions = [
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = ["arn:aws:secretsmanager:*:*:secret:${local.name}/*"]
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.envelope.arn]
+
+    # Decrypt only what Secrets Manager asks it to. Without this the role could
+    # unwrap any data key this KMS key ever wrapped — which is every encrypted
+    # column in the database, not just the connection strings it needs.
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${data.aws_region.current.name}.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "secrets_reader" {
+  count = var.oidc_provider_arn == "" ? 0 : 1
+
+  name               = "${local.name}-secrets-reader"
+  assume_role_policy = data.aws_iam_policy_document.secrets_reader_trust[0].json
+
+  tags = local.tags
+}
+
+resource "aws_iam_role_policy" "secrets_reader" {
+  count = var.oidc_provider_arn == "" ? 0 : 1
+
+  name   = "read-app-secrets"
+  role   = aws_iam_role.secrets_reader[0].id
+  policy = data.aws_iam_policy_document.secrets_reader[0].json
+}
+
+data "aws_region" "current" {}

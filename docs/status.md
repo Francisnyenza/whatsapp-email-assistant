@@ -707,10 +707,18 @@ so the list cannot quietly grow.
    typed. Both are validated in CI — `terraform validate` against the real AWS provider
    schema, kubeconform against the published External Secrets CRDs.
 
-   What is still missing is the cluster, which remains deliberate, and the IAM role the
-   `wea-secrets-reader` service account assumes. That role needs `GetSecretValue` on the
-   secret and `kms:Decrypt` on the module's key; it is not in the module because the trust
-   policy names an OIDC provider that only exists once a cluster does.
+   The IAM role the `wea-secrets-reader` service account assumes is there too, created
+   when `oidc_provider_arn` is supplied and skipped otherwise — the trust policy has to
+   name a provider, and the module does not create clusters, so that is the honest shape
+   of the dependency rather than a gap. It grants `GetSecretValue` on this deployment's
+   secrets and `kms:Decrypt` scoped with `kms:ViaService`, so the role can unwrap what
+   Secrets Manager hands it and nothing else — the same key wraps every encrypted column
+   in the database, and an unscoped decrypt would hand a secrets reader the mail.
+
+   Every `REPLACE_ME` in `infra/k8s/secrets/` is now a named `terraform output`, so the
+   two sides are wired by copying values rather than by working out what they should be.
+
+   What is still missing is the cluster, and that remains deliberate.
 
 3. **More metrics than queue depth, request rate and job outcomes.** The worker now
    exports `wea_jobs_total{queue,job,outcome}` and `wea_job_duration_seconds`, which is
