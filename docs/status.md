@@ -418,8 +418,14 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **2 096 tests** (1 690 unit + 406 integration
+Everything below has tests that run and pass. **2 112 tests** (1 699 unit + 413 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
+
+Every earlier revision of this line under-counted, because the command that produced the
+number looped over packages running `pnpm test` — and `@wea/db` has no `test` script, only
+`test:integration`. It printed nothing, the loop skipped it, and the tenant-isolation
+suite was missing from every total this document has ever quoted. A small thing, and
+exactly the shape of the larger ones: a step that reports success by producing no output.
 
 | Package         | Tests            | What it does                                                                                                                                         |
 | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -766,12 +772,15 @@ Items 2 and 3 are done and kept here with their outcomes, because a list that on
 grows tells you nothing about which way it is moving. What is left is items 1, 4 and 5 —
 and 1 and 5 both need credentials nobody here has.
 
-Also open, and found by the RLS sweep added with the attachment work: `subscriptions`,
-`org_memberships` and `audit_logs` carry a `user_id` and have no tenant policy.
-`provider_account_routes` legitimately has none — the webhook endpoints read it _to
-discover_ which tenant a delivery belongs to — but the other three are a gap rather than a
-design, and are pinned by an equality assertion in `tenant-isolation.integration.spec.ts`
-so the list cannot quietly grow.
+The RLS sweep added with the attachment work named four tables carrying a `user_id` with
+no tenant policy, and admitted two of them were a gap rather than a design. Both are now
+closed: `org_memberships` and `subscriptions` carry policies, with `WITH CHECK (false)`
+rather than the usual `user_id = app_current_user_id()` — which would have let anyone with
+SQL injection through the app role insert themselves as an owner of somebody else's
+organisation. `provider_account_routes` and `audit_logs` remain, and both are deliberate:
+the first is read _to discover_ which tenant a delivery belongs to, the second records
+sign-in attempts that have no tenant at all. The set stays pinned by an equality assertion
+in `tenant-isolation.integration.spec.ts`.
 
 1. **AWS KMS against a real CMK.** The adapter now exists and production boots with
    it — but every test of it runs against a fake `KmsCryptoApi`, the same arrangement

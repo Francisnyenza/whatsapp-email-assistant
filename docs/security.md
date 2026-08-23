@@ -124,13 +124,34 @@ deliberate act visible in review. The current members are the retention sweep,
 watch renewal, queue reconciliation, admin tooling, platform analytics, billing
 reconciliation, webhook account lookup, embedding backfill, and migration.
 
-**Three tables still have no policy** and this is a real gap, not a design:
-`subscriptions`, `org_memberships` and `audit_logs`. The last is deliberate and
-explained below; the first two are not, and are pinned by an equality assertion
-in `tenant-isolation.integration.spec.ts` so the list cannot quietly grow.
+**Two tables have no policy, and both are deliberate.**
+`provider_account_routes` is read by the webhook endpoints _to discover_ which
+tenant a delivery belongs to, which RLS cannot express. `audit_logs` records
+sign-in attempts against addresses that do not exist, which have no tenant to
+scope to — a policy would refuse precisely the rows an investigation wants — and
+it is protected instead by being append-only.
 
-`provider_account_routes` legitimately has none — the webhook endpoints read it
-_to discover_ which tenant a delivery belongs to, which RLS cannot express.
+`subscriptions` and `org_memberships` were on that list until recently, admitted
+in the test's own comment as a gap rather than a design. They now carry policies
+with **`WITH CHECK (false)`**, which is stricter than every other tenant table
+and correct because nothing writes either one yet: billing is not built, there
+is no Stripe code, and nothing creates a membership.
+
+The obvious policy would have been a hole. `user_id = app_current_user_id()`
+passes for a row naming the caller — so anyone with SQL injection through the
+app role could `INSERT INTO org_memberships` making themselves an owner of
+somebody else's organisation, which is a complete takeover of it. A policy
+permitting writes that nothing performs only ever helps an attacker. When
+invitation acceptance and the Stripe webhook are built, each gets a policy
+describing what it may write.
+
+`subscriptions` needs a second route in because `user_id` there is nullable — a
+plan belongs to a user _or_ an organisation — so membership is what reaches an
+org-owned one.
+
+The whole set is pinned by an equality assertion in
+`tenant-isolation.integration.spec.ts` so it cannot quietly grow, and each
+property above has a test that fails when the policy is disabled.
 
 ---
 
@@ -295,8 +316,6 @@ The honest half.
   explicit `KeyId` rejects a foreign blob as expected, and whether the retry
   classification matches what KMS throws under throttling.
 - **`azure` and `gcp` are refusals, not implementations.**
-- **Two tables still lack a tenant policy** — `subscriptions` and
-  `org_memberships`, named above.
 - **The Meta seam has never carried a real message.** A stub that accepts
   everything cannot fail the way a contract change does.
 - **Threat modelling has not been reviewed by anyone else.** This document is

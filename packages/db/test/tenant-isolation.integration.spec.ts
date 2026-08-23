@@ -15,7 +15,9 @@ import { AppError } from '@wea/shared';
  */
 
 const url = process.env.TEST_DATABASE_URL;
-const describeIfDb = url ? describe : describe.skip;
+/** The owner connection, used only to seed rows the app role is refused. */
+const ownerUrl = process.env.DATABASE_URL;
+const describeIfDb = url && ownerUrl ? describe : describe.skip;
 
 describeIfDb('tenant isolation (RLS)', () => {
   let prisma: PrismaClient;
@@ -170,28 +172,145 @@ describeIfDb('tenant isolation (RLS)', () => {
 
     expect(unprotected).toEqual(KNOWN_EXCEPTIONS);
   });
+
+  /**
+   * The two tables that used to be on the exception list.
+   *
+   * They are worth their own block because their policy is not the usual one.
+   * `WITH CHECK (false)` refuses every write, which is stricter than every
+   * other tenant table — and correct precisely because nothing writes them
+   * yet. The escalation test below is the reason.
+   */
+  describe('billing and membership', () => {
+    const orgA = randomUUID();
+    const orgB = randomUUID();
+
+    /**
+     * A second connection, as the owner.
+     *
+     * The fixture cannot be seeded through `prisma`: that client connects as
+     * `wea_app`, and `WITH CHECK (false)` refuses every write it makes — which
+     * is the property this block exists to assert, so the refusal is correct
+     * and the fixture needs another way in. The owner in this setup is a
+     * superuser and therefore exempt, which is a fact about the development and
+     * CI database rather than about production, where Terraform provisions an
+     * owner that is not.
+     */
+    let owner: PrismaClient;
+
+    beforeAll(async () => {
+      owner = new PrismaClient({ datasources: { db: { url: ownerUrl } } });
+
+      await owner.$executeRawUnsafe(
+        `INSERT INTO organizations (id, name, slug, created_at, updated_at)
+         VALUES ($$${orgA}$$, 'A', $$a-${id_short(orgA)}$$, now(), now()),
+                ($$${orgB}$$, 'B', $$b-${id_short(orgB)}$$, now(), now())`,
+      );
+      await owner.$executeRawUnsafe(
+        `INSERT INTO org_memberships (id, organization_id, user_id, role, joined_at)
+         VALUES (gen_random_uuid(), $$${orgA}$$, $$${userA}$$, 'owner', now()),
+                (gen_random_uuid(), $$${orgB}$$, $$${userB}$$, 'owner', now())`,
+      );
+      await owner.$executeRawUnsafe(
+        `INSERT INTO subscriptions (id, organization_id, plan_tier, status, created_at, updated_at)
+         VALUES (gen_random_uuid(), $$${orgA}$$, 'pro', 'active', now(), now()),
+                (gen_random_uuid(), $$${orgB}$$, 'pro', 'active', now(), now())`,
+      );
+    });
+
+    afterAll(async () => {
+      await prisma
+        .$executeRawUnsafe(`DELETE FROM organizations WHERE id IN ($$${orgA}$$, $$${orgB}$$)`)
+        .catch(() => undefined);
+    });
+
+    it('shows a member only their own membership', async () => {
+      const forA = await withTenant(prisma, userA, (tx) => tx.orgMembership.findMany());
+
+      expect(forA).toHaveLength(1);
+      expect(forA[0]?.organizationId).toBe(orgA);
+    });
+
+    it('reaches an org-owned subscription through membership', async () => {
+      // `user_id` is nullable here — a subscription belongs to a user *or* an
+      // organisation — so scoping on `user_id` alone would hide every org plan
+      // from every member of that org.
+      const forA = await withTenant(prisma, userA, (tx) => tx.subscription.findMany());
+
+      expect(forA).toHaveLength(1);
+      expect(forA[0]?.organizationId).toBe(orgA);
+    });
+
+    it('does not reach another org’s subscription', async () => {
+      const forB = await withTenant(prisma, userB, (tx) => tx.subscription.findMany());
+
+      expect(forB.map((row) => row.organizationId)).not.toContain(orgA);
+    });
+
+    it('refuses to let anyone add themselves to an organisation', async () => {
+      // The reason for `WITH CHECK (false)`. The obvious policy —
+      // `user_id = app_current_user_id()` — would have permitted this: the row
+      // names the caller, so it passes. Inserting yourself as an owner of
+      // someone else's organisation is a complete takeover of it.
+      await expect(
+        withTenant(prisma, userB, (tx) =>
+          tx.orgMembership.create({
+            data: { organizationId: orgA, userId: userB, role: 'owner' },
+          }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('refuses to let a member promote themselves', async () => {
+      await expect(
+        withTenant(prisma, userB, (tx) =>
+          tx.orgMembership.updateMany({ where: { userId: userB }, data: { role: 'owner' } }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('refuses to let anyone write themselves a better plan', async () => {
+      await expect(
+        withTenant(prisma, userB, (tx) =>
+          tx.subscription.create({
+            data: { userId: userB, planTier: 'business', status: 'active' },
+          }),
+        ),
+      ).rejects.toThrow();
+    });
+
+    it('shows neither table without a tenant context', async () => {
+      expect(await prisma.orgMembership.findMany()).toHaveLength(0);
+      expect(await prisma.subscription.findMany()).toHaveLength(0);
+    });
+  });
 });
 
 /**
  * Tables carrying a `user_id` that deliberately have no tenant policy.
  *
- * Only the first is unarguable. `provider_account_routes` is read by the
- * webhook endpoints *to discover which tenant a delivery belongs to*, so a
- * policy requiring the tenant context would make it unreadable at exactly the
- * moment it is needed.
+ * This list used to have four entries and the comment admitted that two of them
+ * were a gap rather than a design. `org_memberships` and `subscriptions` now
+ * carry policies (migration
+ * `20260822000200_tenant_policies_for_billing_and_membership`), with
+ * `WITH CHECK (false)` rather than the usual `user_id = app_current_user_id()`:
+ * nothing writes either table yet, and `user_id = app_current_user_id()` would
+ * have let anyone with SQL injection through the app role insert themselves as
+ * an owner of somebody else's organisation.
  *
- * The other three are weaker, and are recorded here rather than quietly
- * excluded: `org_memberships` is scoped by organization rather than by user,
- * `subscriptions` is one row per user and could carry a policy, and
- * `audit_logs` is append-only by grant but readable across tenants by the app
- * role. See docs/status.md — this is a gap, not a design.
+ * The two that remain are both unarguable.
+ *
+ * `provider_account_routes` is read by the webhook endpoints *to discover which
+ * tenant a delivery belongs to*, so a policy requiring the tenant context would
+ * make it unreadable at exactly the moment it is needed.
+ *
+ * `audit_logs` records sign-in attempts against addresses that do not exist,
+ * which have no tenant to scope to — and those are the entries an investigation
+ * most wants. A policy would refuse precisely the rows worth writing. It is
+ * protected instead by being append-only, which `apps/api/test/audit.integration.spec.ts`
+ * asserts against a real database.
  */
-const KNOWN_EXCEPTIONS = [
-  'audit_logs',
-  'org_memberships',
-  'provider_account_routes',
-  'subscriptions',
-];
+const KNOWN_EXCEPTIONS = ['audit_logs', 'provider_account_routes'];
 
 function id_short(id: string): string {
   return id.slice(0, 8);
