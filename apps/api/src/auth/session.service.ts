@@ -139,15 +139,60 @@ export class SessionService {
       session.mfaSatisfiedAt,
     );
 
-    // Mark the presented token as rotated. Doing this *after* issuing means a
-    // crash between the two leaves the old token valid — an inconvenience —
-    // rather than logging the user out with no replacement.
-    await this.prisma.forUser(session.userId, async (tx) => {
-      await tx.session.update({
-        where: { id: session.id },
+    // Mark the presented token as rotated — conditionally, which is the whole
+    // of the fix below.
+    //
+    // Doing it *after* issuing is deliberate and unchanged: a crash between the
+    // two leaves the old token valid, an inconvenience, rather than logging the
+    // user out with no replacement.
+    const claimed = await this.prisma.forUser(session.userId, async (tx) =>
+      tx.session.updateMany({
+        where: { id: session.id, replacedById: null, revokedAt: null },
         data: { replacedById: issued.sessionId, lastUsedAt: new Date() },
+      }),
+    );
+
+    // --- the theft signal, again, and this is the one that is sound ----------
+    //
+    // The check near the top of this method is a read followed by a write, and
+    // two requests presenting the same token can both pass it: each reads
+    // `replacedById = null`, each issues a replacement, and reuse detection
+    // never fires. Found by sending two simultaneous refreshes and getting two
+    // different, both-live tokens back — so an attacker who used a stolen token
+    // *at the same moment* as its owner was never detected at all, which is the
+    // property invariant 8 exists to provide.
+    //
+    // A conditional write closes it: exactly one of the racing requests changes
+    // a row, and zero rows changed means somebody else got there first. That is
+    // the same technique the draft claim uses to make a send happen once, for
+    // the same reason.
+    //
+    // The replacement issued a moment ago is revoked along with the rest —
+    // `revokeFamily` covers it — so the loser does not leave a live orphan.
+    if (claimed.count === 0) {
+      await this.revokeFamily(session.userId, session.familyId, 'refresh token reuse (race)');
+
+      this.logger.error(
+        {
+          event: 'auth.refresh_reuse_detected',
+          userId: session.userId,
+          familyId: session.familyId,
+          concurrent: true,
+        },
+        'Two requests rotated one refresh token — revoking the entire session family',
+      );
+
+      await this.audit.record({
+        action: 'auth.refresh_reuse_detected',
+        userId: session.userId,
+        success: false,
+        failureReason: 'refresh token reuse (concurrent)',
+        resource: 'session',
+        resourceId: session.familyId,
       });
-    });
+
+      throw this.rejected('refresh token reuse');
+    }
 
     return issued;
   }

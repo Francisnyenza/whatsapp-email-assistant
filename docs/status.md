@@ -418,7 +418,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **2 112 tests** (1 699 unit + 413 integration
+Everything below has tests that run and pass. **2 116 tests** (1 699 unit + 417 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 Every earlier revision of this line under-counted, because the command that produced the
@@ -1422,6 +1422,14 @@ Each of these has a test. They are the load-bearing ones.
 8. **A reused refresh token revokes its whole family.** Presenting an already-rotated token
    is impossible for a legitimate client, so it means two parties hold it. The response
    logs out both — the user re-authenticates once; the attacker is out.
+
+   The check was a read followed by a write until recently, so two requests presenting one
+   token both passed it and reuse went undetected — the case where an attacker uses a
+   stolen token _at the same moment_ as its owner, which is what a script lifting one from
+   an actively-refreshing page does. Marking is now a conditional write, and zero rows
+   changed is itself the signal. Four concurrent tests pin it, all failing when the
+   condition is removed. `docs/security.md` states the two-tab consequence.
+
 9. **OAuth `state` is signed, expiring and carries the connecting user.** The callback
    never infers identity. Every rejection returns one identical public message, so a
    forgery attempt learns nothing about why it failed.

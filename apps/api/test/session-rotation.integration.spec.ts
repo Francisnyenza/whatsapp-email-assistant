@@ -195,4 +195,96 @@ describeIfDb('refresh rotation (real database)', () => {
       expect(session).not.toHaveProperty('refreshTokenHash');
     }
   });
+
+  /**
+   * Two requests presenting one token at the same moment.
+   *
+   * The check at the top of `rotate` is a read followed by a write, and until
+   * recently that was the only check: two concurrent requests each read
+   * `replacedById = null`, each passed, each issued a replacement, and reuse
+   * detection never fired. Both callers got a working session and neither knew
+   * the other existed.
+   *
+   * That is the exact case invariant 8 exists for. An attacker who uses a
+   * stolen token *later* was always caught; one who used it at the same moment
+   * as its owner was not caught at all — and "at the same moment" is what a
+   * script does when it steals a token from a page that is actively refreshing.
+   *
+   * Found by sending two simultaneous refreshes at a running API and getting
+   * two different, both-live tokens back. It only exists at the database, so
+   * this is where it is pinned: `Promise.all` on the same client, both requests
+   * genuinely in flight, not two sequential calls to a mock.
+   */
+  describe('two requests, one token', () => {
+    it('lets exactly one through and treats the other as theft', async () => {
+      const first = await sessions.create(userId, ctx);
+
+      const [a, b] = await Promise.allSettled([
+        sessions.rotate(first.refreshToken, ctx),
+        sessions.rotate(first.refreshToken, ctx),
+      ]);
+
+      const outcomes = [a.status, b.status].sort();
+      expect(outcomes).toEqual(['fulfilled', 'rejected']);
+    });
+
+    it('leaves no live token behind, including the winner’s', async () => {
+      // The response to detected reuse is to revoke the family, and the
+      // replacement issued moments earlier belongs to it. Without that, the
+      // loser's request would leave a live orphan token nobody holds — or
+      // worse, one the attacker holds.
+      const first = await sessions.create(userId, ctx);
+
+      const settled = await Promise.allSettled([
+        sessions.rotate(first.refreshToken, ctx),
+        sessions.rotate(first.refreshToken, ctx),
+      ]);
+
+      const winner = settled.find((r) => r.status === 'fulfilled');
+      const issued = (winner as PromiseFulfilledResult<{ refreshToken: string }>).value;
+
+      await expect(sessions.rotate(issued.refreshToken, ctx)).rejects.toThrow(AppError);
+    });
+
+    it('says the same thing to both, as every rejection here does', async () => {
+      // A rejection that explained *why* would tell an attacker whether they
+      // raced a real client or simply held a dead token.
+      const first = await sessions.create(userId, ctx);
+
+      const settled = await Promise.allSettled([
+        sessions.rotate(first.refreshToken, ctx),
+        sessions.rotate(first.refreshToken, ctx),
+      ]);
+
+      const loser = settled.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+      expect((loser.reason as AppError).publicMessage).toBe(
+        'Your session has expired. Please sign in again.',
+      );
+    });
+
+    it('records it, and marks it as the concurrent case', async () => {
+      // Distinguishable in the trail even though it is not distinguishable in
+      // the response: an investigator wants to know whether the second party
+      // appeared a millisecond later or an hour later.
+      const audit = { record: vi.fn() };
+      const service = Object.assign(prisma, {
+        forUser: <T>(id: string, fn: (tx: never) => Promise<T>) =>
+          scopedTx(prisma, id, fn as never),
+      });
+      const watched = new SessionService(service as never, audit as never, logger as never);
+
+      const first = await watched.create(userId, ctx);
+      await Promise.allSettled([
+        watched.rotate(first.refreshToken, ctx),
+        watched.rotate(first.refreshToken, ctx),
+      ]);
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'auth.refresh_reuse_detected',
+          failureReason: 'refresh token reuse (concurrent)',
+        }),
+      );
+    });
+  });
 });

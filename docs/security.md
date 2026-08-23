@@ -62,6 +62,30 @@ old one on receipt — so it means two parties hold it. The response signs both
 out. This is invariant 8 in `docs/status.md` and it is the single most important
 entry in the audit log.
 
+The detection had a race until recently, and it was the case that mattered
+most. `rotate` read the session, checked whether it had been replaced, issued a
+replacement, then marked the old one — a read followed by a write. Two requests
+presenting the same token both passed the check, both issued, and reuse was
+never detected: an attacker who used a stolen token _later_ was always caught,
+one who used it at the same moment as its owner was not caught at all. That is
+what a script does when it lifts a token from a page that is actively
+refreshing. Found by sending two simultaneous refreshes at a running API and
+getting two different, both-live tokens back.
+
+Marking is now a conditional write — exactly one racing request changes a row,
+and zero rows changed _is_ the reuse signal. Four tests in
+`session-rotation.integration.spec.ts` pin it with genuinely concurrent calls
+against the real database, and all four fail when the condition is removed.
+
+**The consequence, stated rather than smoothed over:** two browser tabs whose
+access tokens expire at the same moment will both refresh, and one of them will
+be treated as theft — signing the user out of everything. The dashboard's
+single-flight promise is per-tab and cannot prevent it. A grace window, where a
+just-rotated token returns the same replacement instead of revoking, is the
+usual remedy; it is not implemented here because it weakens the property in
+exchange for an inconvenience, and that trade is worth making deliberately
+rather than as part of a bug fix.
+
 **The dashboard never persists an access token.** It lives in a module variable
 and dies with the tab; the refresh token is an HttpOnly cookie script cannot
 read. Persisting the access token would turn any XSS on that origin from a
