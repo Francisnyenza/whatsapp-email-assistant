@@ -25,6 +25,7 @@
     "db:test-role": "psql \"${DATABASE_URL:-postgresql://wea:wea_dev_password@localhost:5432/wea}\" -v ON_ERROR_STOP=1 -v db=wea -f infra/docker/postgres/test-role.sql",
     "db:seed": "pnpm --filter @wea/db seed",
     "db:studio": "pnpm --filter @wea/db studio",
+    "setup": "./tools/setup-env.sh",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "infra:reset": "docker compose down -v && docker compose up -d",

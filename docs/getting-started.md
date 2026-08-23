@@ -29,16 +29,22 @@ you which value is wrong, which is faster than reading logs that say nothing hap
 git clone https://github.com/Francisnyenza/whatsapp-email-assistant
 cd whatsapp-email-assistant
 pnpm install
-cp .env.example .env
 
-printf 'ENCRYPTION_MASTER_KEY=%s\n' "$(openssl rand -base64 32)" >> .env
-printf 'BLIND_INDEX_KEY=%s\n'       "$(openssl rand -base64 32)" >> .env
-printf 'JWT_ACCESS_SECRET=%s\n'     "$(openssl rand -base64 64)" >> .env
-printf 'JWT_REFRESH_SECRET=%s\n'    "$(openssl rand -base64 64)" >> .env
-
+pnpm setup        # writes .env and generates the secrets, printing none of them
 pnpm infra:up     # postgres and redis
 pnpm db:migrate
 ```
+
+`pnpm setup` fills in the four values no provider can give you — the encryption
+key, the blind-index key, the access-token secret, and the webhook verify token
+you will also type into Meta. It refuses to overwrite an existing `.env`,
+because a regenerated `ENCRYPTION_MASTER_KEY` cannot decrypt anything written
+under the old one.
+
+It does **not** generate `JWT_REFRESH_SECRET`. Refresh tokens here are random
+strings stored as a hash, not JWTs — which is what makes rotation and revocation
+possible — so there is nothing for that secret to sign. It stays in the file
+only so an older `.env` remains valid.
 
 `ENCRYPTION_MASTER_KEY` wraps every stored OAuth token and message body. Losing it means
 losing access to all of them — there is no recovery path, by design. Keep it somewhere
