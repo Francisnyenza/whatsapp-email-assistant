@@ -418,7 +418,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **2 116 tests** (1 699 unit + 417 integration
+Everything below has tests that run and pass. **2 117 tests** (1 699 unit + 418 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 Every earlier revision of this line under-counted, because the command that produced the

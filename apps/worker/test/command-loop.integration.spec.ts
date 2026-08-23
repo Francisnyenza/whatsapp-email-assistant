@@ -1366,6 +1366,61 @@ describeIfDb('command loop (real database)', () => {
       expect(claimantRow!.phoneNumber).toBeNull();
       expect(owner!.phoneNumber).toBe(phone);
     });
+
+    it('gives a contested number to exactly one account, even simultaneously', async () => {
+      // The sequential case above is the ordinary one. This is the same
+      // question asked at the database: two accounts, two live codes, both
+      // redeemed from one number at the same instant.
+      //
+      // It matters because the guard is a unique constraint plus a caught
+      // violation rather than a check — and a check would race. Rotation had
+      // exactly that shape and was wrong (see `session.service.ts`), so the
+      // shape is worth confirming wherever the product depends on it rather
+      // than assuming the two are alike.
+      const contested = `+2547${Math.floor(10_000_000 + Math.random() * 89_999_999)}`;
+      const first = randomUUID();
+      const second = randomUUID();
+      const codes = ['P7K2M9RT', 'Q4N8L3VW'];
+
+      for (const [index, id] of [first, second].entries()) {
+        await prisma.user.create({
+          data: {
+            id,
+            email: `contest-${id.slice(0, 8)}@example.com`,
+            status: 'active',
+            phoneVerificationCodeHash: createHash('sha256').update(codes[index]!).digest('hex'),
+            phoneVerificationExpiresAt: new Date(Date.now() + 600_000),
+          },
+        });
+      }
+
+      try {
+        await Promise.allSettled(
+          codes.map((code) =>
+            processor.handle({
+              data: {
+                whatsappMessageId: `wamid.CONTEST.${randomUUID().slice(0, 8)}`,
+                phoneNumber: contested.slice(1),
+                payload: JSON.parse(
+                  JSON.stringify({
+                    id: `wamid.IN.${randomUUID().slice(0, 8)}`,
+                    from: contested.slice(1),
+                    timestamp: new Date(),
+                    type: 'text',
+                    text: code,
+                  }),
+                ) as never,
+              },
+            } as never),
+          ),
+        );
+
+        const holders = await prisma.user.count({ where: { phoneNumber: contested } });
+        expect(holders).toBe(1);
+      } finally {
+        await prisma.user.deleteMany({ where: { id: { in: [first, second] } } });
+      }
+    });
   });
 
   describe('drafting a reply', () => {

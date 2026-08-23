@@ -83,7 +83,7 @@ tools/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**2 116 tests passing** (1 699 unit + 417 integration against real Postgres and Redis). See
+**2 117 tests passing** (1 699 unit + 418 integration against real Postgres and Redis). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover, and the bugs a green suite of that size did not
 catch.
