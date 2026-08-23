@@ -26,7 +26,7 @@ output "redis_endpoint" {
 }
 
 output "attachments_bucket" {
-  description = "S3 bucket for attachments, expiring on the same clock as message bodies."
+  description = "S3 bucket for attachments. Nothing writes to it — see the resource comment; attachment bytes are streamed provider-to-Meta and never stored."
   value       = aws_s3_bucket.attachments.id
 }
 

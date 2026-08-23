@@ -222,6 +222,21 @@ resource "aws_elasticache_replication_group" "redis" {
 # Attachments
 # ---------------------------------------------------------------------------
 
+# Provisioned, and **nothing writes to it**.
+#
+# No S3 client is imported anywhere in this system. Attachment bytes are stored
+# in neither direction: an email's file is streamed from Gmail or Graph,
+# buffered only as long as it takes to hand to Meta, and dropped; a photo sent
+# from WhatsApp is held as Meta's media id until the draft goes out. That is a
+# better property than storing them, and it means this bucket, the lifecycle
+# rule below and the `S3_*` settings are all scaffolding.
+#
+# Kept because attachment scanning and OCR would need somewhere to put bytes and
+# the schema is already shaped for it (`attachments.storage_key`,
+# `extracted_text`, `scanned_at`). An empty bucket costs nothing; being wrong
+# about whether one is in use costs a security review. Delete the block if you
+# would rather not have it — nothing references it but the `attachments_bucket`
+# output.
 resource "aws_s3_bucket" "attachments" {
   bucket = "${local.name}-attachments"
   tags   = local.tags
