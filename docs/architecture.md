@@ -63,10 +63,10 @@ degrade to a template.
                    │  sync · automation · dlq      │   │  + pgvector        │
                    └───────────────┬───────────────┘   └────────────────────┘
                                    ▼
-                   ┌───────────────────────────────┐   ┌────────────────────┐
-                   │      apps/worker (NestJS)     │◄─►│  Object storage    │
-                   │  ingest→normalize→AI→notify   │   │  (S3: attachments) │
-                   │  send · sync · automations    │   └────────────────────┘
+                   ┌───────────────────────────────┐
+                   │      apps/worker (NestJS)     │   attachment bytes are
+                   │  ingest→normalize→AI→notify   │   streamed provider↔Meta,
+                   │  send · sync · automations    │   never stored — see below
                    └───────────────┬───────────────┘
                                    ▼
                    ┌───────────────────────────────┐
@@ -124,7 +124,7 @@ schema migration path, one trace, one deploy.
       ├─ dedupe on (accountId, providerMessageId) unique index → drop replays
       ├─ messages.get(format=full) → parse MIME
       ├─ persist EmailThread + EmailMessage (+ headers, participants)
-      ├─ stream attachments → S3 (encrypted, per-tenant key prefix)
+      ├─ record attachment metadata only — no bytes are fetched here
       └─ enqueue `ai:analyze`
 
 3. worker: ai
@@ -287,10 +287,21 @@ admin panel. A dropped email is a product failure — we surface it rather than 
   embeddings. Every tenant-scoped table carries `user_id` and is queried through a repository
   layer that requires a tenant context (belt) plus RLS policies (braces).
 - **Redis** — queues, cache, rate limits, distributed locks, conversation state.
-- **S3-compatible object storage** — attachments, SSE-KMS, per-tenant key prefix, lifecycle
-  expiry matching the user's retention setting.
-- **Retention** — bodies cached for a configurable window (default 30 days), metadata longer,
-  attachments per plan. GDPR erasure walks all four stores plus derived embeddings.
+- **No object storage in the path.** This section used to describe attachments streaming to
+  S3 under a per-tenant key prefix with SSE-KMS, and none of it happened — nothing in this
+  system imports an S3 client. Attachment bytes are never stored, in either direction: an
+  email's file is streamed from Gmail or Graph, buffered only long enough to hand to Meta,
+  and dropped; a photo sent from WhatsApp is held as Meta's media id until the draft goes
+  out, and fetched then.
+
+  That is a stronger property than the one described before — bytes never come to rest here,
+  so there is nothing at rest to encrypt, expire or leak — but it was written as though the
+  storage existed, which is the wrong direction to be wrong in. The `S3_*` settings, the
+  `attachments.storage_key` column and the bucket in `infra/terraform` are scaffolding for
+  attachment scanning and OCR, which are not built.
+
+- **Retention** — bodies cached for a configurable window (default 30 days), metadata longer.
+  GDPR erasure walks the database plus derived embeddings; there is no object store to walk.
 
 Full schema in `docs/data-model.md` (Phase 3).
 

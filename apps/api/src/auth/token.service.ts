@@ -79,7 +79,7 @@ export class TokenService {
 }
 
 /** Parses `15m`, `1h`, `30s`, or a bare number of seconds. */
-function parseTtl(value: string): number {
+export function parseTtl(value: string): number {
   const match = /^(\d+)([smhd])?$/.exec(value.trim());
   if (!match) return 900;
 

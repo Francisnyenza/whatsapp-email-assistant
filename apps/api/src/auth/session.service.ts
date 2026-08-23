@@ -4,6 +4,8 @@ import { AppError } from '@wea/shared';
 import { generateToken, hashToken } from '@wea/crypto';
 import type { Logger } from 'pino';
 import { AuditService } from '../common/audit.service.js';
+import { ConfigService } from '../config/config.service.js';
+import { parseTtl } from './token.service.js';
 import { PrismaService } from '../common/prisma.service.js';
 
 /**
@@ -43,16 +45,30 @@ export interface IssuedSession {
 }
 
 /** 30 days. Long enough that a phone is not constantly signing in. */
-/** Thirty days. Exported so the refresh cookie's Max-Age matches the row's expiry. */
-export const REFRESH_TTL_MS = 30 * 24 * 3_600_000;
+/**
+ * The default when `JWT_REFRESH_TTL` is unset. Thirty days.
+ *
+ * A constant here used to be the *only* value: `JWT_REFRESH_TTL` was in
+ * `.env.example` with a `30d` default and was read by nothing, so an operator
+ * who shortened it got a session that still lasted a month. One of six settings
+ * a sweep found with no reader anywhere in the source.
+ */
+export const DEFAULT_REFRESH_TTL_MS = 30 * 24 * 3_600_000;
 
 @Injectable()
 export class SessionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly config: ConfigService,
     @Inject('LOGGER') private readonly logger: Logger,
   ) {}
+
+  /** How long a refresh token lives, from `JWT_REFRESH_TTL`. */
+  get refreshTtlMs(): number {
+    const configured = this.config.env.JWT_REFRESH_TTL;
+    return configured ? parseTtl(configured) * 1_000 : DEFAULT_REFRESH_TTL_MS;
+  }
 
   /** Starts a new session family — one login. */
   async create(
@@ -284,7 +300,7 @@ export class SessionService {
     mfaSatisfiedAt: Date | null = null,
   ): Promise<IssuedSession> {
     const { token, hash } = generateToken('wea_rt');
-    const expiresAt = new Date(Date.now() + REFRESH_TTL_MS);
+    const expiresAt = new Date(Date.now() + this.refreshTtlMs);
 
     const session = await this.prisma.forUser(userId, async (tx) =>
       tx.session.create({

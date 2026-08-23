@@ -15,6 +15,63 @@ Last updated: 2026-08-22.
 
 ---
 
+## Twenty-three settings with no reader, and the sweep that found them
+
+The five below were each found by accident, one at a time, by going looking for
+the code behind a claim. After the fifth it was obvious the right move was to
+stop finding them one at a time, so: a script that takes every setting the Zod
+schema declares and greps the whole source tree for a reader.
+
+**78 declared. 55 read. 23 read by nothing.**
+
+Most of the 23 are honestly-unbuilt features — Stripe, OpenTelemetry, Sentry,
+OCR — and the fix for those is to say so rather than to build them. Four were
+promises the configuration made that the code did not keep:
+
+**`S3_*` — six settings, and the largest.** `S3_BUCKET` was _required_, so every
+deployment had to name a bucket that would never be written to. Nothing in this
+system imports an S3 client. Attachment bytes are not stored in either
+direction: an email's file is streamed from Gmail or Graph, buffered only as
+long as it takes to hand to Meta, and dropped; a photo from WhatsApp is held as
+Meta's media id until the draft goes out and fetched then.
+
+That design is _better_ than the one the documents described — bytes never come
+to rest here, so there is nothing at rest to encrypt, expire or leak — but
+`docs/architecture.md` said attachments "stream → S3 (encrypted, per-tenant key
+prefix)" with "SSE-KMS", and `docs/data-model.md` said "attachment bytes live in
+object storage". Being wrong in the reassuring direction is the bad kind: a
+reader assessing the security posture would have concluded there was encrypted
+storage rather than no storage. Both documents now describe what happens, the
+settings are optional, and the MinIO container that made them look real is gone
+— the same call, for the same reason, as the Mailpit that was removed for
+looking like a mail sandbox it was not.
+
+**`JWT_REFRESH_SECRET` signs nothing.** Refresh tokens are random strings stored
+as a hash, not JWTs — which is precisely what makes rotation and revocation
+possible, since a self-contained signed token cannot be revoked before it
+expires. Requiring 32 characters of a secret told every operator otherwise, and
+an auditor reading the config would reasonably have concluded refresh tokens
+were signed. Now optional, and the schema says why.
+
+**`JWT_REFRESH_TTL` did nothing.** Session lifetime was a hard-coded thirty-day
+constant, so an operator who shortened the setting to a day still got a month.
+Now read, and the refresh cookie's `Max-Age` comes from the same place so the
+two cannot drift.
+
+**`TOTP_ISSUER` did nothing.** A hard-coded `'WhatsApp Email Assistant'` went
+into the `otpauth://` URI, so an operator who rebranded still had their users'
+authenticator apps show someone else's product name.
+
+And the thing that should have existed from the start:
+`packages/shared/test/settings-have-readers.spec.ts` asserts every declared
+setting is referenced somewhere in the source, or appears in a list of knowing
+exceptions each carrying a reason. A new setting nobody reads fails it —
+verified by adding one. It also fails if an excused setting quietly gains a
+reader, so the exception list is forced to shrink rather than rot.
+
+What it cannot check is whether a reader does the _right_ thing with the value.
+`TOTP_ISSUER` would have passed if the code had read it and thrown it away.
+
 ## Five settings that did nothing, and a table nobody wrote to
 
 Found while writing `docs/security.md` — by looking for the code behind each
@@ -418,7 +475,7 @@ its sweeps against a real database.
 
 ## Verified working
 
-Everything below has tests that run and pass. **2 117 tests** (1 699 unit + 418 integration
+Everything below has tests that run and pass. **2 185 tests** (1 764 unit + 421 integration
 against real Postgres and Redis), lint and typecheck clean across every package and app.
 
 Every earlier revision of this line under-counted, because the command that produced the

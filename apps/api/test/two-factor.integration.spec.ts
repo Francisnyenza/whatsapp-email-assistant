@@ -66,13 +66,19 @@ describeIfDb('two-factor authentication (real database)', () => {
     // here rather than pointed at the real table: what this suite is about is
     // the enrolment logic, and the audit path has its own tests.
     audit = { record: vi.fn() };
-    sessions = new SessionService(service as never, audit as never, logger as never);
+    sessions = new SessionService(
+      service as never,
+      audit as never,
+      { env: {} } as never,
+      logger as never,
+    );
     twoFactor = new TwoFactorService(
       service as never,
       {
         env: {
           KMS_PROVIDER: 'local',
           ENCRYPTION_MASTER_KEY: randomBytes(32).toString('base64'),
+          TOTP_ISSUER: 'Acme Mail',
         },
       } as never,
       sessions,
@@ -137,6 +143,10 @@ describeIfDb('two-factor authentication (real database)', () => {
       const challenge = await twoFactor.beginEnrolment(userId);
       expect(challenge.otpauthUri).toContain('otpauth://totp/');
       expect(challenge.otpauthUri).toContain(challenge.secret);
+      // The name the user's authenticator app shows. It came from a hard-coded
+      // constant while `TOTP_ISSUER` sat unread in the config, so an operator
+      // who rebranded still had their users see "WhatsApp Email Assistant".
+      expect(challenge.otpauthUri).toContain(encodeURIComponent('Acme Mail'));
     });
 
     it('refuses to enable on a wrong code', async () => {

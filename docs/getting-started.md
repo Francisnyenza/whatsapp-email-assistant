@@ -36,7 +36,7 @@ printf 'BLIND_INDEX_KEY=%s\n'       "$(openssl rand -base64 32)" >> .env
 printf 'JWT_ACCESS_SECRET=%s\n'     "$(openssl rand -base64 64)" >> .env
 printf 'JWT_REFRESH_SECRET=%s\n'    "$(openssl rand -base64 64)" >> .env
 
-pnpm infra:up     # postgres, redis, minio
+pnpm infra:up     # postgres and redis
 pnpm db:migrate
 ```
 

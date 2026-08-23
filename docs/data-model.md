@@ -90,9 +90,16 @@ the user to reconnect.
 - `bodyPurgedAt` records retention deletion, so the UI can say "this body has expired" rather
   than 404.
 
-Attachment bytes live in object storage under a `userId`-prefixed key; the row records
-`storageKey`, `contentHash` and scan results. Bytes are fetched lazily — ingest never pulls a
-50 MB file to deliver a notification.
+Attachment rows record metadata only — filename, MIME type, size, the provider's own id.
+Ingest never pulls a 50 MB file to deliver a notification, and neither does anything else:
+the bytes are fetched from the mail provider at the moment a user asks for the file,
+buffered only as long as it takes to hand to Meta, and dropped.
+
+`storageKey`, `isStored`, `storedAt` and `purgedAt` are columns nothing writes. They belong
+to a design where attachments were stored in S3, which this document and
+`docs/architecture.md` both described for several phases and which was never built. Kept
+because attachment scanning and OCR (`extractedText`, `scannedAt`) would need somewhere to
+put bytes; recorded here so nobody reads their presence as evidence that something does.
 
 Partitioning `email_messages` by month is the next scaling step; the schema is ready for it
 (no foreign keys point at it from outside the user's own data) and it is deliberately deferred

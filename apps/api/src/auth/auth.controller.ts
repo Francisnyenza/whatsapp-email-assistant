@@ -15,7 +15,7 @@ import { AuthService, type AuthResult } from './auth.service.js';
 import { clientAddress } from '../common/rate-limit.js';
 import { refreshCookie, clearedRefreshCookie, readCookie } from './refresh-cookie.js';
 import { AuditService } from '../common/audit.service.js';
-import { SessionService, REFRESH_TTL_MS } from './session.service.js';
+import { SessionService } from './session.service.js';
 import { TwoFactorService } from './two-factor.service.js';
 import { PhoneVerificationService } from './phone-verification.service.js';
 import { ConfigService } from '../config/config.service.js';
@@ -320,7 +320,9 @@ export class AuthController {
       'Set-Cookie',
       refreshCookie(token, {
         ...this.cookieOptions(),
-        maxAgeSeconds: Math.floor(REFRESH_TTL_MS / 1_000),
+        // From the session service, so the cookie expires with the row rather
+        // than on a constant that could drift from it.
+        maxAgeSeconds: Math.floor(this.sessions.refreshTtlMs / 1_000),
       }),
     );
   }

@@ -165,3 +165,46 @@ describe('redirecting the Cloud API', () => {
     expect(loadEnv(baseEnv()).WHATSAPP_API_BASE_URL).toBeUndefined();
   });
 });
+
+/**
+ * Settings that turned out to be read by nothing.
+ *
+ * A sweep of all 78 declared settings against the whole source tree found 23
+ * with no reader anywhere — the same shape as `KMS_PROVIDER`, the three
+ * `RATE_LIMIT_*` values, `SESSION_COOKIE_NAME` and `audit_logs`, each of which
+ * was found by accident earlier. Most of the 23 are features that are honestly
+ * not built (Stripe, OTEL, OCR). These are the ones where the setting's
+ * existence made a false promise.
+ */
+describe('settings that used to promise something they did not do', () => {
+  it('does not require a bucket for storage that does not exist', () => {
+    // `S3_BUCKET` was required, so every deployment named a bucket that would
+    // never be written to. Nothing imports an S3 client: attachment bytes are
+    // streamed provider↔Meta and never stored.
+    const env = loadEnv(baseEnv({ S3_BUCKET: undefined }));
+
+    expect(env.S3_BUCKET).toBeUndefined();
+  });
+
+  it('does not require a secret that signs nothing', () => {
+    // Refresh tokens are random strings stored as a hash, not JWTs — which is
+    // what makes rotation and revocation possible. Requiring 32 characters of
+    // `JWT_REFRESH_SECRET` told every operator otherwise.
+    const env = loadEnv(baseEnv({ JWT_REFRESH_SECRET: undefined }));
+
+    expect(env.JWT_ACCESS_SECRET).toBeTruthy();
+  });
+
+  it('still requires the secret that does sign something', () => {
+    // The access token is a real JWT, and the asymmetry is the point.
+    expect(() => loadEnv(baseEnv({ JWT_ACCESS_SECRET: undefined }))).toThrow(/JWT_ACCESS_SECRET/);
+  });
+
+  it('carries a TOTP issuer for the code that now reads it', () => {
+    expect(loadEnv(baseEnv({ TOTP_ISSUER: 'Acme Mail' })).TOTP_ISSUER).toBe('Acme Mail');
+  });
+
+  it('carries a refresh TTL for the code that now reads it', () => {
+    expect(loadEnv(baseEnv({ JWT_REFRESH_TTL: '7d' })).JWT_REFRESH_TTL).toBe('7d');
+  });
+});

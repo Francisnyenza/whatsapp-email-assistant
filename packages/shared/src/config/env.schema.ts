@@ -52,10 +52,30 @@ export const envSchema = z
     REDIS_URL: z.string().url(),
     REDIS_QUEUE_URL: z.string().url().optional(),
 
-    // Object storage
+    /**
+     * Object storage — **reserved, and read by nothing**.
+     *
+     * `S3_BUCKET` used to be required, so every deployment had to name a bucket
+     * that would never be written to. Nothing in this system imports an S3
+     * client: attachments are not stored, in either direction. An email's file
+     * is streamed from Gmail or Graph, buffered only as long as it takes to
+     * hand to Meta, and dropped; a photo sent from WhatsApp is kept as Meta's
+     * media id until the draft goes out, and the bytes are fetched then.
+     *
+     * That is a better property than the one `docs/architecture.md` used to
+     * claim — bytes never come to rest here at all, so there is nothing to
+     * encrypt, expire or leak — but it does mean these six settings, the
+     * `attachments.storage_key` column beside them and the bucket in
+     * `infra/terraform` are all scaffolding for a design nobody built.
+     *
+     * Kept rather than deleted because attachment scanning and OCR
+     * (`extracted_text`, `scanned_at`) would need somewhere to put bytes, and
+     * the schema is already shaped for it. Optional, so nobody provisions
+     * infrastructure for something that does not run.
+     */
     S3_ENDPOINT: z.string().url().optional(),
     S3_REGION: z.string().default('us-east-1'),
-    S3_BUCKET: nonEmpty('S3_BUCKET'),
+    S3_BUCKET: z.string().optional(),
     S3_ACCESS_KEY_ID: z.string().optional(),
     S3_SECRET_ACCESS_KEY: z.string().optional(),
     S3_FORCE_PATH_STYLE: booleanish,
@@ -68,7 +88,20 @@ export const envSchema = z
 
     // Auth
     JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
-    JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
+    /**
+     * **Signs nothing.** Kept only so an existing deployment's config stays
+     * valid; a new one should leave it unset.
+     *
+     * Refresh tokens here are not JWTs. They are random strings stored as a
+     * hash, which is what makes rotation and reuse detection possible — a
+     * self-contained signed token cannot be revoked before it expires. So there
+     * has never been anything for this secret to sign, and requiring 32
+     * characters of it told every operator otherwise: an auditor reading the
+     * config would reasonably conclude refresh tokens were signed.
+     *
+     * Found by sweeping every setting for a reader anywhere in the source.
+     */
+    JWT_REFRESH_SECRET: z.string().optional(),
     JWT_ACCESS_TTL: z.string().default('15m'),
     JWT_REFRESH_TTL: z.string().default('30d'),
     SESSION_COOKIE_NAME: z.string().default('wea_session'),

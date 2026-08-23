@@ -24,7 +24,7 @@ printf 'BLIND_INDEX_KEY=%s\n'       "$(openssl rand -base64 32)" >> .env
 printf 'JWT_ACCESS_SECRET=%s\n'     "$(openssl rand -base64 64)" >> .env
 printf 'JWT_REFRESH_SECRET=%s\n'    "$(openssl rand -base64 64)" >> .env
 
-pnpm infra:up        # postgres + redis + minio
+pnpm infra:up        # postgres + redis
 pnpm db:migrate      # from Phase 3
 pnpm db:test-role    # lets the integration suite connect as the restricted role
 pnpm preflight          # checks every external seam and says what to fix
@@ -50,7 +50,6 @@ offending one at once. That is deliberate — see `packages/shared/src/config/en
 | Web      | http://localhost:3000  | Dashboard                                      |
 | Postgres | localhost:5432         | user `wea`, db `wea`                           |
 | Redis    | localhost:6379         | db 0 cache, db 1 queues                        |
-| MinIO    | http://localhost:9001  | `minioadmin` / `minioadmin`                    |
 | Jaeger   | http://localhost:16686 | `docker compose --profile observability up -d` |
 
 **Real email leaves a development machine.** This document used to claim the

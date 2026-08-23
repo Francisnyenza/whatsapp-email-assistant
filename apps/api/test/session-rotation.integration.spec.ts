@@ -35,7 +35,12 @@ describeIfDb('refresh rotation (real database)', () => {
     });
 
     logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
-    sessions = new SessionService(service as never, { record: vi.fn() } as never, logger as never);
+    sessions = new SessionService(
+      service as never,
+      { record: vi.fn() } as never,
+      { env: {} } as never,
+      logger as never,
+    );
 
     await prisma.user.create({
       data: { id: userId, email: `${userId.slice(0, 8)}@example.com`, status: 'active' },
@@ -196,6 +201,48 @@ describeIfDb('refresh rotation (real database)', () => {
     }
   });
 
+  describe('how long a refresh token lives', () => {
+    /** A service built with a specific `JWT_REFRESH_TTL`. */
+    function withTtl(ttl?: string): SessionService {
+      const service = Object.assign(prisma, {
+        forUser: <T>(id: string, fn: (tx: never) => Promise<T>) =>
+          scopedTx(prisma, id, fn as never),
+      });
+      return new SessionService(
+        service as never,
+        { record: vi.fn() } as never,
+        { env: ttl ? { JWT_REFRESH_TTL: ttl } : {} } as never,
+        logger as never,
+      );
+    }
+
+    it('comes from JWT_REFRESH_TTL, which nothing used to read', () => {
+      // The setting was in `.env.example` with a `30d` default and no reader,
+      // so an operator who shortened it to a day still got a month-long
+      // session. Found by sweeping every setting for a reader.
+      expect(withTtl('7d').refreshTtlMs).toBe(7 * 24 * 3_600_000);
+      expect(withTtl('12h').refreshTtlMs).toBe(12 * 3_600_000);
+    });
+
+    it('falls back to thirty days when unset', () => {
+      expect(withTtl().refreshTtlMs).toBe(30 * 24 * 3_600_000);
+    });
+
+    it('actually reaches the row, not just the getter', async () => {
+      const short = withTtl('1h');
+      const issued = await short.create(userId, ctx);
+
+      const row = await prisma.session.findUnique({
+        where: { id: issued.sessionId },
+        select: { expiresAt: true },
+      });
+
+      const hours = (row!.expiresAt.getTime() - Date.now()) / 3_600_000;
+      expect(hours).toBeGreaterThan(0.9);
+      expect(hours).toBeLessThan(1.1);
+    });
+  });
+
   /**
    * Two requests presenting one token at the same moment.
    *
@@ -271,7 +318,12 @@ describeIfDb('refresh rotation (real database)', () => {
         forUser: <T>(id: string, fn: (tx: never) => Promise<T>) =>
           scopedTx(prisma, id, fn as never),
       });
-      const watched = new SessionService(service as never, audit as never, logger as never);
+      const watched = new SessionService(
+        service as never,
+        audit as never,
+        { env: {} } as never,
+        logger as never,
+      );
 
       const first = await watched.create(userId, ctx);
       await Promise.allSettled([

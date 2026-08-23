@@ -68,7 +68,7 @@ packages/
   ai/         LLM provider abstraction, prompts, structured output schemas
   sdk/        Public TypeScript SDK                                  (planned)
 infra/
-  docker/     Local Postgres, Redis and MinIO
+  docker/     Local Postgres and Redis
   k8s/        Deployments, Service, PDBs, HPA, migration Job,
               KEDA autoscaler, Prometheus scrape targets and alerts,
               External Secrets wiring
@@ -83,7 +83,7 @@ tools/
 ## Status
 
 Built in phases; each lands complete, documented and tested.
-**2 117 tests passing** (1 699 unit + 418 integration against real Postgres and Redis). See
+**2 185 tests passing** (1 764 unit + 421 integration against real Postgres and Redis). See
 [`docs/status.md`](docs/status.md) for an honest accounting of what is and is not built —
 including what these ticks do not cover, and the bugs a green suite of that size did not
 catch.

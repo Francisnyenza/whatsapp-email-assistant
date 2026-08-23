@@ -109,7 +109,14 @@ export class TwoFactorService {
 
     return {
       secret,
-      otpauthUri: otpauthUri({ secret, account: user.email, issuer: ISSUER }),
+      otpauthUri: otpauthUri({
+        secret,
+        account: user.email,
+        // `TOTP_ISSUER` was a setting nothing read: this used a hard-coded
+        // constant, so an operator who rebranded still had their users'
+        // authenticator apps say "WhatsApp Email Assistant".
+        issuer: this.config.env.TOTP_ISSUER,
+      }),
     };
   }
 
@@ -328,8 +335,6 @@ export class TwoFactorService {
     };
   }
 }
-
-const ISSUER = 'WhatsApp Email Assistant';
 
 /**
  * One rejection for every reason.
