@@ -32,7 +32,7 @@ pnpm install
 
 pnpm run setup    # writes .env and generates the secrets, printing none of them
 pnpm infra:up     # postgres and redis
-pnpm db:migrate
+pnpm db:migrate:deploy   # applies the existing migrations; `db:migrate` is for authoring new ones
 ```
 
 `pnpm run setup` fills in the four values no provider can give you — the encryption

@@ -78,5 +78,5 @@ Next, fill in from Meta and Google:
   GOOGLE_CLIENT_SECRET
   GOOGLE_REDIRECT_URI            must match the console exactly
 
-Then:  pnpm infra:up && pnpm db:migrate && pnpm preflight
+Then:  pnpm infra:up && pnpm db:migrate:deploy && pnpm preflight
 DONE

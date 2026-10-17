@@ -587,7 +587,7 @@ export function interpretDatabase(input: {
       name: 'Migrations',
       level: 'fail',
       detail: `${input.pendingMigrations} not applied`,
-      fix: 'Run `pnpm db:migrate`. The code will query columns that do not exist yet.',
+      fix: 'Run `pnpm db:migrate:deploy`. The code will query columns that do not exist yet.',
     });
   } else {
     results.push({ name: 'Migrations', level: 'ok', detail: 'up to date' });
