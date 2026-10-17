@@ -30,12 +30,12 @@ git clone https://github.com/Francisnyenza/whatsapp-email-assistant
 cd whatsapp-email-assistant
 pnpm install
 
-pnpm setup        # writes .env and generates the secrets, printing none of them
+pnpm run setup    # writes .env and generates the secrets, printing none of them
 pnpm infra:up     # postgres and redis
 pnpm db:migrate
 ```
 
-`pnpm setup` fills in the four values no provider can give you — the encryption
+`pnpm run setup` fills in the four values no provider can give you — the encryption
 key, the blind-index key, the access-token secret, and the webhook verify token
 you will also type into Meta. It refuses to overwrite an existing `.env`,
 because a regenerated `ENCRYPTION_MASTER_KEY` cannot decrypt anything written
