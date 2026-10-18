@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import type { Logger } from 'pino';
+import { widenConnectAttemptTimeout } from '@wea/shared';
 import { AppModule } from './app.module.js';
 import { ConfigService } from './config/config.service.js';
 import { AllExceptionsFilter } from './common/all-exceptions.filter.js';
@@ -12,6 +13,9 @@ import { HttpMetricsMiddleware } from './health/http-metrics.middleware.js';
 import { RateLimitMiddleware } from './common/rate-limit.middleware.js';
 
 async function bootstrap(): Promise<void> {
+  // Before anything opens a socket. See the helper for the install it broke.
+  widenConnectAttemptTimeout();
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     // Nest's own logger would bypass our redaction, so it is disabled and every
     // line goes through the pino instance instead.

@@ -23,6 +23,7 @@ import {
   type CheckResult,
   type Probe,
   type ReportSection,
+  widenConnectAttemptTimeout,
 } from '@wea/shared';
 import { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
@@ -163,6 +164,7 @@ function aiProbeFor(
 }
 
 async function main(): Promise<void> {
+  widenConnectAttemptTimeout();
   const env = loadEnv(process.env);
   const graph = `https://graph.facebook.com/${env.WHATSAPP_API_VERSION}`;
   const auth = { Authorization: `Bearer ${env.WHATSAPP_ACCESS_TOKEN}` };

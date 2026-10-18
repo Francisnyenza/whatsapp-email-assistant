@@ -118,6 +118,8 @@ export { normalizePhone, isE164, toWhatsAppFormat, fromWhatsAppFormat } from './
 
 export { jobKey } from './utils/job-key.js';
 
+export { widenConnectAttemptTimeout, CONNECT_ATTEMPT_TIMEOUT_MS } from './utils/network.js';
+
 export { reviveDate, reviveInboundMessage, reviveStatusUpdate, type Wire } from './utils/wire.js';
 
 // preflight — see packages/shared/src/preflight/types.ts for why this exists

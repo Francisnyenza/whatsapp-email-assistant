@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { Logger } from 'pino';
+import { widenConnectAttemptTimeout } from '@wea/shared';
 import { WorkerModule } from './worker.module.js';
 import { ConfigService } from './config/config.service.js';
 import { PrismaService } from './common/prisma.service.js';
@@ -18,6 +19,9 @@ import { startHealthServer } from './health/health.server.js';
  * second Nest app, for the reasons in `health/health.server.ts`.
  */
 async function bootstrap(): Promise<void> {
+  // Before anything opens a socket. See the helper for the install it broke.
+  widenConnectAttemptTimeout();
+
   // `abortOnError: false` for the same reason as the API: otherwise Nest exits
   // the process itself on a start-up failure, before the handler at the bottom
   // of this file runs, and with `logger: false` suppressing the reason — a
