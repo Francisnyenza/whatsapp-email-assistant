@@ -185,6 +185,14 @@ export const endpoints = {
       retryOn401: false,
     }),
 
+  signUp: (email: string, password: string) =>
+    api<{ accessToken: string }>('/v1/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+      // Same reasoning as signIn: there is no session yet to refresh.
+      retryOn401: false,
+    }),
+
   me: () => api<{ id: string; email: string }>('/v1/auth/me'),
 
   accounts: () => api<ConnectedAccount[]>('/v1/accounts'),

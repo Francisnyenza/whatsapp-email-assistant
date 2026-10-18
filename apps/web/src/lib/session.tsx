@@ -17,6 +17,7 @@ interface Session {
   status: 'loading' | 'signed-in' | 'signed-out';
   email: string | null;
   signIn: (email: string, password: string) => Promise<void>;
+  signUp: (email: string, password: string) => Promise<void>;
   signOut: () => void;
 }
 
@@ -64,6 +65,16 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     setStatus('signed-in');
   }, []);
 
+  // A new account cannot have two-factor yet, so there is no branch to handle.
+  const signUp = useCallback(async (address: string, password: string) => {
+    const result = await endpoints.signUp(address, password);
+
+    setAccessToken(result.accessToken);
+    const user = await endpoints.me();
+    setEmail(user.email);
+    setStatus('signed-in');
+  }, []);
+
   const signOut = useCallback(() => {
     setAccessToken(null);
     setEmail(null);
@@ -71,7 +82,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <SessionContext.Provider value={{ status, email, signIn, signOut }}>
+    <SessionContext.Provider value={{ status, email, signIn, signUp, signOut }}>
       {children}
     </SessionContext.Provider>
   );

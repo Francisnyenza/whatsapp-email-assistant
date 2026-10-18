@@ -257,6 +257,30 @@ describe('signing in', () => {
   });
 });
 
+describe('creating an account', () => {
+  it('posts to signup, not signin', async () => {
+    const calls = stubFetch(() => ok({ accessToken: 'tok' }));
+
+    await endpoints.signUp('a@example.com', 'a long enough pw');
+
+    expect(calls[0]!.url).toMatch(/\/v1\/auth\/signup$/);
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      email: 'a@example.com',
+      password: 'a long enough pw',
+    });
+  });
+
+  it('does not refresh on a 401, because there is no session yet', async () => {
+    const calls = stubFetch(() => unauthorized());
+
+    await expect(endpoints.signUp('a@example.com', 'whatever pw')).rejects.toMatchObject({
+      status: 401,
+    });
+
+    expect(calls).toHaveLength(1);
+  });
+});
+
 describe('responses without a body', () => {
   it('resolves a 204 rather than failing to parse it', async () => {
     // `Response.json()` on an empty body throws, which would turn a successful
