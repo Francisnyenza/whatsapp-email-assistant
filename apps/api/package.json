@@ -8,7 +8,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "node --watch --import @swc-node/register/esm-register src/main.ts",
+    "dev": "node --env-file-if-exists=../../.env --watch --import @swc-node/register/esm-register src/main.ts",
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
@@ -16,7 +16,7 @@
     "test:unit": "tsc -p tsconfig.json && vitest run",
     "clean": "rm -rf dist *.tsbuildinfo",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "preflight": "node --import @swc-node/register/esm-register src/preflight.ts"
+    "preflight": "node --env-file-if-exists=../../.env --import @swc-node/register/esm-register src/preflight.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.15",

@@ -5,7 +5,7 @@
   "description": "Inbox on WhatsApp \u2014 manage email entirely from WhatsApp",
   "packageManager": "pnpm@10.33.0",
   "engines": {
-    "node": ">=20.11.0",
+    "node": ">=22.9.0",
     "pnpm": ">=9.0.0"
   },
   "scripts": {
@@ -30,7 +30,7 @@
     "infra:down": "docker compose down",
     "infra:reset": "docker compose down -v && docker compose up -d",
     "clean": "turbo run clean && rm -rf node_modules",
-    "preflight": "pnpm --filter @wea/api preflight"
+    "preflight": "turbo run build --filter=@wea/api^... --output-logs=errors-only && pnpm --filter @wea/api preflight"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -9,7 +9,8 @@ import { z } from 'zod';
  * once rather than one per restart.
  */
 
-const nonEmpty = (label: string) => z.string().min(1, `${label} must not be empty`);
+const nonEmpty = (label: string) =>
+  z.string({ required_error: `${label} must not be empty` }).min(1, `${label} must not be empty`);
 
 /** Accepts "true"/"1"/"yes" case-insensitively; anything else is false. */
 const booleanish = z
@@ -319,7 +320,11 @@ export type Env = z.infer<typeof envSchema>;
  *   validation error must never echo a secret into logs.
  */
 export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
-  const result = envSchema.safeParse(source);
+  // `KEY=` in a .env file arrives as an empty string, which means "not set" to
+  // whoever wrote it. Passed through, it fails every `.url().optional()` and
+  // shadows every default, so a freshly copied .env.example could not boot.
+  const present = Object.fromEntries(Object.entries(source).filter(([, v]) => v !== ''));
+  const result = envSchema.safeParse(present);
   if (result.success) return result.data;
 
   const problems = result.error.issues

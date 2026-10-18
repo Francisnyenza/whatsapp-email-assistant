@@ -69,6 +69,27 @@ describe('environment validation', () => {
     expect(() => loadEnv(env)).toThrow(/WHATSAPP_APP_SECRET/);
   });
 
+  it('reads `KEY=` as unset, the way a copied .env.example writes it', () => {
+    const env = loadEnv(
+      baseEnv({
+        S3_ENDPOINT: '',
+        WHATSAPP_API_BASE_URL: '',
+        LOG_LEVEL: '',
+        GOOGLE_PUBSUB_TOPIC: '',
+      }),
+    );
+    expect(env.S3_ENDPOINT).toBeUndefined();
+    expect(env.WHATSAPP_API_BASE_URL).toBeUndefined();
+    expect(env.GOOGLE_PUBSUB_TOPIC).toBeUndefined();
+    expect(env.LOG_LEVEL).toBe('info');
+  });
+
+  it('still refuses a required value left as `KEY=`', () => {
+    expect(() => loadEnv(baseEnv({ WHATSAPP_APP_SECRET: '' }))).toThrow(
+      /WHATSAPP_APP_SECRET must not be empty/,
+    );
+  });
+
   it('requires a key for whichever AI provider is selected', () => {
     expect(() => loadEnv(baseEnv({ AI_PRIMARY_PROVIDER: 'gemini' }))).toThrow(/GEMINI_API_KEY/);
     expect(() =>
